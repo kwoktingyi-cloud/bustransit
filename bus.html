@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="zh-HK">
+<head>
+  <meta charset="UTF-8" />
+  <title>KMB ETA Local</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 8px; }
+    h2, h3 { margin: 4px 0; }
+    .section { margin-top: 12px; }
+
+    #step1-layout {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    #route-search-area {
+      flex: 1;
+      min-width: 0;
+    }
+    #vk-container {
+      width: 45vw;
+      max-width: 260px;
+      border-left: 1px solid #ddd;
+      padding-left: 6px;
+    }
+
+    .route-item { padding: 6px 8px; cursor: pointer; border-bottom: 1px solid #eee; }
+    .route-item:hover { background: #f2f2f2; }
+
+    button {
+      padding: 8px 12px;
+      margin: 4px 4px 4px 0;
+      font-size: 16px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      background: #fafafa;
+      cursor: pointer;
+    }
+    button:disabled { opacity: 0.4; cursor: default; }
+
+    #routeInputDisplay,
+    #transferRouteInputDisplay { min-height: 24px; font-size: 18px; padding: 4px 0; }
+
+    .vk-row { margin-bottom: 6px; }
+    .vk-label { font-size: 13px; margin-bottom: 2px; color: #666; }
+
+    .vk-key {
+      display: inline-block;
+      min-width: 38px;
+      text-align: center;
+      padding: 8px 4px;
+      margin: 2px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+      background: #fff;
+      cursor: pointer;
+      user-select: none;
+      font-size: 18px;
+    }
+    .vk-key.disabled {
+      opacity: 0.25;
+      cursor: default;
+    }
+    .vk-key:hover:not(.disabled) { background: #eee; }
+    .vk-key.special { min-width: 70px; background: #ffe; font-size: 14px; }
+
+    .direction-buttons { margin-top: 6px; }
+
+    #headwayInfo,
+    #transferHeadwayInfo { margin-top: 4px; font-size: 14px; color: #555; }
+
+    .stop-list { margin-top: 8px; }
+    .stop-item {
+      padding: 4px 6px;
+      border-bottom: 1px solid #eee;
+      font-size: 14px;
+    }
+    .stop-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 4px;
+    }
+    .stop-title {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .stop-item.selected { background: #e3f2fd; }
+
+    .eta-block { margin-top: 2px; padding-left: 12px; }
+    .eta-row { font-size: 13px; padding: 2px 0; }
+    .eta-imminent { color: #d32f2f; font-weight: bold; }
+
+    .summary-wrapper {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .stop-eta-summary {
+      font-size: 11px;
+    }
+    .stop-boarding-info {
+      font-size: 11px;
+      color: #444;
+    }
+
+    .btn-small {
+      padding: 2px 6px;
+      font-size: 11px;
+      margin-left: 4px;
+    }
+
+    #interchangeInfo {
+      margin-top: 6px;
+      font-size: 13px;
+      color: #444;
+    }
+    #interchangeControls {
+      margin-top: 6px;
+    }
+
+    #transfer-search-section {
+      margin-top: 8px;
+      padding-top: 6px;
+      border-top: 1px dashed #ccc;
+    }
+    #transfer-step1-layout {
+      display: flex;
+      align-items: flex-start;
+      gap: 8px;
+    }
+    #transfer-route-search-area {
+      flex: 1;
+      min-width: 0;
+    }
+    #transferVkContainer {
+      width: 45vw;
+      max-width: 260px;
+      border-left: 1px solid #ddd;
+      padding-left: 6px;
+    }
+    .btn-show-all-stops {
+      font-size: 13px;
+      padding: 4px 8px;
+      margin-left: 4px;
+    }
+
+    #btnResetTransfer {
+      margin-top: 8px;
+      font-size: 13px;
+      padding: 4px 8px;
+      display: none;
+    }
+	
+/* ========= 上車站 / 轉車站 顏色樣式 ========= */
+
+/* Step 3：上車站追蹤緊嗰班（藍色） */
+.eta-row.tracked {
+  font-weight: bold;
+  color: #0b3d91;
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+}
+
+
+
+/* Step 3：轉車站右邊 summary 行，用藍色細字顯示「搭緊：HH:MM」 */
+.stop-boarding-info {
+  font-size: 11px;
+  color: #0b3d91;
+}
+
+/* Step 4：第二程可以接到嗰班（紅色） */
+.eta-row.transfer-tracked {
+  font-weight: bold;
+  color: #c62828; /* 紅色 */
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+}
+
+/* 普通 ETA 行灰階（你 JS 裏面已經會加呢啲 class） */
+.eta-row-gray-1 { color: #000000; }
+.eta-row-gray-2 { color: #555555; }
+.eta-row-gray-3 { color: #777777; }
+.eta-row-gray-4 { color: #999999; }
+.eta-row-gray-5 { color: #b0b0b0; }
+	
+  </style>
+</head>
+<body>
+  <h2>KMB ETA Local</h2>
+
+  <div class="section" id="step1-section">
+    <h3>Step 1：輸入路線</h3>
+    <div id="step1-layout">
+      <div id="route-search-area">
+        <div>路線：<span id="routeInputDisplay"></span></div>
+        <div id="routeList">請先輸入至少一個字元。</div>
+      </div>
+      <div id="vk-container"></div>
+    </div>
+  </div>
+
+  <div class="section" id="step2-section">
+    <h3>Step 2：揀方向</h3>
+    <div class="direction-buttons">
+      <button id="dirInbound" disabled>往 ? 方向</button>
+      <button id="dirOutbound" disabled>往 ? 方向</button>
+    </div>
+    <div id="headwayInfo"></div>
+    <div id="interchangeInfo"></div>
+    <div id="interchangeControls"></div>
+  </div>
+
+  <div class="section" id="step3-section">
+    <h3>Step 3：巴士站</h3>
+    <div id="stopList" class="stop-list"></div>
+  </div>
+
+  <div class="section" id="transfer-search-section" style="display:none;">
+    <h3 id="step4-title">Step 4：於轉車站再揀下一程</h3>
+    <div id="transfer-search-container">
+      <div id="transfer-main-line">
+        <strong>轉車路線：</strong><span id="transferRouteInputDisplay"></span>
+      </div>
+      <div id="transfer-step1-layout">
+        <div id="transfer-route-search-area">
+          <div id="transferRouteList">請輸入路線，會以同名站作為預設轉車站。</div>
+        </div>
+        <div id="transferVkContainer"></div>
+      </div>
+
+      <div id="transfer-direction-block" style="margin-top:8px;">
+        <strong>轉車方向：</strong>
+        <div class="direction-buttons">
+          <button id="transferDirInbound" disabled>往 ? 方向</button>
+          <button id="transferDirOutbound" disabled>往 ? 方向</button>
+        </div>
+        <div id="transferHeadwayInfo"></div>
+      </div>
+
+		<div id="transfer-stop-block" style="margin-top:8px;">
+		  <strong>轉車後巴士站：</strong>
+		  <div id="transferStopList" class="stop-list"></div>
+		</div>
+
+		<div id="transferWalkInfo"
+			 style="margin-top:4px; font-size:12px; color:#444;"></div>
+
+		<button id="btnResetTransfer">重新選擇轉車（Step 4）</button>
+    </div>
+  </div>
+
+  <script src="script_bus.js"></script>
+</body>
+</html>
