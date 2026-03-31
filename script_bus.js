@@ -54,6 +54,15 @@ let stopsLayer = null;
 let userLat = null;
 let userLon = null;
 
+
+let allStopMarkers = [];        // 地圖上主線路所有站 marker
+let currentTransferStopId = null;
+
+let secondRouteMarkers = [];    // Step 4 第二架車（紅色 tag）markers
+let transferLine = null;        // 兩個轉車站之間的綠色線
+let secondTransferStopId = null;
+
+
 function initMap() {
   if (map) return;
 
@@ -1016,7 +1025,22 @@ function resetAllState() {
   updateRouteInputDisplay();
   renderRouteList();
   renderVirtualKeyboard();
+
+  // ★ 新增：清地圖上所有 tag / 路線，還原視野
+  if (stopsLayer) {
+    stopsLayer.clearLayers();
+  }
+  // 如果你有其它 layer（例如 userToStopRouteLayer），都可以喺度一拼清除：
+  // if (userToStopRouteLayer) { map.removeLayer(userToStopRouteLayer); userToStopRouteLayer = null; }
+
+  if (map) {
+    map.setView([22.32, 114.17], 12); // 香港大致中心
+  }
+
+  const userInfo = document.getElementById("userWalkInfo");
+  if (userInfo) userInfo.textContent = "";
 }
+
 
 /* ========== Step2: 揀方向 ========== */
 
@@ -1250,6 +1274,7 @@ function renderStopList() {
   const container = document.getElementById("stopList");
   if (!container) return;
   container.innerHTML = "";
+
   routeStops.forEach((s) => {
     const div = document.createElement("div");
     div.className = "stop-item";
@@ -1260,10 +1285,12 @@ function renderStopList() {
 
     const left = document.createElement("div");
     left.className = "stop-title";
+
     const titleSpan = document.createElement("span");
     titleSpan.textContent = `${s.seq}. ${s.name_tc}`;
     left.appendChild(titleSpan);
 
+    // 決定要不要顯示「轉車」button
     let shouldShowInterBtn = false;
     if (mode === "interchange_pick" && originStopId) {
       const originIndex = routeStops.findIndex(x => x.stop_id === originStopId);
@@ -1279,7 +1306,7 @@ function renderStopList() {
       interBtn.textContent = "轉車";
       interBtn.onclick = (ev) => {
         ev.stopPropagation();
-        onInterchangeButtonClick(s.stop_id);
+        onInterchangeButtonClick(s.stop_id); // ★ 一律用 stop_id
       };
       left.appendChild(interBtn);
     }
@@ -1307,6 +1334,7 @@ function renderStopList() {
     div.appendChild(header);
     div.appendChild(etaBlock);
 
+    // 點擊整行：選站＋顯示 ETA（除咗 pair 模式）
     div.onclick = () => {
       if (mode === "interchange_pair") return;
       onStopClicked(s.stop_id);
@@ -1317,6 +1345,7 @@ function renderStopList() {
 
   renderStopsAccordingToMode();
 }
+
 
 function renderStopsAccordingToMode() {
   const infoDiv = document.getElementById("interchangeInfo");
@@ -1402,10 +1431,23 @@ async function exitInterchangeMode() {
 }
 
 function onInterchangeButtonClick(stopId) {
+  if (mode === "normal") {
+    // 如果未經過 onStopClicked，直接以轉車 button 當上車站
+    originStopId = stopId;
+    mode = "interchange_pick";
+    recomputeCumulativeTravelFromOrigin(stopId);
+    renderStopList();
+    selectStop(stopId);           // 顯示 ETA
+    return;
+  }
+
   if (mode === "interchange_pick") {
+    // 已有上車站，再按「轉車」＝選轉車站
     transferStopId = stopId;
+    currentTransferStopId = stopId;
     mode = "interchange_pair";
-    renderStopsAccordingToMode();
+
+    renderStopsAccordingToMode(); // ★ 只顯示上車站＋轉車站
 
     const walkInfoDiv = document.getElementById("transferWalkInfo");
     if (walkInfoDiv) walkInfoDiv.textContent = "";
@@ -1415,8 +1457,18 @@ function onInterchangeButtonClick(stopId) {
       if (transferStopId) loadEtaDetailForStop(transferStopId);
       guessBoardingBusAtTransferStop();
     });
+
+    // 如有 allStopMarkers，可以順便移地圖
+    if (typeof allStopMarkers !== "undefined" && map) {
+      const marker = allStopMarkers.find(m => m.stopId === stopId);
+      if (marker) {
+        map.setView(marker.getLatLng(), 17);
+        if (marker.openPopup) marker.openPopup();
+      }
+    }
   }
 }
+
 
 function clearStopSelectionUI() {
   document.querySelectorAll(".stop-item.selected").forEach(el => {
@@ -1428,29 +1480,122 @@ function clearStopSelectionUI() {
 }
 
 function onStopClicked(stopId) {
+  originStopId = stopId;
+
   if (mode === "normal") {
-    originStopId = stopId;
     mode = "interchange_pick";
-    recomputeCumulativeTravelFromOrigin(stopId);
-    renderStopList();
-  } else if (mode === "interchange_pick") {
-    originStopId = stopId;
-    recomputeCumulativeTravelFromOrigin(stopId);
-    renderStopList();
   }
-  selectStop(stopId);
+
+  recomputeCumulativeTravelFromOrigin(stopId);
+  renderStopList();
+  selectStop(stopId);   // ★ 每次 click 行都即時顯示 ETA
 }
 
-async function selectStop(stopId) {
+
+function selectStop(stopId) {
   currentStopId = stopId;
-  clearStopSelectionUI();
-  const el = document.querySelector(`.stop-item[data-stop-id="${stopId}"]`);
-  if (el) el.classList.add("selected");
-  await Promise.all([
-    loadEtaDetailForStop(stopId),
-    loadEtaSummaryForAllStops(),
-    loadHeadwayInfo()
-  ]);
+
+  // 1. 高亮 Step 3 站列表
+  const allItems = document.querySelectorAll("#stopList .stop-item");
+  allItems.forEach(el => {
+    el.classList.toggle("selected", el.dataset.stopId === stopId);
+  });
+
+  // 2. 重新載入該站 ETA（沿用你原本 code）
+  const el = document.querySelector(`#stopList .stop-item[data-stop-id="${stopId}"]`);
+  if (!el) return;
+
+  const etaBlock = el.querySelector(".eta-block");
+  if (!etaBlock) return;
+  etaBlock.textContent = "載入 ETA 中...";
+
+  if (mainEtaTimer) {
+    clearInterval(mainEtaTimer);
+    mainEtaTimer = null;
+  }
+
+  async function loadEta() {
+    try {
+      const data = await fetchJSON(
+        `${BASE}/eta/${stopId}/${currentRoute.route}/${currentServiceType}`
+      );
+      let list = data.data || [];
+      if (currentDirectionCode) {
+        list = list.filter(item => item.dir === currentDirectionCode);
+      }
+
+      etaBlock.innerHTML = "";
+      if (!list.length) {
+        etaBlock.textContent = "暫時冇班次資料";
+      } else {
+        list.forEach(item => {
+          const { text, minutes, isScheduled, status, etaTime } = formatDetailLine(item);
+
+          const row = document.createElement("div");
+          row.className = "eta-row";
+          if (minutes <= 0) {
+            row.classList.add("eta-imminent");
+          } else {
+            row.style.color = grayColorByMinutes(minutes);
+          }
+
+          const contentNode = document.createElement("span");
+          contentNode.textContent = text;
+          if (isScheduled) contentNode.style.fontStyle = "italic";
+          row.appendChild(contentNode);
+
+          // 追蹤按鈕（如果你原本有）
+          const btnTrack = document.createElement("button");
+          btnTrack.className = "btn-track";
+          btnTrack.textContent = "追蹤";
+          btnTrack.onclick = (e) => {
+            e.stopPropagation();
+            setTrackingEta(
+              { id: item.eta_seq || null, etaTime, status },
+              row
+            );
+          };
+          row.appendChild(btnTrack);
+
+          etaBlock.appendChild(row);
+        });
+      }
+    } catch (e) {
+      console.error(e);
+      etaBlock.textContent = "載入 ETA 失敗：" + e.message;
+    }
+  }
+
+  loadEta();
+
+  mainEtaTimer = setInterval(loadEta, 30000);
+
+  // 3. 延遲 0.5 秒先移地圖 / 開 popup
+  setTimeout(() => {
+    focusMapToStop(stopId, 16, true);
+  }, 500);
+}
+
+function focusMapToStop(stopId, zoomLevel = 16, openPopup = false) {
+  if (!map || !stopsLayer || !stopId) return;
+  const info = allStopsMap.get(stopId);
+  if (!info) return;
+
+  const lat = parseFloat(info.lat);
+  const lon = parseFloat(info.long);
+  if (!isFinite(lat) || !isFinite(lon)) return;
+
+  map.setView([lat, lon], zoomLevel);
+
+  if (openPopup) {
+    stopsLayer.eachLayer(layer => {
+      if (!layer.getLatLng) return;
+      const ll = layer.getLatLng();
+      if (Math.abs(ll.lat - lat) < 1e-5 && Math.abs(ll.lng - lon) < 1e-5) {
+        if (layer.openPopup) layer.openPopup();
+      }
+    });
+  }
 }
 
 /* ========== Step3：估用家喺轉車站搭緊邊班車 ========== */
@@ -1497,52 +1642,97 @@ async function ensureDefaultTrackingAtOrigin() {
   }
 }
 
+function setInterchangeOrigin(stopId, stopName) {
+  mode = "interchange_pick";
+  originStopId = stopId;
+  transferStopId = stopId;
+  transferStopName = normalizeStopName(stopName);
 
-function findClosestMatchingBus(targetTime, targetStatus, actualEtas) {
-  const LIMIT_MIN = 10; // 允許最大時間差（分鐘）
+  // 你原本顯示 Step 4、更新 interchangeInfo / 控制區嘅代碼
+  const icInfo = document.getElementById("interchangeInfo");
+  if (icInfo) {
+    icInfo.textContent = `已選轉車站：${stopName}`;
+  }
+  const tSec = document.getElementById("transfer-search-section");
+  if (tSec) tSec.style.display = "block";
 
-  // 1. 優先：同 status（departed / not_departed），唔理預定與否
-  let best = null;
-  let bestDiffMin = Infinity;
+  // ★ 新增：即刻移地圖去轉車站，順便開 popup
+  focusMapToStop(stopId, 16, true);
+}
 
-  for (const bus of actualEtas) {
-    if (bus.status !== targetStatus) continue;
 
-    const diffMs  = bus.time.getTime() - targetTime.getTime();
-    const diffMin = Math.abs(diffMs) / 60000;
 
-    if (diffMin < bestDiffMin) {
-      bestDiffMin = diffMin;
-      best = bus;
+// targetTime: 預計到達轉車站時間（Date）
+// targetStatus: "not_departed" / "departed"
+// candidates: [{ time: Date, status: "not_departed"/"departed", isScheduled }]
+function findClosestMatchingBus(targetTime, targetStatus, candidates) {
+  if (!candidates || !candidates.length || !targetTime) {
+    return { type: "untrackable", bus: null, reason: "no_candidates" };
+  }
+
+  // ====== 1. 基於候選班次計車距（平均班距），再決定 LIMIT_MIN ======
+
+  // 將全部時間排序
+  const timesSorted = candidates
+    .map(c => c.time)
+    .filter(t => t instanceof Date && !isNaN(t))
+    .sort((a, b) => a - b);
+
+  let limitMin = 10; // default：計唔到車距就用 10 分鐘
+
+  if (timesSorted.length >= 2) {
+    const diffs = [];
+    for (let i = 1; i < timesSorted.length; i++) {
+      const diff = Math.round((timesSorted[i] - timesSorted[i - 1]) / 60000);
+      if (diff > 0) diffs.push(diff);
+    }
+    if (diffs.length) {
+      const sum = diffs.reduce((a, b) => a + b, 0);
+      const avgHeadway = sum / diffs.length;  // 平均車距（分鐘）
+      limitMin = avgHeadway / 2;             // ★ 用車距 / 2 當 LIMIT_MIN
     }
   }
 
-  if (best && bestDiffMin <= LIMIT_MIN) {
-    return { type: "match", bus: best, diffMin: bestDiffMin };
+  // ====== 2. 根據 targetStatus 分兩類搵最近 ======
+
+  // 目標 status 相同嘅候選
+  const sameStatus = candidates.filter(c => c.status === targetStatus);
+  // 目標 status 不同嘅候選（作備用）
+  const otherStatus = candidates.filter(c => c.status !== targetStatus);
+
+  function pickClosest(list) {
+    let best = null;
+    let bestAbsMin = Infinity;
+    list.forEach(c => {
+      const diffMs = c.time - targetTime;
+      const diffMin = diffMs / 60000;
+      const absMin = Math.abs(diffMin);
+      if (absMin < bestAbsMin) {
+        bestAbsMin = absMin;
+        best = { bus: c, diffMin, absMin };
+      }
+    });
+    return best;
   }
 
-  // 2. 後備：喺全部班次中揀最近一班（可以選擇避開預定）
-  best = null;
-  bestDiffMin = Infinity;
+  // 先喺同 status 裏面揀最近
+  let result = pickClosest(sameStatus);
 
-  for (const bus of actualEtas) {
-    // 如果你唔想 fallback 用預定，就打開呢行：
-    // if (bus.isScheduled) continue;
-
-    const diffMs  = bus.time.getTime() - targetTime.getTime();
-    const diffMin = Math.abs(diffMs) / 60000;
-
-    if (diffMin < bestDiffMin) {
-      bestDiffMin = diffMin;
-      best = bus;
-    }
+  // 如果同 status 入面冇任何候選，就用不同 status 做 fallback
+  if (!result && otherStatus.length) {
+    result = pickClosest(otherStatus);
   }
 
-  if (best && bestDiffMin <= LIMIT_MIN) {
-    return { type: "match", bus: best, diffMin: bestDiffMin };
+  if (!result) {
+    return { type: "untrackable", bus: null, reason: "no_match" };
   }
 
-  return { type: "untrackable" };
+  // 超出 LIMIT_MIN → 視為追蹤唔到
+  if (result.absMin > limitMin) {
+    return { type: "untrackable", bus: null, reason: "too_far", limitMin, diffMin: result.diffMin };
+  }
+
+  return { type: "ok", bus: result.bus, diffMin: result.diffMin, limitMin };
 }
 
 async function guessBoardingBusAtTransferStop() {
@@ -2055,12 +2245,52 @@ async function loadTransferRouteStopsForCurrentDirection() {
       }
     }, 30000);
 
+    // ★ 重點：搵預設第二程上車站
     if (transferStopName) {
-      const match = transferRouteStops.find(
+      let targetStop = null;
+
+      // 1) 優先用同名站
+      const nameMatch = transferRouteStops.find(
         s => normalizeStopName(s.name_tc) === transferStopName
       );
-      if (match) {
-        await selectTransferStop(match.stop_id);
+      if (nameMatch) {
+        targetStop = nameMatch;
+      } else if (transferStopId) {
+        // 2) 同名搵唔到，用直線最近站（<= 60 分鐘步行）
+        const originInfo = allStopsMap.get(transferStopId);
+        if (originInfo) {
+          const oLat = parseFloat(originInfo.lat);
+          const oLon = parseFloat(originInfo.long);
+          if (isFinite(oLat) && isFinite(oLon)) {
+            let best = null;
+            let bestMinutes = Infinity;
+
+            transferRouteStops.forEach(s => {
+              const info = allStopsMap.get(s.stop_id);
+              if (!info) return;
+              const lat = parseFloat(info.lat);
+              const lon = parseFloat(info.long);
+              if (!isFinite(lat) || !isFinite(lon)) return;
+
+              const dist = haversineDistanceMeters(oLat, oLon, lat, lon);
+              const mins = dist / (4000 / 60); // 4km/h
+              if (mins < bestMinutes) {
+                bestMinutes = mins;
+                best = s;
+              }
+            });
+
+            if (best && bestMinutes <= 60) {
+              targetStop = best;
+            }
+          }
+        }
+      }
+
+      if (targetStop) {
+        await selectTransferStop(targetStop.stop_id);
+        // 如你想 UI 顯示用 fallback 嗰個名，可以更新：
+        // transferStopName = normalizeStopName(targetStop.name_tc);
       }
     }
   } catch (e) {
@@ -2072,7 +2302,6 @@ async function loadTransferRouteStopsForCurrentDirection() {
     if (d2b) d2b.textContent = "班距資料不足。";
   }
 }
-
 
 
 
@@ -2440,12 +2669,12 @@ function renderTransferStopList() {
   });
 }
 
-
-function showRouteStopsOnMap(stops, highlightStopIds = []) {
+async function showRouteStopsOnMap(stops, highlightStopIds = []) {
   if (!map || !stopsLayer) return;
   stopsLayer.clearLayers();
 
-  const latlngs = [];
+  allStopMarkers = [];          // ★ 重新記錄所有 marker
+  const latlngsForFit = [];
 
   stops.forEach(s => {
     const info = allStopsMap.get(s.stop_id);
@@ -2457,55 +2686,34 @@ function showRouteStopsOnMap(stops, highlightStopIds = []) {
     const isHighlight = highlightStopIds.includes(s.stop_id);
 
     const marker = L.marker([lat, lon], {
-      icon: isHighlight ? highlightIcon : stopIcon
+      icon: createNumberedIcon(s.seq, isHighlight)
     }).addTo(stopsLayer);
 
-    // popup 文字，初步先出站名＋序號
     const basePopup = `${s.seq}. ${info.name_tc}`;
 
-    marker.bindPopup(`${basePopup}<br>載入 ETA 中...`);
+    marker.bindPopup(
+      `<div style="font-size:13px;">
+         <div style="font-weight:bold;margin-bottom:2px;">${basePopup}</div>
+       </div>`
+    );
 
-    // 點擊 marker 時，fetch ETA 再更新 popup
-    marker.on('click', async () => {
-      try {
-        const data = await fetchJSON(
-          `${BASE}/eta/${s.stop_id}/${currentRoute.route}/${currentServiceType}`
-        );
-        let list = data.data || [];
-        if (currentDirectionCode) {
-          list = list.filter(item => item.dir === currentDirectionCode);
-        }
-        if (!list.length) {
-          marker.setPopupContent(`${basePopup}<br>暫時冇班次資料`);
-          return;
-        }
-        const lines = list.slice(0, 3).map(item => {
-          const { text } = formatDetailLine(item);
-          return text;
-        });
-        marker.setPopupContent(
-          `${basePopup}<br>` + lines.join('<br>')
-        );
-      } catch (e) {
-        marker.setPopupContent(`${basePopup}<br>載入 ETA 失敗`);
-      }
-    });
+    marker.stopId = s.stop_id;   // ★ 之後用 stopId 搵 marker
+    allStopMarkers.push(marker); // ★ 收集起來
 
-    latlngs.push([lat, lon]);
+    latlngsForFit.push([lat, lon]);
   });
 
-  if (latlngs.length >= 2) {
-    L.polyline(latlngs, {
+  if (latlngsForFit.length) {
+    L.polyline(latlngsForFit, {
       color: '#1976d2',
       weight: 3,
       opacity: 0.7
     }).addTo(stopsLayer);
-  }
 
-  if (latlngs.length) {
-    map.fitBounds(latlngs, { padding: [20, 20] });
+    map.fitBounds(latlngsForFit, { padding: [20, 20] });
   }
 }
+
 
 function findNearestStopToLatLng(lat, lon, stops) {
   let best = null;
@@ -2551,6 +2759,20 @@ function toggleMapFullscreen() {
   }
 }
 
+
+function createNumberedIcon(seq, highlighted) {
+  const bg = highlighted ? '#0b3d91' : '#1976d2';
+  return L.divIcon({
+    className: 'numbered-marker-icon',
+    html: `<div class="numbered-marker" style="background:${bg}">${seq}</div>`,
+    iconSize: [24, 24],
+    iconAnchor: [12, 24],
+    popupAnchor: [0, -24]
+  });
+}
+
+
+
 // 令 Leaflet 喺全螢幕變化時重算尺寸
 function invalidateMapSizeOnFullscreenChange() {
   if (!map) return;
@@ -2564,6 +2786,65 @@ document.addEventListener('webkitfullscreenchange', invalidateMapSizeOnFullscree
 document.addEventListener('mozfullscreenchange', invalidateMapSizeOnFullscreenChange);
 document.addEventListener('MSFullscreenChange', invalidateMapSizeOnFullscreenChange);
 
+
+function selectSecondRoute(route, direction, transferStopId) {
+  // 1. 清除之前所有紅色 tag ＋ 轉車線
+  clearSecondRouteVisual();
+
+  secondTransferStopId = transferStopId;
+
+  // 2. 畫紅色 tag：顯示第二架車的 route（例如 route 號碼）
+  const stopsOfSecondRoute = getStopsForRouteAndDirection(route, direction); // 你已有資料來源
+
+  stopsOfSecondRoute.forEach(stop => {
+    const icon = L.divIcon({
+      className: "stop-label second-route",
+      html: `<span>${route}</span>`,   // 紅色 tag 上只顯示 route（例如 96、A21）
+      iconSize: null
+    });
+
+    const marker = L.marker([stop.lat, stop.lng], { icon }).addTo(map);
+    marker.stopId = stop.stop_id;
+    secondRouteMarkers.push(marker);
+  });
+
+  // 3. 如有兩個轉車站，畫綠色直線（用 polyline）
+  const firstMarker = allStopMarkers.find(m => m.stopId === currentTransferStopId);
+  const secondMarker = allStopMarkers.find(m => m.stopId === secondTransferStopId);
+
+  if (firstMarker && secondMarker) {
+    const latlngs = [firstMarker.getLatLng(), secondMarker.getLatLng()];
+
+    transferLine = L.polyline(latlngs, {
+      color: "green",
+      weight: 4
+    }).addTo(map);
+  }
+}
+
+
+function clearSecondRouteVisual() {
+  // 移除紅色 tag
+  secondRouteMarkers.forEach(m => map.removeLayer(m));
+  secondRouteMarkers = [];
+
+  // 移除綠色線
+  if (transferLine) {
+    map.removeLayer(transferLine);
+    transferLine = null;
+  }
+
+  secondTransferStopId = null;
+}
+
+function onShowAllStopsClick() {
+  clearSecondRouteVisual();
+  // 你原本 show 全部站的邏輯…
+}
+
+function onStep4Select(route, direction, transferStopId) {
+  selectSecondRoute(route, direction, transferStopId);
+}
 
 /* ========== 啟動 ========== */
 
