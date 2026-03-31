@@ -55,13 +55,12 @@ let userLat = null;
 let userLon = null;
 
 
-let allStopMarkers = [];        // 地圖上主線路所有站 marker
+let allStopMarkers = [];        // 主線路 marker（你之前 showRouteStopsOnMap 要有）
 let currentTransferStopId = null;
 
 let secondRouteMarkers = [];    // Step 4 第二架車（紅色 tag）markers
 let transferLine = null;        // 兩個轉車站之間的綠色線
 let secondTransferStopId = null;
-
 
 function initMap() {
   if (map) return;
@@ -918,6 +917,8 @@ function clearTransferState() {
 }
 
 function resetTransferOnly() {
+	clearSecondRouteVisual();   // ★ 新增：清晒第二程紅色標記 / 線
+	
   if (transferEtaTimer) { clearInterval(transferEtaTimer); transferEtaTimer = null; }
 
   transferRoute = null;
@@ -930,6 +931,7 @@ function resetTransferOnly() {
   transferCurrentInput = "";
   transferCandidateRoutes = [];
   transferKeyboardHidden = false;
+
 
   const t1 = document.getElementById("step4-title");
   if (t1) t1.style.display = "";
@@ -978,6 +980,9 @@ function resetTransferOnly() {
 /* ========== Step1 大清除 ========== */
 
 function resetAllState() {
+	
+  clearSecondRouteVisual();   // ★ 新增：Step 1 重設時都清晒紅色線 / 紅 tag
+  
   if (mode === "interchange_pick" || mode === "interchange_pair") {
     originStopId = null;
     transferStopId = null;
@@ -2304,6 +2309,62 @@ async function loadTransferRouteStopsForCurrentDirection() {
 }
 
 
+function clearSecondRouteVisual() {
+  // 移除紅色 tag
+  secondRouteMarkers.forEach(m => {
+    if (map.hasLayer(m)) map.removeLayer(m);
+  });
+  secondRouteMarkers = [];
+
+  // 移除綠色線
+  if (transferLine && map.hasLayer(transferLine)) {
+    map.removeLayer(transferLine);
+  }
+  transferLine = null;
+  secondTransferStopId = null;
+}
+
+function selectSecondRoute(transferStopId) {
+  if (!map || !transferRouteStops || !transferRouteStops.length) return;
+
+  clearSecondRouteVisual();
+
+  secondTransferStopId = transferStopId;
+
+  // 2. 用 transferRouteStops（Step 4 已經 load 好的站清單）畫紅色 tag
+  transferRouteStops.forEach(rs => {
+    const info = allStopsMap.get(rs.stop_id);
+    if (!info) return;
+    const lat = parseFloat(info.lat);
+    const lon = parseFloat(info.long);
+    if (!isFinite(lat) || !isFinite(lon)) return;
+
+    const icon = L.divIcon({
+      className: "stop-label second-route",
+      html: `<span>${transferRoute.route}</span>`,  // 顯示第二架車 route 號
+      iconSize: null
+    });
+
+    const marker = L.marker([lat, lon], { icon }).addTo(map);
+    marker.stopId = rs.stop_id;
+    secondRouteMarkers.push(marker);
+  });
+
+  // 3. 如有兩個轉車站，畫綠色直線（第一程轉車站 A － 第二程轉車站 B）
+  const firstMarker = allStopMarkers.find(m => m.stopId === currentTransferStopId);
+  const secondMarker = secondRouteMarkers.find(m => m.stopId === secondTransferStopId);
+
+  if (firstMarker && secondMarker) {
+    const latlngs = [firstMarker.getLatLng(), secondMarker.getLatLng()];
+
+    transferLine = L.polyline(latlngs, {
+      color: "green",
+      weight: 4
+    }).addTo(map);
+  }
+}
+
+
 
 
 function shrinkTransferLayoutAfterDirectionChosen() {
@@ -2598,11 +2659,14 @@ async function selectTransferStop(stopId) {
     }
   }
 
-  // ★ 只顯示被揀嘅轉車後站
-  const allItems = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
-  allItems.forEach(node => {
-    node.style.display = (node.dataset.stopId === stopId) ? "" : "none";
-  });
+		const allItems = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
+		allItems.forEach(node => {
+		  node.style.display = (node.dataset.stopId === stopId) ? "" : "none";
+		});
+
+		// ★ 新增：畫第二架車 route + 綠線
+		selectSecondRoute(stopId);
+}
 
   // ★ 喺 transferHeadwayInfo 加「顯示全部站」按鈕
   const infoDiv = document.getElementById("transferHeadwayInfo");
@@ -2622,7 +2686,7 @@ async function selectTransferStop(stopId) {
 
     infoDiv.appendChild(document.createTextNode(" "));
     infoDiv.appendChild(btnShowAll);
-  }
+  
 }
 
 
@@ -2787,30 +2851,60 @@ document.addEventListener('mozfullscreenchange', invalidateMapSizeOnFullscreenCh
 document.addEventListener('MSFullscreenChange', invalidateMapSizeOnFullscreenChange);
 
 
-function selectSecondRoute(route, direction, transferStopId) {
-  // 1. 清除之前所有紅色 tag ＋ 轉車線
+function selectSecondRoute(transferStopId) {
+  if (!map || !transferRouteStops || !transferRouteStops.length) return;
+
   clearSecondRouteVisual();
 
   secondTransferStopId = transferStopId;
 
-  // 2. 畫紅色 tag：顯示第二架車的 route（例如 route 號碼）
-  const stopsOfSecondRoute = getStopsForRouteAndDirection(route, direction); // 你已有資料來源
+  const latlngsForSecond = [];
 
-  stopsOfSecondRoute.forEach(stop => {
+  // 2. 用 transferRouteStops 畫紅色 tag（第二架車全線）
+  transferRouteStops.forEach(rs => {
+    const info = allStopsMap.get(rs.stop_id);
+    if (!info) return;
+    const lat = parseFloat(info.lat);
+    const lon = parseFloat(info.long);
+    if (!isFinite(lat) || !isFinite(lon)) return;
+
+    // 順序號碼（根據 seq）
+    const label = rs.seq ?? "";
+
     const icon = L.divIcon({
       className: "stop-label second-route",
-      html: `<span>${route}</span>`,   // 紅色 tag 上只顯示 route（例如 96、A21）
+      html: `<span>${label}</span>`,   // 顯示順序號碼
       iconSize: null
     });
 
-    const marker = L.marker([stop.lat, stop.lng], { icon }).addTo(map);
-    marker.stopId = stop.stop_id;
+    const marker = L.marker([lat, lon], { icon }).addTo(map);
+    marker.stopId = rs.stop_id;
+
+    // popup 顯示站名
+    const name = info.name_tc || rs.stop_id;
+    marker.bindPopup(
+      `<div style="font-size:13px;">
+         <div style="font-weight:bold;margin-bottom:2px;">${rs.seq}. ${name}</div>
+       </div>`
+    );
+
     secondRouteMarkers.push(marker);
+    latlngsForSecond.push([lat, lon]);
   });
 
-  // 3. 如有兩個轉車站，畫綠色直線（用 polyline）
-  const firstMarker = allStopMarkers.find(m => m.stopId === currentTransferStopId);
-  const secondMarker = allStopMarkers.find(m => m.stopId === secondTransferStopId);
+  // 紅色路線（好似第一程藍線咁）
+  if (latlngsForSecond.length >= 2) {
+    const redLine = L.polyline(latlngsForSecond, {
+      color: "#ff5252",
+      weight: 3,
+      opacity: 0.8
+    }).addTo(map);
+    secondRouteMarkers.push(redLine); // 一齊放入，clear 時會移除
+  }
+
+  // 3. 如有兩個轉車站，畫綠色直線
+  const firstMarker = allStopMarkers.find(m => m.stopId === transferStopId);
+  const secondMarker = secondRouteMarkers.find(m => m.stopId === transferStopId);
 
   if (firstMarker && secondMarker) {
     const latlngs = [firstMarker.getLatLng(), secondMarker.getLatLng()];
