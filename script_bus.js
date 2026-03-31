@@ -47,6 +47,25 @@ let selectedEtaId = null;
 let selectedEtaTime = null;
 let selectedEtaStatus = null;
 
+
+let map = null;
+let stopsLayer = null;
+
+function initMap() {
+  if (map) return;
+  map = L.map('map').setView([22.32, 114.17], 12); // 大約香港中間
+
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '&copy; OpenStreetMap contributors'
+  }).addTo(map);
+
+  stopsLayer = L.layerGroup().addTo(map);
+}
+
+
+
+
 /* ========== FETCH（帶自動重試） ========== */
 
 async function fetchJSON(url, retries = 5, delayMs = 200) {
@@ -2285,3 +2304,5 @@ function renderTransferStopList() {
 /* ========== 啟動 ========== */
 
 init();
+
+initMap();
