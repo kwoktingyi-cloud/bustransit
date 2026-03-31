@@ -38,6 +38,10 @@ let routesByStopId = {};
 let etaTimesByStop = {};
 let cumulativeTravelFromOrigin = null;
 
+// 轉車站追蹤結果：成功時儲存實際到達轉車站時間（第一架）
+// 追蹤唔到 / 未追蹤就係 null
+let trackedTransferArriveTime = null;
+
 // 追蹤上車站班次
 let selectedEtaId = null;
 let selectedEtaTime = null;
@@ -167,20 +171,24 @@ function getTimeOfDayFactor(date) {
   const m = date.getMinutes();
   const t = h * 60 + m;
 
-  if (day === 0) return 0.9;
-  if (day === 6) return 0.8;
+  // 週日
+  if (day === 0) return 1.0;   // 原本 0.9
 
-  const basePeak = 0.6;
+  // 週六
+  if (day === 6) return 0.9;   // 原本 0.8
 
-  const m1_start = 6*60 + 30;
-  const m1_peakS = 7*60 + 30;
-  const m1_peakE = 9*60 + 30;
-  const m1_end   = 10*60 + 30;
+  // 星期一至五
+  const basePeak = 0.8;        // 原本 0.6（最慢）
 
-  const e1_start = 16*60;
-  const e1_peakS = 17*60;
-  const e1_peakE = 19*60 + 30;
-  const e1_end   = 20*60 + 30;
+  const m1_start = 6 * 60 + 30;
+  const m1_peakS = 7 * 60 + 30;
+  const m1_peakE = 9 * 60 + 30;
+  const m1_end   = 10 * 60 + 30;
+
+  const e1_start = 16 * 60;
+  const e1_peakS = 17 * 60;
+  const e1_peakE = 19 * 60 + 30;
+  const e1_end   = 20 * 60 + 30;
 
   if (t < m1_start) {
     return 1;
@@ -208,6 +216,7 @@ function getTimeOfDayFactor(date) {
 
   return 1;
 }
+
 
 function getSegmentEffectiveSpeedKmH(distanceMeters, now = new Date()) {
   const baseSpeed = getSegmentBaseSpeedKmH(distanceMeters);
@@ -1378,9 +1387,10 @@ function findClosestMatchingBus(targetTime, targetStatus, actualEtas) {
 }
 
 async function guessBoardingBusAtTransferStop() {
+  // 條件唔齊，一律當追蹤唔到
   if (!selectedEtaTime || !originStopId || !transferStopId || !cumulativeTravelFromOrigin) {
+    trackedTransferArriveTime = null;
     setBoardingInfoTextForTransferStop("無法追蹤");
-    // 清除轉車站 highlight
     const stopEl0 = document.querySelector(`.stop-item[data-stop-id="${transferStopId}"]`);
     if (stopEl0) {
       stopEl0.querySelectorAll(".eta-row.transfer-tracked")
@@ -1389,6 +1399,7 @@ async function guessBoardingBusAtTransferStop() {
     return;
   }
   if (!currentRoute || !currentDirectionCode) {
+    trackedTransferArriveTime = null;
     setBoardingInfoTextForTransferStop("無法追蹤");
     const stopEl0 = document.querySelector(`.stop-item[data-stop-id="${transferStopId}"]`);
     if (stopEl0) {
@@ -1407,6 +1418,7 @@ async function guessBoardingBusAtTransferStop() {
 
   const info = cumulativeTravelFromOrigin[transferStopId];
   if (!info) {
+    trackedTransferArriveTime = null;
     setBoardingInfoTextForTransferStop("無法追蹤");
     return;
   }
@@ -1415,7 +1427,6 @@ async function guessBoardingBusAtTransferStop() {
   const travelMin = info.travelMinutes || 0;
   const arriveAtTransfer = new Date(departTime.getTime() + travelMin * 60000);
 
-  let actualEtas = [];
   try {
     const data = await fetchJSON(
       `${BASE}/eta/${transferStopId}/${currentRoute.route}/${currentServiceType}`
@@ -1423,60 +1434,66 @@ async function guessBoardingBusAtTransferStop() {
     let list = data.data || [];
     list = list.filter(item => item.dir === currentDirectionCode && item.eta);
 
-    actualEtas = list.map(item => {
-      const detail = formatDetailLine(item);
+    if (!list.length) {
+      trackedTransferArriveTime = null;
+      setBoardingInfoTextForTransferStop("無法追蹤");
+      return;
+    }
+
+    const actualEtas = list.map((item, idx) => {
+      const d = formatDetailLine(item);
+      if (!d.etaTime) return null;
       return {
-        time: detail.etaTime,
-        isScheduled: detail.isScheduled,
-        status: detail.status,
-        raw: item
+        index: idx,
+        time: d.etaTime,
+        status: d.status,
+        isScheduled: d.isScheduled
       };
-    }).filter(x => x.time);
+    }).filter(Boolean);
+
+    if (!actualEtas.length) {
+      trackedTransferArriveTime = null;
+      setBoardingInfoTextForTransferStop("無法追蹤");
+      return;
+    }
+
+    const targetStatus = selectedEtaStatus || "not_departed";
+    const result = findClosestMatchingBus(arriveAtTransfer, targetStatus, actualEtas);
+
+    if (result.type === "untrackable") {
+      trackedTransferArriveTime = null;
+      setBoardingInfoTextForTransferStop("無法追蹤");
+      return;
+    }
+
+    const matched = result.bus;
+
+    // ★ 成功追蹤：記低實際到達轉車站時間（第一架）
+    trackedTransferArriveTime = matched.time;
+
+    const tStr = formatTimeHHMM(matched.time);
+    setBoardingInfoTextForTransferStop(`搭緊：${tStr}`);
+
+    // 同步高亮轉車站 eta-block 入面對應嗰行（可選，視乎你原本有冇做）
+    if (stopElInit) {
+      const etaRows = stopElInit.querySelectorAll(".eta-row");
+      etaRows.forEach(row => {
+        const span = row.querySelector("span");
+        if (!span) return;
+        const text = span.textContent || "";
+        if (text.startsWith(tStr)) {
+          row.classList.add("transfer-tracked");
+        } else {
+          row.classList.remove("transfer-tracked");
+        }
+      });
+    }
+
   } catch (e) {
-    console.error("guessBoardingBusAtTransferStop fetch error", e);
+    console.error("guessBoardingBusAtTransferStop error", e);
+    trackedTransferArriveTime = null;
     setBoardingInfoTextForTransferStop("無法追蹤");
-    return;
   }
-
-  if (!actualEtas.length) {
-    setBoardingInfoTextForTransferStop("無法追蹤");
-    return;
-  }
-
-  const targetStatus = selectedEtaStatus || "not_departed";
-  const result = findClosestMatchingBus(arriveAtTransfer, targetStatus, actualEtas);
-
-  if (result.type === "untrackable") {
-    setBoardingInfoTextForTransferStop("無法追蹤");
-    // 再保險清多次 highlight
-    const stopEl2 = document.querySelector(`.stop-item[data-stop-id="${transferStopId}"]`);
-    if (stopEl2) {
-      stopEl2.querySelectorAll(".eta-row.transfer-tracked")
-        .forEach(row => row.classList.remove("transfer-tracked"));
-    }
-    return;
-  }
-
-  const matched = result.bus;
-  const tStr = formatTimeHHMM(matched.time);
-  setBoardingInfoTextForTransferStop(`搭緊：${tStr}`);
-
-  const stopEl = document.querySelector(`.stop-item[data-stop-id="${transferStopId}"]`);
-  if (!stopEl) return;
-
-  const etaRows = stopEl.querySelectorAll(".eta-row");
-  etaRows.forEach(row => row.classList.remove("transfer-tracked"));
-
-  const hhmm = formatTimeHHMM(matched.time);
-
-  etaRows.forEach(row => {
-    const span = row.querySelector("span");
-    if (!span) return;
-    const text = span.textContent || "";
-    if (text.startsWith(hhmm)) {
-      row.classList.add("transfer-tracked");
-    }
-  });
 }
 
 
@@ -2099,135 +2116,182 @@ function clearTransferStopSelectionUI() {
 
 async function selectTransferStop(stopId) {
   transferCurrentStopId = stopId;
-  clearTransferStopSelectionUI();
-  const el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"]`);
-  if (!el) return;
-  el.classList.add("selected");
 
-  const etaBlock = el.querySelector(".eta-block");
-  etaBlock.textContent = "載入 ETA 中...";
+  const allItems = document.querySelectorAll("#transferStopList .transfer-stop-item");
+  allItems.forEach(el => {
+    el.classList.toggle("selected", el.dataset.stopId === stopId);
+  });
 
-  let etaList = [];
+  const etaContainer = document.getElementById("transferHeadwayInfo");
+  if (etaContainer) etaContainer.textContent = "載入 ETA 中...";
+
   try {
     const data = await fetchJSON(
       `${BASE}/eta/${stopId}/${transferRoute.route}/${transferServiceType}`
     );
     let list = data.data || [];
-    if (transferDirectionCode) {
-      list = list.filter(item => item.dir === transferDirectionCode);
+    list = list.filter(item => item.dir === transferDirectionCode && item.eta);
+
+    const detailList = list.map((item, idx) => {
+      const d = formatDetailLine(item);
+      return {
+        idx,
+        ...d,
+        raw: item
+      };
+    });
+
+    const container = document.getElementById("transferHeadwayInfo");
+    if (!container) return;
+    container.innerHTML = "";
+
+    if (!detailList.length) {
+      container.textContent = "未有班次資料。";
+      return;
     }
-    etaList = list;
 
-    etaBlock.innerHTML = "";
-    if (!list.length) {
-      etaBlock.textContent = "暫時冇班次資料";
-    } else {
-      list.forEach(item => {
-        const { text, minutes, isScheduled } = formatDetailLine(item);
-        const row = document.createElement("div");
-        row.className = "eta-row";
-        if (minutes <= 0) {
-          row.classList.add("eta-imminent");
-        } else {
-          row.style.color = grayColorByMinutes(minutes); // 如你已改 class，可換回 class
-        }
-        const contentNode = document.createElement("span");
-        contentNode.textContent = text;
-        if (isScheduled) contentNode.style.fontStyle = "italic";
-        row.appendChild(contentNode);
-        etaBlock.appendChild(row);
-      });
-    }
-  } catch (e) {
-    console.error(e);
-    etaBlock.textContent = "載入 ETA 失敗：" + e.message;
-  }
+    const ul = document.createElement("ul");
+    ul.className = "eta-list";
 
-  await loadTransferHeadwayInfo();
+    detailList.forEach(d => {
+      const li = document.createElement("li");
+      li.className = "eta-row";
 
-  const walkInfoDiv = document.getElementById("transferWalkInfo");
-  let summaryText = "";
+      const span = document.createElement("span");
+      span.textContent = d.text;
 
-  if (transferStopId && selectedEtaTime && cumulativeTravelFromOrigin) {
-    const originInfo = cumulativeTravelFromOrigin[transferStopId];
-    if (originInfo) {
-      const travelMin = originInfo.travelMinutes || 0;
-      const walkMinRaw = walkingMinutesBetweenStops(transferStopId, stopId);
-      const walkMin = walkMinRaw == null ? 0 : walkMinRaw;
-
-      const arriveAtC = new Date(
-        selectedEtaTime.getTime() + (travelMin + walkMin) * 60000
-      );
-
-      // 找第一班 eta >= arriveAtC
-      let bestBus = null;
-      let bestWaitMin = Infinity;
-
-      etaList.forEach(item => {
-        if (!item.eta) return;
-        const etaTime = new Date(item.eta);
-        const diffMs = etaTime - arriveAtC;
-        const diffMin = diffMs / 60000;
-        if (diffMin >= 0 && diffMin < bestWaitMin) {
-          bestWaitMin = diffMin;
-          bestBus = { etaTime, raw: item };
-        }
-      });
-
-      // 步行時間文字
-      let walkText;
-      if (walkMin < 1) walkText = "<1分鐘";
-      else if (walkMin > 60) walkText = ">1小時";
-      else walkText = `${Math.round(walkMin)}分鐘`;
-
-      // 清除舊紅色 highlight
-      const rows = el.querySelectorAll(".eta-row");
-		rows.forEach(row => row.classList.remove("transfer-tracked"));
-
-
-
-      if (!bestBus || !isFinite(bestWaitMin)) {
-        // ★ 無下一班可接：只顯示步行 + 約幾點到達
-        const hhmmArrive = formatTimeHHMM(arriveAtC);
-        summaryText = `步行：約 ${walkText}；未有班次（約 ${hhmmArrive} 到達轉車站）`;
+      // 灰階／顏色
+      if (d.minutes <= 1) {
+        li.classList.add("eta-row-gray-1");
+      } else if (d.minutes <= 5) {
+        li.classList.add("eta-row-gray-2");
+      } else if (d.minutes <= 10) {
+        li.classList.add("eta-row-gray-3");
+      } else if (d.minutes <= 20) {
+        li.classList.add("eta-row-gray-4");
       } else {
-        // 有班次可接：顯示步行＋等候，並 highlight 嗰班
-        let waitText;
-        if (bestWaitMin < 1) waitText = "<1分鐘";
-        else if (bestWaitMin > 60) waitText = ">1小時";
-        else waitText = `${Math.round(bestWaitMin)}分鐘`;
+        li.classList.add("eta-row-gray-5");
+      }
 
-        summaryText = `步行：約 ${walkText}；轉車等候：約 ${waitText}`;
+      li.appendChild(span);
+      ul.appendChild(li);
+    });
 
-        const hhmm = formatTimeHHMM(bestBus.etaTime);
-		rows.forEach(row => {
-		  const span = row.querySelector("span");
-		  if (!span) return;
-		  const text = span.textContent || "";
-		  if (text.startsWith(hhmm)) {
-			row.classList.add("transfer-tracked");
-		  }
-		});
+    container.appendChild(ul);
+
+    // ====== 以下：計算「步行＋等候時間」＋ highlight 可接嗰班 ======
+
+    const etaList = detailList;
+
+    if (transferStopId && selectedEtaTime && cumulativeTravelFromOrigin) {
+      const originInfo = cumulativeTravelFromOrigin[transferStopId];
+      if (originInfo) {
+        const travelMin = originInfo.travelMinutes || 0;
+        const walkMinRaw = walkingMinutesBetweenStops(transferStopId, stopId);
+        const walkMin = walkMinRaw == null ? 0 : walkMinRaw;
+
+        // ★ Case 1 / Case 2：決定到達第二程上車站時間 arriveAtC
+        let arriveAtC;
+        if (trackedTransferArriveTime) {
+          // Case 1: Step 3 成功追蹤到轉車站實際到達時間
+          arriveAtC = new Date(trackedTransferArriveTime.getTime() + walkMin * 60000);
+        } else {
+          // Case 2: 追蹤唔到，用原本系統推算（車程 + 步行）
+          arriveAtC = new Date(
+            selectedEtaTime.getTime() + (travelMin + walkMin) * 60000
+          );
+        }
+
+        let bestBus = null;
+        let bestWaitMin = Infinity;
+
+        etaList.forEach(item => {
+          if (!item.etaTime) return;
+          const etaTime = item.etaTime;
+          const diffMs = etaTime - arriveAtC;
+          const diffMin = diffMs / 60000;
+          if (diffMin >= 0 && diffMin < bestWaitMin) {
+            bestWaitMin = diffMin;
+            bestBus = { etaTime, raw: item };
+          }
+        });
+
+        const mainLine = document.getElementById("transfer-main-line");
+        const walkInfo = document.getElementById("transferWalkInfo");
+
+        if (!bestBus) {
+          if (mainLine) {
+            const arriveStr = formatTimeHHMM(arriveAtC);
+            mainLine.innerHTML =
+              `轉車路線：${transferRoute.route}（${transferRoute.orig_tc} ↔ ${transferRoute.dest_tc}）` +
+              `，暫時未有下一班可以接駁，預計約 ${arriveStr} 抵達轉車站。`;
+          }
+          if (walkInfo) {
+            let txt = "";
+            if (walkMinRaw == null) {
+              txt = `步行時間：未知（系統計算）`;
+            } else if (walkMin <= 0) {
+              txt = `步行時間：<1 分鐘`;
+            } else {
+              txt = `步行時間：約 ${Math.round(walkMin)} 分鐘`;
+            }
+            walkInfo.textContent = txt;
+          }
+          // 無可接班次，就唔做紅色 highlight
+          return;
+        }
+
+        // 有可接班次：計 summary
+        const busTime = bestBus.etaTime;
+        const busTimeStr = formatTimeHHMM(busTime);
+        const waitMin = Math.round(bestWaitMin);
+
+        if (mainLine) {
+          let base =
+            `轉車路線：${transferRoute.route}（${transferRoute.orig_tc} ↔ ${transferRoute.dest_tc}）` +
+            `，預計可接 ${busTimeStr} 開出的班次。`;
+
+          if (waitMin > 0) {
+            base += ` 由到達轉車站至上車，約等 ${waitMin} 分鐘。`;
+          } else {
+            base += ` 幾乎即刻可以上車。`;
+          }
+
+          mainLine.innerHTML = base;
+        }
+
+        if (walkInfo) {
+          let txt = "";
+          if (walkMinRaw == null) {
+            txt = `步行時間：未知（系統計算）`;
+          } else if (walkMin <= 0) {
+            txt = `步行時間：<1 分鐘`;
+          } else {
+            txt = `步行時間：約 ${Math.round(walkMin)} 分鐘`;
+          }
+          walkInfo.textContent = txt;
+        }
+
+        // 高亮 Step 4 裏面第二程可以接到嗰班（紅色）
+        const rows = container.querySelectorAll(".eta-row");
+        rows.forEach(row => row.classList.remove("transfer-tracked"));
+        const hhmm = busTimeStr;
+        rows.forEach(row => {
+          const span = row.querySelector("span");
+          if (!span) return;
+          const text = span.textContent || "";
+          if (text.startsWith(hhmm)) {
+            row.classList.add("transfer-tracked");
+          }
+        });
       }
     }
+  } catch (e) {
+    console.error("selectTransferStop error", e);
+    const container = document.getElementById("transferHeadwayInfo");
+    if (container) container.textContent = "載入 ETA 失敗。";
   }
-
-  if (walkInfoDiv) {
-    if (summaryText) {
-      walkInfoDiv.style.fontSize = "13px";
-      walkInfoDiv.style.fontWeight = "bold";  // 步行/轉車行大隻啲
-      walkInfoDiv.textContent = summaryText;
-    } else {
-      walkInfoDiv.textContent = "";
-    }
-  }
-
-  const allItems = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
-  allItems.forEach(node => {
-    node.style.display = (node.dataset.stopId === stopId) ? "" : "none";
-  });
 }
-
 
 /* ========== 啟動 ========== */
 
