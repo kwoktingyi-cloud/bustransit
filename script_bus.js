@@ -2456,12 +2456,14 @@ function renderTransferStopList() {
 }
 
 
-function showRouteStopsOnMap(stops, highlightStopIds = []) {
+async function showRouteStopsOnMap(stops, highlightStopIds = []) {
   if (!map || !stopsLayer) return;
   stopsLayer.clearLayers();
 
-  const latlngs = [];
+  const latlngsForFit = [];
 
+  // 1. 先畫所有站嘅 marker
+  const stopLatLngs = []; // [{stop, lat, lon}]
   stops.forEach(s => {
     const info = allStopsMap.get(s.stop_id);
     if (!info) return;
@@ -2475,12 +2477,9 @@ function showRouteStopsOnMap(stops, highlightStopIds = []) {
       icon: isHighlight ? highlightIcon : stopIcon
     }).addTo(stopsLayer);
 
-    // popup 文字，初步先出站名＋序號
     const basePopup = `${s.seq}. ${info.name_tc}`;
-
     marker.bindPopup(`${basePopup}<br>載入 ETA 中...`);
 
-    // 點擊 marker 時，fetch ETA 再更新 popup
     marker.on('click', async () => {
       try {
         const data = await fetchJSON(
@@ -2506,21 +2505,63 @@ function showRouteStopsOnMap(stops, highlightStopIds = []) {
       }
     });
 
-    latlngs.push([lat, lon]);
+    latlngsForFit.push([lat, lon]);
+    stopLatLngs.push({ stop: s, lat, lon });
   });
 
-  if (latlngs.length >= 2) {
+  // 2. 用 ORS 為每對相鄰站畫駕車路線（駛線）
+  //    注意：呢度會對每段 call 一次 API，如果路線好長，可能要考慮節流／cache
+  for (let i = 0; i < stopLatLngs.length - 1; i++) {
+    const a = stopLatLngs[i];
+    const b = stopLatLngs[i + 1];
+    await drawDrivingSegment(a.lat, a.lon, b.lat, b.lon);
+  }
+
+  // 3. fit 視野去全部站
+  if (latlngsForFit.length) {
+    map.fitBounds(latlngsForFit, { padding: [20, 20] });
+  }
+}
+
+
+// 用 OpenRouteService 畫一段駕車路線：fromLat,fromLon → toLat,toLon
+async function drawDrivingSegment(fromLat, fromLon, toLat, toLon) {
+  try {
+    const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${encodeURIComponent(ORS_API_KEY)}`;
+    const body = {
+      coordinates: [
+        [fromLon, fromLat],
+        [toLon, toLat]
+      ]
+    };
+
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+    if (!res.ok) throw new Error('ORS HTTP ' + res.status);
+    const data = await res.json();
+
+    const coords = data.features?.[0]?.geometry?.coordinates || [];
+    if (!coords.length) return;
+
+    const latlngs = coords.map(c => [c[1], c[0]]);
+
     L.polyline(latlngs, {
       color: '#1976d2',
       weight: 3,
-      opacity: 0.7
+      opacity: 0.8
     }).addTo(stopsLayer);
-  }
-
-  if (latlngs.length) {
-    map.fitBounds(latlngs, { padding: [20, 20] });
+  } catch (e) {
+    console.error('drawDrivingSegment error', e);
+    // 失敗就唔畫呢一段，整體唔會死
   }
 }
+
+
 
 function findNearestStopToLatLng(lat, lon, stops) {
   let best = null;
