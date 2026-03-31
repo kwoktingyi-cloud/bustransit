@@ -54,6 +54,17 @@ let stopsLayer = null;
 let userLat = null;
 let userLon = null;
 
+let routingControl = null;
+const ORS_API_KEY = 'YOUR_ORS_KEY_HERE'; // 換成你真 key
+
+function clearRoutingLine() {
+  if (routingControl) {
+    map.removeControl(routingControl);
+    routingControl = null;
+  }
+}
+
+
 function initMap() {
   if (map) return;
 
@@ -1232,6 +1243,10 @@ async function loadRouteStopsForCurrentDirection() {
 	
 	  showRouteStopsOnMap(routeStops, hl);
 		zoomToNearestStopIfHaveGPS();
+		
+		// 再用 ORS 畫真正行路路線
+		showWalkingRouteUserToNearestStop();
+		
 	
   } catch (e) {
     console.error(e);
@@ -2563,6 +2578,65 @@ document.addEventListener('fullscreenchange', invalidateMapSizeOnFullscreenChang
 document.addEventListener('webkitfullscreenchange', invalidateMapSizeOnFullscreenChange);
 document.addEventListener('mozfullscreenchange', invalidateMapSizeOnFullscreenChange);
 document.addEventListener('MSFullscreenChange', invalidateMapSizeOnFullscreenChange);
+
+
+function showWalkingRouteUserToNearestStop() {
+  if (!map || userLat == null || userLon == null) return;
+  if (!routeStops || !routeStops.length) return;
+
+  const nearest = findNearestStopToLatLng(userLat, userLon, routeStops);
+  if (!nearest) return;
+
+  const info = allStopsMap.get(nearest.stop.stop_id);
+  if (!info) return;
+
+  const stopLat = parseFloat(info.lat);
+  const stopLon = parseFloat(info.long);
+  if (!isFinite(stopLat) || !isFinite(stopLon)) return;
+
+  clearRoutingLine();
+
+  routingControl = L.Routing.control({
+    waypoints: [
+      L.latLng(userLat, userLon),
+      L.latLng(stopLat, stopLon)
+    ],
+    router: L.Routing.openrouteservice(ORS_API_KEY, {
+      profile: 'foot-walking', // 行路 profile
+      // 你可以加 extra parameters，例如 avoid_features 等
+    }),
+    lineOptions: {
+      styles: [{ color: '#2e7d32', weight: 5, opacity: 0.8 }]
+    },
+    addWaypoints: false,
+    draggableWaypoints: false,
+    fitSelectedRoutes: true,
+    show: false // 不顯示右邊 turn-by-turn panel
+  }).addTo(map);
+
+  // 顯示行路距離 / 時間（用 routing result）
+  routingControl.on('routesfound', (e) => {
+    const route = e.routes[0];
+    if (!route || !route.summary) return;
+    const meters = route.summary.totalDistance;
+    const seconds = route.summary.totalTime;
+
+    const mins = seconds / 60;
+    let text;
+    if (mins < 1) text = '<1分鐘';
+    else if (mins > 60) text = '>1小時';
+    else text = `${Math.round(mins)}分鐘`;
+
+    const infoDiv = document.getElementById('userWalkInfo') || document.getElementById('transferWalkInfo');
+    if (infoDiv) {
+      infoDiv.style.fontSize = '12px';
+      infoDiv.style.color = '#444';
+      infoDiv.textContent =
+        `由你目前位置步行到最近車站：約 ${text}（約 ${(meters/1000).toFixed(2)} 公里）`;
+    }
+  });
+}
+
 
 
 /* ========== 啟動 ========== */
