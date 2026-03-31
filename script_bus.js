@@ -2292,7 +2292,6 @@ async function selectTransferStop(stopId) {
     if (container) container.textContent = "載入 ETA 失敗。";
   }
 }
-
 /* ========== 啟動 ========== */
 
 init();
