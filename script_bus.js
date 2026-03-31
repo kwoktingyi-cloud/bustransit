@@ -51,6 +51,9 @@ let selectedEtaStatus = null;
 let map = null;
 let stopsLayer = null;
 
+let userLat = null;
+let userLon = null;
+
 function initMap() {
   if (map) return;
 
@@ -63,33 +66,88 @@ function initMap() {
   }).addTo(map);
 
   stopsLayer = L.layerGroup().addTo(map);
+  const FullscreenControl = L.Control.extend({
+  options: {
+    position: 'bottomright'
+  },
+  onAdd: function () {
+    const container = L.DomUtil.create('div', 'leaflet-bar');
+    const btn = L.DomUtil.create('div', 'leaflet-control-fullscreen-btn', container);
+    btn.title = '全螢幕 / 還原';
+
+    // 用符號表示：未全螢幕時顯示「⤢」，全螢幕時顯示「⤡」
+    btn.textContent = '⤢';
+
+    L.DomEvent.disableClickPropagation(container);
+    L.DomEvent.on(btn, 'click', (e) => {
+      e.preventDefault();
+      toggleMapFullscreen();
+    });
+
+    // 監聽 fullscreen 狀態改變圖示
+    const updateIcon = () => {
+      const mapDiv = document.getElementById('map');
+      const isFullscreen =
+        document.fullscreenElement === mapDiv ||
+        document.webkitFullscreenElement === mapDiv ||
+        document.mozFullScreenElement === mapDiv ||
+        document.msFullscreenElement === mapDiv;
+      btn.textContent = isFullscreen ? '⤡' : '⤢';
+    };
+
+    document.addEventListener('fullscreenchange', updateIcon);
+    document.addEventListener('webkitfullscreenchange', updateIcon);
+    document.addEventListener('mozfullscreenchange', updateIcon);
+    document.addEventListener('MSFullscreenChange', updateIcon);
+
+    return container;
+  }
+});
+
+map.addControl(new FullscreenControl());
 
   // 之後再試用家 GPS
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        const lat = pos.coords.latitude;
-        const lon = pos.coords.longitude;
-        map.setView([lat, lon], 15);
+if (navigator.geolocation) {
+  navigator.geolocation.getCurrentPosition(
+    (pos) => {
+      userLat = pos.coords.latitude;
+      userLon = pos.coords.longitude;
 
-        // 可選：畫一點代表用家位置
-        L.circleMarker([lat, lon], {
-          radius: 6,
-          color: '#2e7d32',
-          fillColor: '#66bb6a',
-          fillOpacity: 0.9
-        }).addTo(map).bindPopup('你的位置');
-      },
-      (err) => {
-        console.warn('Geolocation error:', err.message);
-        // 失敗就保持預設中心
-      },
-      { enableHighAccuracy: true, timeout: 8000 }
-    );
-  }
+      map.setView([userLat, userLon], 15);
+
+      L.circleMarker([userLat, userLon], {
+        radius: 6,
+        color: '#2e7d32',
+        fillColor: '#66bb6a',
+        fillOpacity: 0.9
+      }).addTo(map).bindPopup('你的位置');
+    },
+    (err) => {
+      console.warn('Geolocation error:', err.message);
+    },
+    { enableHighAccuracy: true, timeout: 8000 }
+  );
+}
 }
 
+const stopIcon = L.icon({
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
+  iconSize: [25, 41],
+  iconAnchor: [12, 41],
+  popupAnchor: [1, -34],
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  shadowSize: [41, 41]
+});
 
+// 高亮用（上車站／轉車站）
+const highlightIcon = L.icon({
+  iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
+  iconSize: [30, 50],
+  iconAnchor: [15, 50],
+  popupAnchor: [1, -40],
+  shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+  shadowSize: [41, 41]
+});
 
 /* ========== FETCH（帶自動重試） ========== */
 
@@ -1065,6 +1123,48 @@ document.getElementById("dirOutbound").addEventListener("click", () => {
   loadRouteStopsForCurrentDirection();
 });
 
+function showWalkingTimeToNearestStop(stopId, distMeters) {
+  const minutes = distMeters / (4000 / 60); // 同原本假設：4km/h
+  let text;
+  if (minutes < 1) text = "<1分鐘";
+  else if (minutes > 60) text = ">1小時";
+  else text = `${Math.round(minutes)}分鐘`;
+
+  const div = document.getElementById("transferWalkInfo"); // 或者你自己開個新 div，例如 userWalkInfo
+  if (div) {
+    div.style.fontSize = "12px";
+    div.style.color = "#444";
+    div.textContent = `由你目前位置步行到最近車站：約 ${text}`;
+  }
+}
+
+
+function zoomToNearestStopIfHaveGPS() {
+  if (!map || userLat == null || userLon == null) return;
+  if (!routeStops || !routeStops.length) return;
+
+  const nearest = findNearestStopToLatLng(userLat, userLon, routeStops);
+  if (!nearest) return;
+
+  const info = allStopsMap.get(nearest.stop.stop_id);
+  if (!info) return;
+  const lat = parseFloat(info.lat);
+  const lon = parseFloat(info.long);
+  if (!isFinite(lat) || !isFinite(lon)) return;
+
+  map.setView([lat, lon], 16);
+
+  // 可選：自動打開最近站 popup
+  stopsLayer.eachLayer(layer => {
+    if (layer.getLatLng && layer.getLatLng().lat === lat && layer.getLatLng().lng === lon) {
+      layer.openPopup();
+    }
+  });
+
+  // 顯示步行時間
+  showWalkingTimeToNearestStop(nearest.stop.stop_id, nearest.distMeters);
+}
+
 async function loadRouteStopsForCurrentDirection() {
   if (!currentRoute || !currentDirection) return;
   const routeId = currentRoute.route;
@@ -1111,6 +1211,14 @@ async function loadRouteStopsForCurrentDirection() {
     renderStopList();
     await loadEtaSummaryForAllStops();
     await loadHeadwayInfo();
+	
+	// 揀好方向、routeStops ready 之後：
+		let hl = [];
+		if (originStopId) hl.push(originStopId);
+		if (transferStopId) hl.push(transferStopId);
+
+		showRouteStopsOnMap(routeStops, hl);
+		zoomToNearestStopIfHaveGPS(); // 如果你有呢行，就放喺 showRouteStopsOnMap 之後
 
     if (mainEtaTimer) clearInterval(mainEtaTimer);
     mainEtaTimer = setInterval(async () => {
@@ -1122,7 +1230,8 @@ async function loadRouteStopsForCurrentDirection() {
       }
     }, 30000);
 	
-	  showRouteStopsOnMap(routeStops);
+	  showRouteStopsOnMap(routeStops, hl);
+		zoomToNearestStopIfHaveGPS();
 	
   } catch (e) {
     console.error(e);
@@ -2332,7 +2441,7 @@ function renderTransferStopList() {
 }
 
 
-function showRouteStopsOnMap(stops) {
+function showRouteStopsOnMap(stops, highlightStopIds = []) {
   if (!map || !stopsLayer) return;
   stopsLayer.clearLayers();
 
@@ -2345,21 +2454,46 @@ function showRouteStopsOnMap(stops) {
     const lon = parseFloat(info.long);
     if (!isFinite(lat) || !isFinite(lon)) return;
 
-    // 站 marker
-    const marker = L.circleMarker([lat, lon], {
-      radius: 5,
-      color: '#1976d2',
-      weight: 1,
-      fillColor: '#42a5f5',
-      fillOpacity: 0.9
+    const isHighlight = highlightStopIds.includes(s.stop_id);
+
+    const marker = L.marker([lat, lon], {
+      icon: isHighlight ? highlightIcon : stopIcon
     }).addTo(stopsLayer);
 
-    marker.bindPopup(`${s.seq}. ${info.name_tc}`);
+    // popup 文字，初步先出站名＋序號
+    const basePopup = `${s.seq}. ${info.name_tc}`;
+
+    marker.bindPopup(`${basePopup}<br>載入 ETA 中...`);
+
+    // 點擊 marker 時，fetch ETA 再更新 popup
+    marker.on('click', async () => {
+      try {
+        const data = await fetchJSON(
+          `${BASE}/eta/${s.stop_id}/${currentRoute.route}/${currentServiceType}`
+        );
+        let list = data.data || [];
+        if (currentDirectionCode) {
+          list = list.filter(item => item.dir === currentDirectionCode);
+        }
+        if (!list.length) {
+          marker.setPopupContent(`${basePopup}<br>暫時冇班次資料`);
+          return;
+        }
+        const lines = list.slice(0, 3).map(item => {
+          const { text } = formatDetailLine(item);
+          return text;
+        });
+        marker.setPopupContent(
+          `${basePopup}<br>` + lines.join('<br>')
+        );
+      } catch (e) {
+        marker.setPopupContent(`${basePopup}<br>載入 ETA 失敗`);
+      }
+    });
 
     latlngs.push([lat, lon]);
   });
 
-  // 畫 polyline （選擇性）
   if (latlngs.length >= 2) {
     L.polyline(latlngs, {
       color: '#1976d2',
@@ -2372,6 +2506,63 @@ function showRouteStopsOnMap(stops) {
     map.fitBounds(latlngs, { padding: [20, 20] });
   }
 }
+
+function findNearestStopToLatLng(lat, lon, stops) {
+  let best = null;
+  let bestDist = Infinity;
+
+  stops.forEach(s => {
+    const info = allStopsMap.get(s.stop_id);
+    if (!info) return;
+    const slat = parseFloat(info.lat);
+    const slon = parseFloat(info.long);
+    if (!isFinite(slat) || !isFinite(slon)) return;
+    const d = haversineDistanceMeters(lat, lon, slat, slon);
+    if (d < bestDist) {
+      bestDist = d;
+      best = { stop: s, distMeters: d };
+    }
+  });
+
+  return best;
+}
+
+
+function toggleMapFullscreen() {
+  const mapDiv = document.getElementById('map');
+  if (!mapDiv) return;
+
+  const isFullscreen =
+    document.fullscreenElement === mapDiv ||
+    document.webkitFullscreenElement === mapDiv ||
+    document.mozFullScreenElement === mapDiv ||
+    document.msFullscreenElement === mapDiv;
+
+  if (!isFullscreen) {
+    if (mapDiv.requestFullscreen) mapDiv.requestFullscreen();
+    else if (mapDiv.webkitRequestFullscreen) mapDiv.webkitRequestFullscreen();
+    else if (mapDiv.mozRequestFullScreen) mapDiv.mozRequestFullScreen();
+    else if (mapDiv.msRequestFullscreen) mapDiv.msRequestFullscreen();
+  } else {
+    if (document.exitFullscreen) document.exitFullscreen();
+    else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+    else if (document.mozCancelFullScreen) document.mozCancelFullScreen();
+    else if (document.msExitFullscreen) document.msExitFullscreen();
+  }
+}
+
+// 令 Leaflet 喺全螢幕變化時重算尺寸
+function invalidateMapSizeOnFullscreenChange() {
+  if (!map) return;
+  setTimeout(() => {
+    map.invalidateSize();
+  }, 300);
+}
+
+document.addEventListener('fullscreenchange', invalidateMapSizeOnFullscreenChange);
+document.addEventListener('webkitfullscreenchange', invalidateMapSizeOnFullscreenChange);
+document.addEventListener('mozfullscreenchange', invalidateMapSizeOnFullscreenChange);
+document.addEventListener('MSFullscreenChange', invalidateMapSizeOnFullscreenChange);
 
 
 /* ========== 啟動 ========== */
