@@ -54,17 +54,6 @@ let stopsLayer = null;
 let userLat = null;
 let userLon = null;
 
-let routingControl = null;
-const ORS_API_KEY = 'eyJvcmciOiI1YjNjZTM1OTc4NTExMTAwMDFjZjYyNDgiLCJpZCI6IjA1MDBiOTkxNjBiZjRlZWJhYzIzMjliZGY4OGVhZjI2IiwiaCI6Im11cm11cjY0In0='; // 換成你真 key
-
-function clearRoutingLine() {
-  if (routingControl) {
-    map.removeControl(routingControl);
-    routingControl = null;
-  }
-}
-
-
 function initMap() {
   if (map) return;
 
@@ -1243,10 +1232,6 @@ async function loadRouteStopsForCurrentDirection() {
 	
 	  showRouteStopsOnMap(routeStops, hl);
 		zoomToNearestStopIfHaveGPS();
-		
-		// 再用 ORS 畫真正行路路線
-		showWalkingRouteUserToNearestStop();
-		
 	
   } catch (e) {
     console.error(e);
@@ -2456,14 +2441,12 @@ function renderTransferStopList() {
 }
 
 
-async function showRouteStopsOnMap(stops, highlightStopIds = []) {
+function showRouteStopsOnMap(stops, highlightStopIds = []) {
   if (!map || !stopsLayer) return;
   stopsLayer.clearLayers();
 
-  const latlngsForFit = [];
+  const latlngs = [];
 
-  // 1. 先畫所有站嘅 marker
-  const stopLatLngs = []; // [{stop, lat, lon}]
   stops.forEach(s => {
     const info = allStopsMap.get(s.stop_id);
     if (!info) return;
@@ -2477,9 +2460,12 @@ async function showRouteStopsOnMap(stops, highlightStopIds = []) {
       icon: isHighlight ? highlightIcon : stopIcon
     }).addTo(stopsLayer);
 
+    // popup 文字，初步先出站名＋序號
     const basePopup = `${s.seq}. ${info.name_tc}`;
+
     marker.bindPopup(`${basePopup}<br>載入 ETA 中...`);
 
+    // 點擊 marker 時，fetch ETA 再更新 popup
     marker.on('click', async () => {
       try {
         const data = await fetchJSON(
@@ -2505,63 +2491,21 @@ async function showRouteStopsOnMap(stops, highlightStopIds = []) {
       }
     });
 
-    latlngsForFit.push([lat, lon]);
-    stopLatLngs.push({ stop: s, lat, lon });
+    latlngs.push([lat, lon]);
   });
 
-  // 2. 用 ORS 為每對相鄰站畫駕車路線（駛線）
-  //    注意：呢度會對每段 call 一次 API，如果路線好長，可能要考慮節流／cache
-  for (let i = 0; i < stopLatLngs.length - 1; i++) {
-    const a = stopLatLngs[i];
-    const b = stopLatLngs[i + 1];
-    await drawDrivingSegment(a.lat, a.lon, b.lat, b.lon);
-  }
-
-  // 3. fit 視野去全部站
-  if (latlngsForFit.length) {
-    map.fitBounds(latlngsForFit, { padding: [20, 20] });
-  }
-}
-
-
-// 用 OpenRouteService 畫一段駕車路線：fromLat,fromLon → toLat,toLon
-async function drawDrivingSegment(fromLat, fromLon, toLat, toLon) {
-  try {
-    const url = `https://api.openrouteservice.org/v2/directions/driving-car?api_key=${encodeURIComponent(ORS_API_KEY)}`;
-    const body = {
-      coordinates: [
-        [fromLon, fromLat],
-        [toLon, toLat]
-      ]
-    };
-
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(body)
-    });
-    if (!res.ok) throw new Error('ORS HTTP ' + res.status);
-    const data = await res.json();
-
-    const coords = data.features?.[0]?.geometry?.coordinates || [];
-    if (!coords.length) return;
-
-    const latlngs = coords.map(c => [c[1], c[0]]);
-
+  if (latlngs.length >= 2) {
     L.polyline(latlngs, {
       color: '#1976d2',
       weight: 3,
-      opacity: 0.8
+      opacity: 0.7
     }).addTo(stopsLayer);
-  } catch (e) {
-    console.error('drawDrivingSegment error', e);
-    // 失敗就唔畫呢一段，整體唔會死
+  }
+
+  if (latlngs.length) {
+    map.fitBounds(latlngs, { padding: [20, 20] });
   }
 }
-
-
 
 function findNearestStopToLatLng(lat, lon, stops) {
   let best = null;
@@ -2619,65 +2563,6 @@ document.addEventListener('fullscreenchange', invalidateMapSizeOnFullscreenChang
 document.addEventListener('webkitfullscreenchange', invalidateMapSizeOnFullscreenChange);
 document.addEventListener('mozfullscreenchange', invalidateMapSizeOnFullscreenChange);
 document.addEventListener('MSFullscreenChange', invalidateMapSizeOnFullscreenChange);
-
-
-function showWalkingRouteUserToNearestStop() {
-  if (!map || userLat == null || userLon == null) return;
-  if (!routeStops || !routeStops.length) return;
-
-  const nearest = findNearestStopToLatLng(userLat, userLon, routeStops);
-  if (!nearest) return;
-
-  const info = allStopsMap.get(nearest.stop.stop_id);
-  if (!info) return;
-
-  const stopLat = parseFloat(info.lat);
-  const stopLon = parseFloat(info.long);
-  if (!isFinite(stopLat) || !isFinite(stopLon)) return;
-
-  clearRoutingLine();
-
-  routingControl = L.Routing.control({
-    waypoints: [
-      L.latLng(userLat, userLon),
-      L.latLng(stopLat, stopLon)
-    ],
-    router: L.Routing.openrouteservice(ORS_API_KEY, {
-      profile: 'foot-walking', // 行路 profile
-      // 你可以加 extra parameters，例如 avoid_features 等
-    }),
-    lineOptions: {
-      styles: [{ color: '#2e7d32', weight: 5, opacity: 0.8 }]
-    },
-    addWaypoints: false,
-    draggableWaypoints: false,
-    fitSelectedRoutes: true,
-    show: false // 不顯示右邊 turn-by-turn panel
-  }).addTo(map);
-
-  // 顯示行路距離 / 時間（用 routing result）
-  routingControl.on('routesfound', (e) => {
-    const route = e.routes[0];
-    if (!route || !route.summary) return;
-    const meters = route.summary.totalDistance;
-    const seconds = route.summary.totalTime;
-
-    const mins = seconds / 60;
-    let text;
-    if (mins < 1) text = '<1分鐘';
-    else if (mins > 60) text = '>1小時';
-    else text = `${Math.round(mins)}分鐘`;
-
-    const infoDiv = document.getElementById('userWalkInfo') || document.getElementById('transferWalkInfo');
-    if (infoDiv) {
-      infoDiv.style.fontSize = '12px';
-      infoDiv.style.color = '#444';
-      infoDiv.textContent =
-        `由你目前位置步行到最近車站：約 ${text}（約 ${(meters/1000).toFixed(2)} 公里）`;
-    }
-  });
-}
-
 
 
 /* ========== 啟動 ========== */
