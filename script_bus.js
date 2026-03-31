@@ -53,7 +53,9 @@ let stopsLayer = null;
 
 function initMap() {
   if (map) return;
-  map = L.map('map').setView([22.32, 114.17], 12); // 大約香港中間
+
+  // 先用預設中心
+  map = L.map('map').setView([22.32, 114.17], 12);
 
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 19,
@@ -61,8 +63,31 @@ function initMap() {
   }).addTo(map);
 
   stopsLayer = L.layerGroup().addTo(map);
-}
 
+  // 之後再試用家 GPS
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const lat = pos.coords.latitude;
+        const lon = pos.coords.longitude;
+        map.setView([lat, lon], 15);
+
+        // 可選：畫一點代表用家位置
+        L.circleMarker([lat, lon], {
+          radius: 6,
+          color: '#2e7d32',
+          fillColor: '#66bb6a',
+          fillOpacity: 0.9
+        }).addTo(map).bindPopup('你的位置');
+      },
+      (err) => {
+        console.warn('Geolocation error:', err.message);
+        // 失敗就保持預設中心
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
+  }
+}
 
 
 
@@ -1096,12 +1121,18 @@ async function loadRouteStopsForCurrentDirection() {
         await loadEtaDetailForStop(currentStopId);
       }
     }, 30000);
+	
+	  showRouteStopsOnMap(routeStops);
+	
   } catch (e) {
     console.error(e);
     if (stopList) stopList.textContent =
       "載入路線站點失敗：" + e.message;
     if (hInfo) hInfo.textContent = "班距資料不足。";
   }
+  
+
+  
 }
 
 /* ========== Step3: 巴士站 + 轉車模式 ========== */
@@ -2298,6 +2329,48 @@ function renderTransferStopList() {
 
     container.appendChild(div);
   });
+}
+
+
+function showRouteStopsOnMap(stops) {
+  if (!map || !stopsLayer) return;
+  stopsLayer.clearLayers();
+
+  const latlngs = [];
+
+  stops.forEach(s => {
+    const info = allStopsMap.get(s.stop_id);
+    if (!info) return;
+    const lat = parseFloat(info.lat);
+    const lon = parseFloat(info.long);
+    if (!isFinite(lat) || !isFinite(lon)) return;
+
+    // 站 marker
+    const marker = L.circleMarker([lat, lon], {
+      radius: 5,
+      color: '#1976d2',
+      weight: 1,
+      fillColor: '#42a5f5',
+      fillOpacity: 0.9
+    }).addTo(stopsLayer);
+
+    marker.bindPopup(`${s.seq}. ${info.name_tc}`);
+
+    latlngs.push([lat, lon]);
+  });
+
+  // 畫 polyline （選擇性）
+  if (latlngs.length >= 2) {
+    L.polyline(latlngs, {
+      color: '#1976d2',
+      weight: 3,
+      opacity: 0.7
+    }).addTo(stopsLayer);
+  }
+
+  if (latlngs.length) {
+    map.fitBounds(latlngs, { padding: [20, 20] });
+  }
 }
 
 
