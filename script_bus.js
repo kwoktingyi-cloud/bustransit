@@ -62,6 +62,8 @@ let secondRouteMarkers = [];    // Step 4 第二架車（紅色 tag）markers
 let transferLine = null;        // 兩個轉車站之間的綠色線
 let secondTransferStopId = null;
 
+
+
 function initMap() {
   if (map) return;
 
@@ -1098,6 +1100,8 @@ async function selectRoute(route) {
   btnOut.disabled = true;
   btnIn.textContent = "載入方向中...";
   btnOut.textContent = "載入方向中...";
+
+
 
   keyboardHidden = true;
   renderRouteList();
@@ -3015,8 +3019,7 @@ function onStep4Select(route, direction, transferStopId) {
   selectSecondRoute(route, direction, transferStopId);
 }
 
-
-// 終極模擬點擊版：最穩陣嘅 URL 自動預填 (支援路線、方向、車站)
+// 終極模擬點擊版：最穩陣嘅 URL 自動預填 (修正 dir=2 API 連結)
 function checkUrlForRoute() {
     const urlParams = new URLSearchParams(window.location.search);
     const routeParam = urlParams.get('route');
@@ -3037,6 +3040,44 @@ function checkUrlForRoute() {
             selectRoute(foundRouteObj);
         }
 
+        const autoClickStation = (stationName) => {
+            if (!stationName) return;
+            let stopWaitCount = 0;
+            let waitForStops = setInterval(() => {
+                stopWaitCount++;
+                if (stopWaitCount > 100) { clearInterval(waitForStops); return; }
+
+                const stopListDiv = document.getElementById("stopList");
+                
+                if (stopListDiv && stopListDiv.innerText.includes(stationName)) {
+                    clearInterval(waitForStops);
+                    
+                    const allStopDivs = stopListDiv.querySelectorAll("div");
+                    let clicked = false;
+                    
+                    for (let div of allStopDivs) {
+                        if (div.innerText.includes(stationName) && div.onclick) {
+                            console.log("URL: 模擬點擊車站...");
+                            div.click();
+                            clicked = true;
+                            break; 
+                        }
+                    }
+
+                    if (!clicked) {
+                        const foundStop = routeStops.find(rs => {
+                            const info = allStopsMap.get(rs.stop_id);
+                            return info && info.name_tc === stationName;
+                        });
+                        if (foundStop && typeof selectStop === "function") {
+                            const stopInfo = allStopsMap.get(foundStop.stop_id);
+                            selectStop(foundStop.stop_id, stopInfo.name_tc);
+                        }
+                    }
+                }
+            }, 100);
+        };
+
         let dirWaitCount = 0;
         let waitForDirection = setInterval(() => {
             dirWaitCount++;
@@ -3049,50 +3090,72 @@ function checkUrlForRoute() {
                 clearInterval(waitForDirection); 
 
                 if (dirParam !== null) {
-                    const targetBtn = (dirParam === '0') ? btnIn : btnOut;
                     
-                    if (targetBtn && !targetBtn.disabled) {
-                        console.log("URL: 方向掣已準備好，正在模擬點擊...");
-                        targetBtn.click(); 
+                    if (dirParam === '2' && staParam) {
+                        console.log("URL: 執行 dir=2 智能揀方向邏輯...");
+                        
+                        (async () => {
+                            try {
+                                // 🔴 修正咗呢度嘅 API 網址，將方向 (inbound/outbound) 放返去 1 嘅前面！
+                                const [inRes, outRes] = await Promise.all([
+                                    fetch(`https://data.etabus.gov.hk/v1/transport/kmb/route-stop/${targetRoute}/inbound/1`).then(r => r.json()),
+                                    fetch(`https://data.etabus.gov.hk/v1/transport/kmb/route-stop/${targetRoute}/outbound/1`).then(r => r.json())
+                                ]);
 
-                        // 等待車站列表渲染出嚟
-                        if (staParam) {
-                            let stopWaitCount = 0;
-                            let waitForStops = setInterval(() => {
-                                stopWaitCount++;
-                                if (stopWaitCount > 100) { clearInterval(waitForStops); return; }
+                                const inStops = inRes.data || [];
+                                const outStops = outRes.data || [];
 
-                                const stopListDiv = document.getElementById("stopList");
-                                
-                                if (stopListDiv && stopListDiv.innerText.includes(staParam)) {
-                                    clearInterval(waitForStops);
-                                    
-                                    const allStopDivs = stopListDiv.querySelectorAll("div");
-                                    let clicked = false;
-                                    
-                                    for (let div of allStopDivs) {
-                                        // 確保點擊嘅係單一行車站 (而唔係成個大容器)
-                                        if (div.innerText.includes(staParam) && div.onclick) {
-                                            console.log("URL: 模擬點擊車站...");
-                                            div.click();
-                                            clicked = true;
+                                const getStopInfo = (stops) => {
+                                    let targetSeq = -1;
+                                    for (let rs of stops) {
+                                        const info = allStopsMap.get(rs.stop_id);
+                                        if (info && info.name_tc === staParam) {
+                                            targetSeq = parseInt(rs.seq);
                                             break; 
                                         }
                                     }
+                                    return { seq: targetSeq, total: stops.length };
+                                };
 
-                                    if (!clicked) {
-                                        // Backup: 用 Function 呼叫
-                                        const foundStop = routeStops.find(rs => {
-                                            const info = allStopsMap.get(rs.stop_id);
-                                            return info && info.name_tc === staParam;
-                                        });
-                                        if (foundStop && typeof selectStop === "function") {
-                                            const stopInfo = allStopsMap.get(foundStop.stop_id);
-                                            selectStop(foundStop.stop_id, stopInfo.name_tc);
-                                        }
-                                    }
+                                const inInfo = getStopInfo(inStops);
+                                const outInfo = getStopInfo(outStops);
+
+                                const inRemain = inInfo.seq !== -1 ? (inInfo.total - inInfo.seq) : -1;
+                                const outRemain = outInfo.seq !== -1 ? (outInfo.total - outInfo.seq) : -1;
+
+                                let targetBtn = null;
+                                if (inRemain === -1 && outRemain === -1) {
+                                    console.log("URL: 兩邊方向都搵唔到呢個站！");
+                                    // 搵唔到都退一步，求其揀個有服務嘅方向
+                                    targetBtn = !btnOut.disabled ? btnOut : btnIn;
+                                } else if (inRemain > outRemain) {
+                                    console.log("URL: 決定揀方向: Inbound (距離總站較遠)");
+                                    targetBtn = btnIn;
+                                } else {
+                                    console.log("URL: 決定揀方向: Outbound (距離總站較遠)");
+                                    targetBtn = btnOut;
                                 }
-                            }, 100);
+
+                                // 萬一計出嚟嗰個方向係 Disabled，就自動切換另一邊
+                                if (targetBtn && targetBtn.disabled) {
+                                    targetBtn = (targetBtn === btnIn) ? btnOut : btnIn;
+                                }
+
+                                if (targetBtn && !targetBtn.disabled) {
+                                    targetBtn.click();
+                                    autoClickStation(staParam);
+                                }
+                            } catch (e) {
+                                console.error("URL: dir=2 API 請求出錯", e);
+                            }
+                        })();
+
+                    } else {
+                        const targetBtn = (dirParam === '0') ? btnIn : btnOut;
+                        if (targetBtn && !targetBtn.disabled) {
+                            console.log("URL: 方向掣已準備好，正在模擬點擊...");
+                            targetBtn.click(); 
+                            autoClickStation(staParam); 
                         }
                     }
                 }
@@ -3101,7 +3164,77 @@ function checkUrlForRoute() {
     }
 }
 
+// 【新增】自動處理 dir=2 嘅智能選向及選站功能
+async function handleDir2Logic(route, staParam) {
+    console.log("執行 dir=2 智能揀方向邏輯...");
+    try {
+        // 同時攞晒 Inbound 同 Outbound 嘅車站資料
+        const [inRes, outRes] = await Promise.all([
+            fetch(`${BASE}/route-stop/${route}/1/inbound`).then(r => r.json()),
+            fetch(`${BASE}/route-stop/${route}/1/outbound`).then(r => r.json())
+        ]);
 
+        const inStops = inRes.data || [];
+        const outStops = outRes.data || [];
+
+        // 幫手搵個站喺陣列入面嘅位置 (搵最早上車嗰個)
+        const getStopInfo = (stops) => {
+            let targetSeq = -1;
+            let totalStops = stops.length;
+            for (let rs of stops) {
+                const info = allStopsMap.get(rs.stop_id);
+                if (info && info.name_tc === staParam) {
+                    targetSeq = parseInt(rs.seq);
+                    break; // 搵到第一個啱嘅就即刻停
+                }
+            }
+            return { seq: targetSeq, total: totalStops };
+        };
+
+        const inInfo = getStopInfo(inStops);
+        const outInfo = getStopInfo(outStops);
+
+        // 計算距離總站有幾遠 = (總站數 - 嗰個站嘅序號)
+        // 數值越大，代表距離總站越遠 (即係啱啱先上車)
+        const inRemain = inInfo.seq !== -1 ? (inInfo.total - inInfo.seq) : -1;
+        const outRemain = outInfo.seq !== -1 ? (outInfo.total - outInfo.seq) : -1;
+
+        let chosenBtnId = null;
+
+        // 比較兩邊，揀剩餘站數多啲嗰邊
+        if (inRemain === -1 && outRemain === -1) {
+            console.log("兩邊方向都搵唔到呢個站！");
+            return;
+        } else if (inRemain > outRemain) {
+            console.log("決定揀方向: Inbound (距離總站較遠)");
+            chosenBtnId = 'dirInbound';
+        } else {
+            console.log("決定揀方向: Outbound (距離總站較遠)");
+            chosenBtnId = 'dirOutbound';
+        }
+
+        // 1. 自動 Click 啱嗰個方向嘅掣
+        const dirBtn = document.getElementById(chosenBtnId);
+        if (dirBtn && !dirBtn.disabled) {
+            dirBtn.click();
+        }
+
+        // 2. 等一陣 (等個車站 List 印好)，然後自動 Click 個站
+        setTimeout(() => {
+            const stopDivs = document.querySelectorAll("#stopList .stop-item");
+            for (let div of stopDivs) {
+                if (div.innerText.includes(staParam) && div.onclick) {
+                    console.log("URL dir=2: 成功模擬點擊車站！");
+                    div.click();
+                    break;
+                }
+            }
+        }, 800); // 畀 0.8 秒佢 render 畫面，實夠穩陣
+
+    } catch (e) {
+        console.error("dir=2 邏輯出錯", e);
+    }
+}
 
 /* ========== 啟動 ========== */
 
