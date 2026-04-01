@@ -975,6 +975,7 @@ function resetTransferOnly() {
   if (btnReset) btnReset.style.display = "none";
 
   renderTransferVirtualKeyboard();
+
 }
 
 /* ========== Step1 大清除 ========== */
@@ -2322,6 +2323,7 @@ function clearSecondRouteVisual() {
   }
   transferLine = null;
   secondTransferStopId = null;
+  resetFirstRouteFull();
 }
 
 function selectSecondRoute(transferStopId) {
@@ -2733,50 +2735,148 @@ function renderTransferStopList() {
   });
 }
 
-async function showRouteStopsOnMap(stops, highlightStopIds = []) {
-  if (!map || !stopsLayer) return;
-  stopsLayer.clearLayers();
+// 1. 畫第一程藍線同藍點 (確保有數字 + 記住 seq)
+async function showRouteStopsOnMap(stops) {
+  if (window.mainRouteLine) map.removeLayer(window.mainRouteLine);
+  if (window.allStopMarkers) {
+      window.allStopMarkers.forEach(m => map.removeLayer(m));
+  }
+  window.allStopMarkers = [];
 
-  allStopMarkers = [];          // ★ 重新記錄所有 marker
-  const latlngsForFit = [];
-
+  const latlngs = [];
   stops.forEach(s => {
     const info = allStopsMap.get(s.stop_id);
-    if (!info) return;
-    const lat = parseFloat(info.lat);
-    const lon = parseFloat(info.long);
-    if (!isFinite(lat) || !isFinite(lon)) return;
+    if (info) {
+      const lat = parseFloat(info.lat);
+      const lon = parseFloat(info.long);
 
-    const isHighlight = highlightStopIds.includes(s.stop_id);
+      const icon = L.divIcon({
+        className: "stop-label",
+        html: `<div>${s.seq}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      });
 
-    const marker = L.marker([lat, lon], {
-      icon: createNumberedIcon(s.seq, isHighlight)
-    }).addTo(stopsLayer);
-
-    const basePopup = `${s.seq}. ${info.name_tc}`;
-
-    marker.bindPopup(
-      `<div style="font-size:13px;">
-         <div style="font-weight:bold;margin-bottom:2px;">${basePopup}</div>
-       </div>`
-    );
-
-    marker.stopId = s.stop_id;   // ★ 之後用 stopId 搵 marker
-    allStopMarkers.push(marker); // ★ 收集起來
-
-    latlngsForFit.push([lat, lon]);
+      const marker = L.marker([lat, lon], { icon: icon }).addTo(map);
+      marker.stopId = s.stop_id;
+      marker.seq = parseInt(s.seq); // 確保轉做整數，方便後面隱藏
+      
+      const name = info.name_tc || s.stop_id;
+      marker.bindPopup(`<b>${s.seq}. ${name}</b>`);
+      
+      window.allStopMarkers.push(marker);
+      latlngs.push([lat, lon]);
+    }
   });
 
-  if (latlngsForFit.length) {
-    L.polyline(latlngsForFit, {
-      color: '#1976d2',
-      weight: 3,
-      opacity: 0.7
-    }).addTo(stopsLayer);
+  window.mainRouteLine = L.polyline(latlngs, {
+    color: "#1976d2", weight: 4, opacity: 0.8
+  }).addTo(map);
 
-    map.fitBounds(latlngsForFit, { padding: [20, 20] });
+  if (latlngs.length > 0) {
+    map.fitBounds(window.mainRouteLine.getBounds(), { padding: [20, 20] });
   }
 }
+
+// 2. 切斷藍線 + 隱藏轉車站之後嘅藍點
+function updateFirstRouteFocus(targetStopId) {
+    if (!routeStops || routeStops.length === 0) return;
+    
+    const stopIndex = routeStops.findIndex(s => s.stop_id === targetStopId);
+    if (stopIndex === -1) return;
+    
+    const targetSeq = parseInt(routeStops[stopIndex].seq);
+
+    // 隱藏站點
+    window.allStopMarkers.forEach(m => {
+        if (m.seq > targetSeq) {
+            if (map.hasLayer(m)) map.removeLayer(m);
+        } else {
+            if (!map.hasLayer(m)) map.addLayer(m);
+        }
+    });
+
+    // 切斷線條
+    const partialLatLngs = routeStops.slice(0, stopIndex + 1).map(s => {
+        const info = allStopsMap.get(s.stop_id);
+        return [parseFloat(info.lat), parseFloat(info.long)];
+    });
+    
+    if (window.mainRouteLine) {
+        window.mainRouteLine.setLatLngs(partialLatLngs);
+    }
+}
+
+// 3. 畫第二程紅線 (實心線 + 數字 + 由轉車站起計)
+async function selectSecondRoute(targetStopId) {
+  if (!map || !transferRouteStops || !transferRouteStops.length) return;
+  
+  clearSecondRouteVisual(); 
+  updateFirstRouteFocus(transferStopId); // 呼叫隱藏第一程
+
+  const latlngsForSecond = [];
+  let foundTransferPoint = false;
+
+  transferRouteStops.forEach(rs => {
+    if (rs.stop_id === targetStopId) foundTransferPoint = true;
+
+    if (foundTransferPoint) {
+      const info = allStopsMap.get(rs.stop_id);
+      if (!info) return;
+
+      const icon = L.divIcon({
+        className: "stop-label second-route",
+        html: `<div>${rs.seq}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      });
+
+      const marker = L.marker([parseFloat(info.lat), parseFloat(info.long)], { icon }).addTo(map);
+      marker.stopId = rs.stop_id;
+      marker.bindPopup(`<b>${rs.seq}. ${rs.name_tc || rs.stop_id}</b>`);
+      
+      secondRouteMarkers.push(marker);
+      latlngsForSecond.push([parseFloat(info.lat), parseFloat(info.long)]);
+    }
+  });
+
+  if (latlngsForSecond.length >= 2) {
+    const redLine = L.polyline(latlngsForSecond, { color: "#ff5252", weight: 4, opacity: 0.9 }).addTo(map);
+    secondRouteMarkers.push(redLine);
+  }
+
+  // 畫綠色步行線
+  const firstMarker = window.allStopMarkers.find(m => m.stopId === transferStopId);
+  const secondMarker = secondRouteMarkers.find(m => m.stopId === targetStopId);
+  if (firstMarker && secondMarker) {
+    transferLine = L.polyline([firstMarker.getLatLng(), secondMarker.getLatLng()], { color: "green", weight: 4, dashArray: "2, 4" }).addTo(map);
+  }
+}
+
+// 4. 還原全部藍線 + 取消轉車時使用
+function resetFirstRouteFull() {
+    if (!routeStops || routeStops.length === 0) return;
+
+    // 還原藍點
+    if (window.allStopMarkers) {
+        window.allStopMarkers.forEach(m => {
+            if (!map.hasLayer(m)) map.addLayer(m);
+        });
+    }
+
+    // 還原整條藍線
+    const fullLatLngs = routeStops.map(s => {
+        const info = allStopsMap.get(s.stop_id);
+        if(!info) return null;
+        return [parseFloat(info.lat), parseFloat(info.long)];
+    }).filter(ll => ll !== null);
+
+    if (window.mainRouteLine) {
+        window.mainRouteLine.setLatLngs(fullLatLngs);
+    }
+}
+
+
 
 
 function findNearestStopToLatLng(lat, lon, stops) {
@@ -2851,84 +2951,54 @@ document.addEventListener('mozfullscreenchange', invalidateMapSizeOnFullscreenCh
 document.addEventListener('MSFullscreenChange', invalidateMapSizeOnFullscreenChange);
 
 
-function selectSecondRoute(transferStopId) {
-  if (!map || !transferRouteStops || !transferRouteStops.length) return;
-
-  clearSecondRouteVisual();
-
-  secondTransferStopId = transferStopId;
-
-  const latlngsForSecond = [];
-
-  // 2. 用 transferRouteStops 畫紅色 tag（第二架車全線）
-  transferRouteStops.forEach(rs => {
-    const info = allStopsMap.get(rs.stop_id);
-    if (!info) return;
-    const lat = parseFloat(info.lat);
-    const lon = parseFloat(info.long);
-    if (!isFinite(lat) || !isFinite(lon)) return;
-
-    // 順序號碼（根據 seq）
-    const label = rs.seq ?? "";
-
-    const icon = L.divIcon({
-      className: "stop-label second-route",
-      html: `<span>${label}</span>`,   // 顯示順序號碼
-      iconSize: null
-    });
-
-    const marker = L.marker([lat, lon], { icon }).addTo(map);
-    marker.stopId = rs.stop_id;
-
-    // popup 顯示站名
-    const name = info.name_tc || rs.stop_id;
-    marker.bindPopup(
-      `<div style="font-size:13px;">
-         <div style="font-weight:bold;margin-bottom:2px;">${rs.seq}. ${name}</div>
-       </div>`
-    );
-
-    secondRouteMarkers.push(marker);
-    latlngsForSecond.push([lat, lon]);
-  });
-
-  // 紅色路線（好似第一程藍線咁）
-  if (latlngsForSecond.length >= 2) {
-    const redLine = L.polyline(latlngsForSecond, {
-      color: "#ff5252",
-      weight: 3,
-      opacity: 0.8
-    }).addTo(map);
-    secondRouteMarkers.push(redLine); // 一齊放入，clear 時會移除
-  }
-
-  // 3. 如有兩個轉車站，畫綠色直線
-  const firstMarker = allStopMarkers.find(m => m.stopId === transferStopId);
-  const secondMarker = secondRouteMarkers.find(m => m.stopId === transferStopId);
-
-  if (firstMarker && secondMarker) {
-    const latlngs = [firstMarker.getLatLng(), secondMarker.getLatLng()];
-
-    transferLine = L.polyline(latlngs, {
-      color: "green",
-      weight: 4
-    }).addTo(map);
-  }
-}
 
 
-function clearSecondRouteVisual() {
-  // 移除紅色 tag
-  secondRouteMarkers.forEach(m => map.removeLayer(m));
-  secondRouteMarkers = [];
+function showFullSecondRoute() {
+  // 1. 還原藍線同埋所有藍點
+  resetFirstRouteFull();
 
-  // 移除綠色線
-  if (transferLine) {
+  // 2. 移除綠線
+  if (transferLine && map.hasLayer(transferLine)) {
     map.removeLayer(transferLine);
     transferLine = null;
   }
 
+  // 3. 重新畫全條紅線
+  secondRouteMarkers.forEach(m => { if (map.hasLayer(m)) map.removeLayer(m); });
+  secondRouteMarkers = [];
+
+  const latlngsForFullRed = [];
+  transferRouteStops.forEach(rs => {
+    const info = allStopsMap.get(rs.stop_id);
+    if (!info) return;
+    const icon = L.divIcon({
+      className: "stop-label second-route",
+      html: `<span>${rs.seq}</span>`,
+      iconSize: null
+    });
+    const marker = L.marker([parseFloat(info.lat), parseFloat(info.long)], { icon }).addTo(map);
+    secondRouteMarkers.push(marker);
+    latlngsForFullRed.push([parseFloat(info.lat), parseFloat(info.long)]);
+  });
+
+  if (latlngsForFullRed.length >= 2) {
+    const redLine = L.polyline(latlngsForFullRed, { color: "#ff5252", weight: 4 }).addTo(map);
+    secondRouteMarkers.push(redLine);
+  }
+}
+
+
+
+function clearSecondRouteVisual() {
+  secondRouteMarkers.forEach(m => { if (map.hasLayer(m)) map.removeLayer(m); });
+  secondRouteMarkers = [];
+
+  if (transferLine && map.hasLayer(transferLine)) map.removeLayer(transferLine);
+  transferLine = null;
   secondTransferStopId = null;
+
+  // 重要：當取消轉車，顯示返所有藍點同藍線
+  resetFirstRouteFull(); 
 }
 
 function onShowAllStopsClick() {
