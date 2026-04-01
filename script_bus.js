@@ -3016,39 +3016,88 @@ function onStep4Select(route, direction, transferStopId) {
 }
 
 
-// 修改版：檢查 URL 參數，並自動「選擇」埋路線
+// 終極模擬點擊版：最穩陣嘅 URL 自動預填 (支援路線、方向、車站)
 function checkUrlForRoute() {
     const urlParams = new URLSearchParams(window.location.search);
     const routeParam = urlParams.get('route');
+    const dirParam = urlParams.get('dir'); 
+    const staParam = urlParams.get('sta'); 
 
-    if (routeParam) {
-        // 轉大階
-        const targetRoute = routeParam.toUpperCase();
-        
-        // 1. 更新畫面上嘅顯示字眼
-        currentInput = targetRoute;
-        const display = document.getElementById("routeInputDisplay");
-        if (display) display.innerText = currentInput;
+    if (!routeParam) return;
 
-        // 2. 喺全港路線庫入面，搵返呢架車嘅完整資料出嚟
-        // (應付 r 係 Object 或者 String 嘅情況)
-        const foundRouteObj = uniqueRoutes.find(r => {
-            const rtName = typeof r === 'string' ? r : r.route;
-            return rtName === targetRoute;
-        });
+    const targetRoute = routeParam.toUpperCase();
+    const foundRouteObj = uniqueRoutes.find(r => {
+        const rtName = typeof r === 'string' ? r : r.route;
+        return rtName === targetRoute;
+    });
 
-        if (foundRouteObj) {
-            // 3. 如果搵到，直接觸發「揀路線」嘅 Function！
-            // ⚠️ 注意：如果你原本處理點擊路線嘅 Function 唔係叫 selectRoute，請改返啱個名
-            if (typeof selectRoute === "function") {
-                selectRoute(foundRouteObj);
-            }
-        } else {
-            // 萬一條 URL 打錯字搵唔到架車，就退一步，淨係顯示搜尋結果
-            if (typeof renderCandidateRoutes === "function") {
-                renderCandidateRoutes();
-            }
+    if (foundRouteObj) {
+        console.log("URL: 自動選擇路線 " + targetRoute);
+        if (typeof selectRoute === "function") {
+            selectRoute(foundRouteObj);
         }
+
+        let dirWaitCount = 0;
+        let waitForDirection = setInterval(() => {
+            dirWaitCount++;
+            if (dirWaitCount > 50) { clearInterval(waitForDirection); return; }
+
+            const btnIn = document.getElementById("dirInbound");
+            const btnOut = document.getElementById("dirOutbound");
+
+            if (btnIn && btnOut && (!btnIn.disabled || !btnOut.disabled)) {
+                clearInterval(waitForDirection); 
+
+                if (dirParam !== null) {
+                    const targetBtn = (dirParam === '0') ? btnIn : btnOut;
+                    
+                    if (targetBtn && !targetBtn.disabled) {
+                        console.log("URL: 方向掣已準備好，正在模擬點擊...");
+                        targetBtn.click(); 
+
+                        // 等待車站列表渲染出嚟
+                        if (staParam) {
+                            let stopWaitCount = 0;
+                            let waitForStops = setInterval(() => {
+                                stopWaitCount++;
+                                if (stopWaitCount > 100) { clearInterval(waitForStops); return; }
+
+                                const stopListDiv = document.getElementById("stopList");
+                                
+                                if (stopListDiv && stopListDiv.innerText.includes(staParam)) {
+                                    clearInterval(waitForStops);
+                                    
+                                    const allStopDivs = stopListDiv.querySelectorAll("div");
+                                    let clicked = false;
+                                    
+                                    for (let div of allStopDivs) {
+                                        // 確保點擊嘅係單一行車站 (而唔係成個大容器)
+                                        if (div.innerText.includes(staParam) && div.onclick) {
+                                            console.log("URL: 模擬點擊車站...");
+                                            div.click();
+                                            clicked = true;
+                                            break; 
+                                        }
+                                    }
+
+                                    if (!clicked) {
+                                        // Backup: 用 Function 呼叫
+                                        const foundStop = routeStops.find(rs => {
+                                            const info = allStopsMap.get(rs.stop_id);
+                                            return info && info.name_tc === staParam;
+                                        });
+                                        if (foundStop && typeof selectStop === "function") {
+                                            const stopInfo = allStopsMap.get(foundStop.stop_id);
+                                            selectStop(foundStop.stop_id, stopInfo.name_tc);
+                                        }
+                                    }
+                                }
+                            }, 100);
+                        }
+                    }
+                }
+            }
+        }, 100);
     }
 }
 
