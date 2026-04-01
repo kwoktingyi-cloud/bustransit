@@ -558,6 +558,11 @@ async function init() {
       "載入路線 / 巴士站失敗：" + e.message;
     alert("初始化失敗，請開 F12 → Console 睇詳情。");
   }
+  
+
+    checkUrlForRoute();
+  
+  
 }
 
 /* ========== Step1: 路線輸入 ========== */
@@ -3009,6 +3014,45 @@ function onShowAllStopsClick() {
 function onStep4Select(route, direction, transferStopId) {
   selectSecondRoute(route, direction, transferStopId);
 }
+
+
+// 修改版：檢查 URL 參數，並自動「選擇」埋路線
+function checkUrlForRoute() {
+    const urlParams = new URLSearchParams(window.location.search);
+    const routeParam = urlParams.get('route');
+
+    if (routeParam) {
+        // 轉大階
+        const targetRoute = routeParam.toUpperCase();
+        
+        // 1. 更新畫面上嘅顯示字眼
+        currentInput = targetRoute;
+        const display = document.getElementById("routeInputDisplay");
+        if (display) display.innerText = currentInput;
+
+        // 2. 喺全港路線庫入面，搵返呢架車嘅完整資料出嚟
+        // (應付 r 係 Object 或者 String 嘅情況)
+        const foundRouteObj = uniqueRoutes.find(r => {
+            const rtName = typeof r === 'string' ? r : r.route;
+            return rtName === targetRoute;
+        });
+
+        if (foundRouteObj) {
+            // 3. 如果搵到，直接觸發「揀路線」嘅 Function！
+            // ⚠️ 注意：如果你原本處理點擊路線嘅 Function 唔係叫 selectRoute，請改返啱個名
+            if (typeof selectRoute === "function") {
+                selectRoute(foundRouteObj);
+            }
+        } else {
+            // 萬一條 URL 打錯字搵唔到架車，就退一步，淨係顯示搜尋結果
+            if (typeof renderCandidateRoutes === "function") {
+                renderCandidateRoutes();
+            }
+        }
+    }
+}
+
+
 
 /* ========== 啟動 ========== */
 
