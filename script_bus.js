@@ -57,6 +57,7 @@ let userLat = null;
 let userLon = null;
 
 
+
 let allStopMarkers = [];        // 主線路 marker（你之前 showRouteStopsOnMap 要有）
 let currentTransferStopId = null;
 
@@ -64,6 +65,9 @@ let secondRouteMarkers = [];    // Step 4 第二架車（紅色 tag）markers
 let transferLine = null;        // 兩個轉車站之間的綠色線
 let secondTransferStopId = null;
 
+
+let originSeq = null; 
+let transferSeq = null;
 
 
 function initMap() {
@@ -988,8 +992,6 @@ function renderTransferVirtualKeyboard() {
 }
 
 
-
-
 function updateAfterTransferInputChange() {
   const display = document.getElementById("transferRouteInputDisplay");
   if (display) display.textContent = transferCurrentInput || "(未輸入)";
@@ -1293,12 +1295,14 @@ async function selectRoute(route) {
   const btnIn = document.getElementById("dirInbound");
   const btnOut = document.getElementById("dirOutbound");
   if (!btnIn || !btnOut) return;
+  
+  // ★ 重置：確保兩個掣都顯示出嚟，費事俾上一條循環線影響
+  btnIn.style.display = ""; 
+  btnOut.style.display = "";
   btnIn.disabled = true;
   btnOut.disabled = true;
   btnIn.textContent = "載入方向中...";
   btnOut.textContent = "載入方向中...";
-
-
 
   keyboardHidden = true;
   renderRouteList();
@@ -1313,9 +1317,13 @@ async function selectRoute(route) {
       fetchJSON(`${KMB_BASE}/route-stop/${routeId}/outbound/${st}`)
     ]);
 
+    let hasInbound = false;
+    let hasOutbound = false;
+
     if (inData.status === "fulfilled") {
       const list = (inData.value.data || []).sort((a, b) => a.seq - b.seq);
       if (list.length > 0) {
+        hasInbound = true;
         const last = list[list.length - 1];
         const stopInfo = allStopsMap.get(last.stop);
         inboundTerminalName = stopInfo ? stripBracketCode(stopInfo.name_tc) : stripBracketCode(currentRoute.dest_tc);
@@ -1325,6 +1333,7 @@ async function selectRoute(route) {
     if (outData.status === "fulfilled") {
       const list = (outData.value.data || []).sort((a, b) => a.seq - b.seq);
       if (list.length > 0) {
+        hasOutbound = true;
         const last = list[list.length - 1];
         const stopInfo = allStopsMap.get(last.stop);
         outboundTerminalName = stopInfo ? stripBracketCode(stopInfo.name_tc) : stripBracketCode(currentRoute.orig_tc);
@@ -1333,10 +1342,32 @@ async function selectRoute(route) {
 
     const finalInName = inboundTerminalName !== "?" ? inboundTerminalName : stripBracketCode(currentRoute.dest_tc);
     const finalOutName = outboundTerminalName !== "?" ? outboundTerminalName : stripBracketCode(currentRoute.orig_tc);
-    btnIn.textContent = `往 ${finalInName} 方向`;
-    btnOut.textContent = `往 ${finalOutName} 方向`;
-    btnIn.disabled = false;
-    btnOut.disabled = false;
+    
+    // ★ 判斷係咪雙向定循環線，並決定隱藏同自動 Click 邊個
+    if (hasInbound && hasOutbound) {
+      // 雙向都有站：正常顯示晒兩個
+      btnIn.textContent = `往 ${finalInName} 方向`;
+      btnIn.disabled = false;
+      btnOut.textContent = `往 ${finalOutName} 方向`;
+      btnOut.disabled = false;
+    } else if (hasInbound) {
+      // 得 Inbound 有站 (循環線)
+      btnIn.textContent = `往 ${finalInName} 方向`;
+      btnIn.disabled = false;
+      btnOut.style.display = "none"; // 隱藏無站嘅掣
+      setTimeout(() => btnIn.click(), 50); // 自動幫用家 Click！
+    } else if (hasOutbound) {
+      // 得 Outbound 有站 (循環線)
+      btnOut.textContent = `往 ${finalOutName} 方向`;
+      btnOut.disabled = false;
+      btnIn.style.display = "none"; // 隱藏無站嘅掣
+      setTimeout(() => btnOut.click(), 50); // 自動幫用家 Click！
+    } else {
+      // 兩個方向都死圖 / 無資料嘅罕見情況
+      btnIn.textContent = `無此方向`;
+      btnOut.textContent = `無此方向`;
+    }
+
   } catch (e) {
     console.error(e);
     btnIn.textContent = "往 ? 方向";
@@ -1344,6 +1375,7 @@ async function selectRoute(route) {
     alert("載入方向資訊失敗，請開 Console 睇詳情。");
   }
 }
+
 
 document.getElementById("dirInbound").addEventListener("click", () => {
   if (!currentRoute) return;
@@ -1481,16 +1513,92 @@ async function loadRouteStopsForCurrentDirection() {
 }
 
 /* ========== Step3: 巴士站 + 轉車模式 ========== */
-
 function renderStopList() {
   const container = document.getElementById("stopList");
   if (!container) return;
-  container.innerHTML = "";
 
-  routeStops.forEach((s) => {
+  // ─── 第 1 部分：處理頂部 UI 狀態 ───
+  const infoDiv = document.getElementById("interchangeInfo");
+  const ctrlDiv = document.getElementById("interchangeControls");
+  const tSec = document.getElementById("transfer-search-section");
+  
+  if (infoDiv) infoDiv.textContent = "";
+  if (ctrlDiv) ctrlDiv.innerHTML = "";
+  if (tSec) tSec.style.display = "none";
+
+  let originIndex = -1;
+
+  if (mode === "interchange_pick" && originStopId) {
+    const origin = routeStops.find(s => s.stop_id === originStopId && s.seq == originSeq) 
+                || routeStops.find(s => s.stop_id === originStopId);
+    if (origin) originIndex = routeStops.indexOf(origin);
+
+    const name = origin ? origin.name_tc : originStopId;
+    if (infoDiv) infoDiv.textContent = `轉車模式：上車站 ${name}，請揀轉車站（只可以揀之後嘅站）。`;
+
+  } else if (mode === "interchange_pair" && originStopId && transferStopId) {
+    const origin = routeStops.find(s => s.stop_id === originStopId && s.seq == originSeq) 
+                || routeStops.find(s => s.stop_id === originStopId);
+    const trans  = routeStops.find(s => s.stop_id === transferStopId && s.seq == transferSeq) 
+                || routeStops.find(s => s.stop_id === transferStopId);
+    
+    if (origin) originIndex = routeStops.indexOf(origin);
+
+    const nameO  = origin ? origin.name_tc : originStopId;
+    const nameT  = trans  ? trans.name_tc  : transferStopId;
+    transferStopName = trans ? normalizeStopName(trans.name_tc) : null;
+    
+    if (infoDiv) infoDiv.textContent = `轉車模式：上車站 ${nameO} → 轉車站 ${nameT}`;
+
+    if (ctrlDiv) {
+      const btn = document.createElement("button");
+      btn.textContent = "取消轉車";
+      btn.onclick = exitInterchangeMode; 
+      ctrlDiv.appendChild(btn);
+    }
+
+    if (tSec) tSec.style.display = "block";
+    clearTransferState();
+  }
+
+  // ─── 第 2 部分：生成站點列表 ───
+  container.innerHTML = "";
+  
+  routeStops.forEach((s, index) => {
+    let isVisible = true;
+
+    // ★ 核心改動：直接用 == 同 != 去比較，避開 NaN 伏位
+    if (mode === "interchange_pair") {
+      // Pair 模式：非上車、非轉車站，一律隱藏
+      const isOrigin = (s.stop_id === originStopId && s.seq == originSeq);
+      const isTransfer = (s.stop_id === transferStopId && s.seq == transferSeq);
+      
+      // 容錯補底 (萬一無 seq，退一步對 ID)
+      const isOriginSafe = (s.stop_id === originStopId && !originSeq);
+      const isTransferSafe = (s.stop_id === transferStopId && !transferSeq);
+
+      if (!isOrigin && !isTransfer && !isOriginSafe && !isTransferSafe) {
+        isVisible = false;
+      }
+      
+    } else if (mode === "interchange_pick") {
+      // Pick 模式：防禦循環線！
+      // 如果個站 ID 係上車站，但 seq 唔係上車站嗰個（即係同一條線出現兩次嘅尾站），強制隱藏
+      if (originStopId && s.stop_id === originStopId && originSeq) {
+        if (s.seq != originSeq) {
+          isVisible = false;
+        }
+      }
+    }
+
     const div = document.createElement("div");
     div.className = "stop-item";
     div.dataset.stopId = s.stop_id;
+    div.dataset.seq = s.seq; 
+    
+    if (!isVisible) {
+      div.style.display = "none";
+    }
 
     const header = document.createElement("div");
     header.className = "stop-header";
@@ -1502,41 +1610,26 @@ function renderStopList() {
     titleSpan.textContent = `${s.seq}. ${s.name_tc}`;
     left.appendChild(titleSpan);
 
-    // 決定要不要顯示「轉車」button
-    let shouldShowInterBtn = false;
-    if (mode === "interchange_pick" && originStopId) {
-      const originIndex = routeStops.findIndex(x => x.stop_id === originStopId);
-      const thisIndex = routeStops.findIndex(x => x.stop_id === s.stop_id);
-      if (originIndex >= 0 && thisIndex >= originIndex) {
-        shouldShowInterBtn = true;
-      }
-    }
-
-    if (shouldShowInterBtn) {
+    if (mode === "interchange_pick" && originIndex >= 0 && index >= originIndex) {
       const interBtn = document.createElement("button");
       interBtn.className = "btn-small";
       interBtn.textContent = "轉車";
       interBtn.onclick = (ev) => {
         ev.stopPropagation();
-        onInterchangeButtonClick(s.stop_id); // ★ 一律用 stop_id
+        onInterchangeButtonClick(s.stop_id, s.seq); 
       };
       left.appendChild(interBtn);
     }
 
     const summaryWrapper = document.createElement("span");
     summaryWrapper.className = "summary-wrapper";
-
     const summarySpan = document.createElement("span");
     summarySpan.className = "stop-eta-summary";
-    summarySpan.textContent = "";
-
     const boardingSpan = document.createElement("span");
     boardingSpan.className = "stop-boarding-info";
-    boardingSpan.textContent = "";
 
     summaryWrapper.appendChild(summarySpan);
     summaryWrapper.appendChild(boardingSpan);
-
     header.appendChild(left);
     header.appendChild(summaryWrapper);
 
@@ -1546,71 +1639,13 @@ function renderStopList() {
     div.appendChild(header);
     div.appendChild(etaBlock);
 
-    // 點擊整行：選站＋顯示 ETA（除咗 pair 模式）
     div.onclick = () => {
       if (mode === "interchange_pair") return;
-      onStopClicked(s.stop_id);
+      onStopClicked(s.stop_id, s.seq); 
     };
 
     container.appendChild(div);
   });
-
-  renderStopsAccordingToMode();
-}
-
-
-function renderStopsAccordingToMode() {
-  const infoDiv = document.getElementById("interchangeInfo");
-  const ctrlDiv = document.getElementById("interchangeControls");
-  if (infoDiv) infoDiv.textContent = "";
-  if (ctrlDiv) ctrlDiv.innerHTML = "";
-
-  if (mode === "normal") {
-    const tSec = document.getElementById("transfer-search-section");
-    if (tSec) tSec.style.display = "none";
-    return;
-  }
-
-  const tSec = document.getElementById("transfer-search-section");
-
-  if (mode === "interchange_pick" && originStopId) {
-    const origin = routeStops.find(s => s.stop_id === originStopId);
-    const name = origin ? origin.name_tc : originStopId;
-    if (infoDiv) infoDiv.textContent =
-      `轉車模式：上車站 ${name}，請揀轉車站（只可以揀之後嘅站）。`;
-    if (tSec) tSec.style.display = "none";
-  } else if (mode === "interchange_pair" && originStopId && transferStopId) {
-    const origin = routeStops.find(s => s.stop_id === originStopId);
-    const trans  = routeStops.find(s => s.stop_id === transferStopId);
-    const nameO  = origin ? origin.name_tc : originStopId;
-    const nameT  = trans  ? trans.name_tc  : transferStopId;
-    transferStopName = trans ? normalizeStopName(trans.name_tc) : null;
-    if (infoDiv) infoDiv.textContent = `轉車模式：上車站 ${nameO} → 轉車站 ${nameT}`;
-
-    if (ctrlDiv) {
-      const btn = document.createElement("button");
-      btn.textContent = "取消轉車";
-      btn.onclick = exitInterchangeMode;
-      ctrlDiv.appendChild(btn);
-    }
-
-    if (tSec) tSec.style.display = "block";
-    clearTransferState();
-  }
-
-  const allItems = Array.from(document.querySelectorAll(".stop-item"));
-  if (mode === "interchange_pair" && originStopId && transferStopId) {
-    allItems.forEach(el => {
-      const sid = el.dataset.stopId;
-      if (sid === originStopId || sid === transferStopId) {
-        el.style.display = "";
-      } else {
-        el.style.display = "none";
-      }
-    });
-  } else {
-    allItems.forEach(el => el.style.display = "");
-  }
 }
 
 async function exitInterchangeMode() {
@@ -1642,37 +1677,62 @@ async function exitInterchangeMode() {
   }
 }
 
-function onInterchangeButtonClick(stopId) {
+function onInterchangeButtonClick(stopId, seq) {
+  let targetSeq = parseInt(seq);
+  if (isNaN(targetSeq)) {
+    const found = routeStops.find(s => s.stop_id === stopId);
+    if (found) targetSeq = parseInt(found.seq);
+  }
+
   if (mode === "normal") {
-    // 如果未經過 onStopClicked，直接以轉車 button 當上車站
     originStopId = stopId;
+    
+    // ★ 循環線終極防禦：就算佢撳尾站，都格硬當佢撳頭站！
+    const allMatches = routeStops.filter(s => s.stop_id === stopId);
+    if (allMatches.length > 1) {
+      // 搵晒同一 ID 嘅站，強制攞最細嗰個 seq (即係頭站)
+      targetSeq = Math.min(...allMatches.map(s => parseInt(s.seq)));
+    }
+
+    originSeq = targetSeq; // 記低上車站嘅站序 (必定係頭站)
     mode = "interchange_pick";
-    recomputeCumulativeTravelFromOrigin(stopId);
+    
+    recomputeCumulativeTravelFromOrigin(stopId); 
     renderStopList();
-    selectStop(stopId);           // 顯示 ETA
+    selectStop(stopId, targetSeq);  
     return;
   }
 
   if (mode === "interchange_pick") {
-    // 已有上車站，再按「轉車」＝選轉車站
+    // 如果佢轉車站都夠膽揀總站 (同上車站一樣 ID)
+    if (stopId === originStopId) {
+      targetSeq = originSeq; // 強制變返同上車站一樣
+    }
+
     transferStopId = stopId;
+    transferSeq = targetSeq;
     currentTransferStopId = stopId;
+    currentTransferSeq = targetSeq;
     mode = "interchange_pair";
 
-    renderStopsAccordingToMode(); // ★ 只顯示上車站＋轉車站
+    renderStopList(); 
 
     const walkInfoDiv = document.getElementById("transferWalkInfo");
     if (walkInfoDiv) walkInfoDiv.textContent = "";
 
     ensureDefaultTrackingAtOrigin().then(() => {
-      if (originStopId) loadEtaDetailForStop(originStopId);
-      if (transferStopId) loadEtaDetailForStop(transferStopId);
+      if (originStopId) loadEtaDetailForStop(originStopId, originSeq);
+      // 避免頭站同尾站係同一個 ID 時重複 Load ETA
+      if (transferStopId && (transferStopId !== originStopId || transferSeq != originSeq)) {
+        loadEtaDetailForStop(transferStopId, transferSeq);
+      }
       guessBoardingBusAtTransferStop();
     });
 
-    // 如有 allStopMarkers，可以順便移地圖
     if (typeof allStopMarkers !== "undefined" && map) {
-      const marker = allStopMarkers.find(m => m.stopId === stopId);
+      let marker = allStopMarkers.find(m => m.stopId === stopId && m.seq == targetSeq);
+      if (!marker) marker = allStopMarkers.find(m => m.stopId === stopId);
+      
       if (marker) {
         map.setView(marker.getLatLng(), 17);
         if (marker.openPopup) marker.openPopup();
@@ -1680,7 +1740,6 @@ function onInterchangeButtonClick(stopId) {
     }
   }
 }
-
 
 function clearStopSelectionUI() {
   document.querySelectorAll(".stop-item.selected").forEach(el => {
@@ -1691,7 +1750,7 @@ function clearStopSelectionUI() {
   });
 }
 
-function onStopClicked(stopId) {
+function onStopClicked(stopId,seq) {
   originStopId = stopId;
 
   if (mode === "normal") {
@@ -1700,21 +1759,26 @@ function onStopClicked(stopId) {
 
   recomputeCumulativeTravelFromOrigin(stopId);
   renderStopList();
-  selectStop(stopId);   // ★ 每次 click 行都即時顯示 ETA
+  selectStop(stopId,seq);   // ★ 每次 click 行都即時顯示 ETA
 }
 
 
-function selectStop(stopId) {
+function selectStop(stopId, seq) {
   currentStopId = stopId;
+  // 建議將 seq 轉為整數方便比對
+  const targetSeq = parseInt(seq);
 
-  // 1. 高亮 Step 3 站列表
+  // 1. 高亮 Step 3 站列表 (使用 stopId + seq 雙重判定)
   const allItems = document.querySelectorAll("#stopList .stop-item");
   allItems.forEach(el => {
-    el.classList.toggle("selected", el.dataset.stopId === stopId);
+    const elStopId = el.dataset.stopId;
+    const elSeq = parseInt(el.dataset.seq);
+    el.classList.toggle("selected", elStopId === stopId && elSeq === targetSeq);
   });
 
-  // 2. 重新載入該站 ETA（沿用你原本 code）
-  const el = document.querySelector(`#stopList .stop-item[data-stop-id="${stopId}"]`);
+  // 2. 重新載入該站 ETA
+  // 注意：這裡也要改用雙重選擇器，確保抓到循環線中正確的那一格
+  const el = document.querySelector(`#stopList .stop-item[data-stop-id="${stopId}"][data-seq="${targetSeq}"]`);
   if (!el) return;
 
   const etaBlock = el.querySelector(".eta-block");
@@ -1728,10 +1792,19 @@ function selectStop(stopId) {
 
   async function loadEta() {
     try {
+      // 呼叫 KMB API
       const data = await fetchJSON(
         `${KMB_BASE}/eta/${stopId}/${currentRoute.route}/${currentServiceType}`
       );
+      
       let list = data.data || [];
+
+      // ★ 核心邏輯：根據 seq 過濾 ★
+      // KMB 的 ETA API 會回傳該站所有方向、所有序位的班次
+      // 我們只保留「班次序位」等於「點擊站位」的資料
+      list = list.filter(item => parseInt(item.seq) === targetSeq);
+
+      // 如果有方向代碼 (inbound/outbound)，也可以多做一重保險
       if (currentDirectionCode) {
         list = list.filter(item => item.dir === currentDirectionCode);
       }
@@ -1756,7 +1829,7 @@ function selectStop(stopId) {
           if (isScheduled) contentNode.style.fontStyle = "italic";
           row.appendChild(contentNode);
 
-          // 追蹤按鈕（如果你原本有）
+          // 追蹤按鈕
           const btnTrack = document.createElement("button");
           btnTrack.className = "btn-track";
           btnTrack.textContent = "追蹤";
@@ -1779,14 +1852,15 @@ function selectStop(stopId) {
   }
 
   loadEta();
-
   mainEtaTimer = setInterval(loadEta, 30000);
 
-  // 3. 延遲 0.5 秒先移地圖 / 開 popup
+  // 3. 延遲 0.5 秒移地圖
   setTimeout(() => {
+    // 地圖通常只需要移動到 stopId 對應座標，seq 不影響地理位置
     focusMapToStop(stopId, 16, true);
   }, 500);
 }
+
 
 function focusMapToStop(stopId, zoomLevel = 16, openPopup = false) {
   if (!map || !stopsLayer || !stopId) return;
@@ -2059,14 +2133,22 @@ async function guessBoardingBusAtTransferStop() {
 
 
 /* ========== Step3 ETA 詳情（含追蹤） ========== */
+async function loadEtaDetailForStop(stopId, seq) {
+  // 確保 seq 係數字
+  const targetSeq = parseInt(seq);
 
-async function loadEtaDetailForStop(stopId) {
-  if (!currentRoute) return;
+  let el = null;
+  if (!isNaN(targetSeq)) {
+    el = document.querySelector(`.stop-item[data-stop-id="${stopId}"][data-seq="${targetSeq}"]`);
+  }
+  
+  if (!el) {
+    el = document.querySelector(`.stop-item[data-stop-id="${stopId}"]`);
+  }
+  if (!el) return;
 
-  const stopEl = document.querySelector(`.stop-item[data-stop-id="${stopId}"]`);
-  if (!stopEl) return;
-  const etaBlock = stopEl.querySelector(".eta-block");
-
+  const etaBlock = el.querySelector(".eta-block");
+  if (!etaBlock) return;
   etaBlock.textContent = "載入 ETA 中...";
 
   try {
@@ -2074,72 +2156,65 @@ async function loadEtaDetailForStop(stopId) {
       `${KMB_BASE}/eta/${stopId}/${currentRoute.route}/${currentServiceType}`
     );
     let list = data.data || [];
+
+    if (!isNaN(targetSeq)) {
+      list = list.filter(item => parseInt(item.seq) === targetSeq);
+    }
+    
     if (currentDirectionCode) {
       list = list.filter(item => item.dir === currentDirectionCode);
     }
 
     etaBlock.innerHTML = "";
-
-    if (list.length === 0) {
+    if (!list.length) {
       etaBlock.textContent = "暫時冇班次資料";
-      return;
+    } else {
+      list.forEach(item => {
+        // 假設你有 formatDetailLine 處理文字
+        const { text, minutes, isScheduled, status, etaTime } = formatDetailLine(item);
+
+        const row = document.createElement("div");
+        row.className = "eta-row";
+        if (minutes <= 0) {
+          row.classList.add("eta-imminent");
+        } else {
+          row.style.color = grayColorByMinutes(minutes);
+        }
+
+        const contentNode = document.createElement("span");
+        contentNode.textContent = text;
+        if (isScheduled) contentNode.style.fontStyle = "italic";
+        row.appendChild(contentNode);
+
+        // ★ 核心改動：判斷需唔需要顯示「追蹤」按鈕
+        let showTrackBtn = true;
+        if (mode === "interchange_pair" || mode === "interchange_pick") {
+          // 檢查呢個站係咪「上車站」
+          const isOrigin = (stopId === originStopId && (!originSeq || targetSeq === parseInt(originSeq)));
+          // 如果唔係上車站，就隱藏追蹤按鈕
+          if (!isOrigin) {
+            showTrackBtn = false;
+          }
+        }
+
+        // 只有符合條件（正常模式，或者係轉車模式嘅上車站）先會畫個 Button 出嚟
+        if (showTrackBtn) {
+          const btnTrack = document.createElement("button");
+          btnTrack.className = "btn-track";
+          btnTrack.textContent = "追蹤";
+          btnTrack.onclick = (e) => {
+            e.stopPropagation();
+            setTrackingEta(
+              { id: item.eta_seq || null, etaTime, status },
+              row
+            );
+          };
+          row.appendChild(btnTrack);
+        }
+
+        etaBlock.appendChild(row);
+      });
     }
-
-	list.forEach((item, index) => {
-	  const detail = formatDetailLine(item);
-	  const { text, minutes, isScheduled, status, etaTime } = detail;
-
-	  const row = document.createElement("div");
-	  row.className = "eta-row";
-
-	if (minutes <= 0) {
-	  row.classList.add("eta-imminent");
-	} else {
-	  row.classList.remove("eta-row-gray-1","eta-row-gray-2","eta-row-gray-3","eta-row-gray-4","eta-row-gray-5");
-	  if (minutes <= 5) {
-		row.classList.add("eta-row-gray-1");
-	  } else if (minutes <= 10) {
-		row.classList.add("eta-row-gray-2");
-	  } else if (minutes <= 15) {
-		row.classList.add("eta-row-gray-3");
-	  } else if (minutes <= 20) {
-		row.classList.add("eta-row-gray-4");
-	  } else {
-		row.classList.add("eta-row-gray-5");
-	  }
-	}
-
-	  const contentNode = document.createElement("span");
-	  contentNode.textContent = text;
-	  if (isScheduled) contentNode.style.fontStyle = "italic";
-	  row.appendChild(contentNode);
-
-	  if (stopId === originStopId && etaTime) {
-		const etaObj = {
-		  id: `${stopId}-${index}`,
-		  etaTime: etaTime,
-		  status: status
-		};
-
-		const btnTrack = document.createElement("button");
-		btnTrack.type = "button";
-		btnTrack.className = "btn-small btn-track";
-		btnTrack.textContent = "追蹤";
-		btnTrack.addEventListener("click", (ev) => {
-		  ev.stopPropagation();
-		  setTrackingEta(etaObj, row);
-		});
-		row.appendChild(btnTrack);
-
-		// 如呢行就係追蹤緊嗰班 → 深藍＋underline
-		if (selectedEtaId === etaObj.id) {
-		  row.classList.add("tracked");
-		  btnTrack.classList.add("active");
-		}
-	  }
-
-	  etaBlock.appendChild(row);
-	});
   } catch (e) {
     console.error(e);
     etaBlock.textContent = "載入 ETA 失敗：" + e.message;
@@ -2345,6 +2420,10 @@ async function selectTransferRoute(route) {
   const btnIn = document.getElementById("transferDirInbound");
   const btnOut = document.getElementById("transferDirOutbound");
   if (!btnIn || !btnOut) return;
+  
+  // ★ 重置顯示狀態
+  btnIn.style.display = ""; 
+  btnOut.style.display = "";
   btnIn.disabled = true;
   btnOut.disabled = true;
   btnIn.textContent = "載入方向中...";
@@ -2364,10 +2443,13 @@ async function selectTransferRoute(route) {
 
     let inName = "?";
     let outName = "?";
+    let hasInbound = false;
+    let hasOutbound = false;
 
     if (inData.status === "fulfilled") {
       const list = (inData.value.data || []).sort((a, b) => a.seq - b.seq);
       if (list.length > 0) {
+        hasInbound = true;
         const last = list[list.length - 1];
         const stopInfo = allStopsMap.get(last.stop);
         inName = stopInfo ? stripBracketCode(stopInfo.name_tc) : stripBracketCode(transferRoute.dest_tc);
@@ -2377,16 +2459,33 @@ async function selectTransferRoute(route) {
     if (outData.status === "fulfilled") {
       const list = (outData.value.data || []).sort((a, b) => a.seq - b.seq);
       if (list.length > 0) {
+        hasOutbound = true;
         const last = list[list.length - 1];
         const stopInfo = allStopsMap.get(last.stop);
         outName = stopInfo ? stripBracketCode(stopInfo.name_tc) : stripBracketCode(transferRoute.orig_tc);
       }
     }
 
-    btnIn.textContent = `往 ${inName !== "?" ? inName : stripBracketCode(transferRoute.dest_tc)} 方向`;
-    btnOut.textContent = `往 ${outName !== "?" ? outName : stripBracketCode(transferRoute.orig_tc)} 方向`;
-    btnIn.disabled = false;
-    btnOut.disabled = false;
+    // ★ 判斷係咪循環線，隱藏並自動 Click
+    if (hasInbound && hasOutbound) {
+      btnIn.textContent = `往 ${inName !== "?" ? inName : stripBracketCode(transferRoute.dest_tc)} 方向`;
+      btnIn.disabled = false;
+      btnOut.textContent = `往 ${outName !== "?" ? outName : stripBracketCode(transferRoute.orig_tc)} 方向`;
+      btnOut.disabled = false;
+    } else if (hasInbound) {
+      btnIn.textContent = `往 ${inName !== "?" ? inName : stripBracketCode(transferRoute.dest_tc)} 方向`;
+      btnIn.disabled = false;
+      btnOut.style.display = "none";
+      setTimeout(() => btnIn.click(), 50); // 自動 Click！
+    } else if (hasOutbound) {
+      btnOut.textContent = `往 ${outName !== "?" ? outName : stripBracketCode(transferRoute.orig_tc)} 方向`;
+      btnOut.disabled = false;
+      btnIn.style.display = "none";
+      setTimeout(() => btnOut.click(), 50); // 自動 Click！
+    } else {
+      btnIn.textContent = `無此方向`;
+      btnOut.textContent = `無此方向`;
+    }
 
     const btnReset = document.getElementById("btnResetTransfer");
     if (btnReset) btnReset.style.display = "inline-block";
@@ -2396,6 +2495,7 @@ async function selectTransferRoute(route) {
     btnOut.textContent = "往 ? 方向";
   }
 }
+
 
 document.getElementById("transferDirInbound").addEventListener("click", () => {
   if (!transferRoute) return;
@@ -2573,8 +2673,6 @@ function selectSecondRoute(transferStopId) {
 }
 
 
-
-
 function shrinkTransferLayoutAfterDirectionChosen() {
   const routeText = transferRoute
     ? `${transferRoute.route}（${transferRoute.orig_tc} ↔ ${transferRoute.dest_tc}）`
@@ -2611,8 +2709,6 @@ function shrinkTransferLayoutAfterDirectionChosen() {
   const stopBlock = document.getElementById("transfer-stop-block");
   if (stopBlock) stopBlock.style.display = "";
 }
-
-
 
 
 
