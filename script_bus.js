@@ -1150,8 +1150,8 @@ function resetTransferOnly() {
 /* ========== Step1 大清除 ========== */
 
 function resetAllState() {
-	
-  clearSecondRouteVisual();   // ★ 新增：Step 1 重設時都清晒紅色線 / 紅 tag
+  
+  clearSecondRouteVisual();   // ★ 本身已有：清第二路線 / 紅 tag
   
   if (mode === "interchange_pick" || mode === "interchange_pair") {
     originStopId = null;
@@ -1201,20 +1201,55 @@ function resetAllState() {
   renderRouteList();
   renderVirtualKeyboard();
 
-  // ★ 新增：清地圖上所有 tag / 路線，還原視野
-  if (stopsLayer) {
-    stopsLayer.clearLayers();
-  }
-  // 如果你有其它 layer（例如 userToStopRouteLayer），都可以喺度一拼清除：
-  // if (userToStopRouteLayer) { map.removeLayer(userToStopRouteLayer); userToStopRouteLayer = null; }
-
+  // ==========================================
+  // ★ 強力清除地圖顯示 (移除所有線 / Marker)
+  // ==========================================
   if (map) {
-    map.setView([22.32, 114.17], 12); // 香港大致中心
+    // 1. 清除站點 Marker (保留 stopsLayer 個殻，清空裡面)
+    if (typeof stopsLayer !== "undefined" && stopsLayer) {
+      stopsLayer.clearLayers();
+    }
+
+    // 2. 清除主路線畫線 (Polyline) -> 假設你畫線個變數叫 routeLine 或 routeLayer
+    if (typeof routeLine !== "undefined" && routeLine) {
+      map.removeLayer(routeLine);
+      routeLine = null;
+    }
+    if (typeof routeLayer !== "undefined" && routeLayer) {
+      if (routeLayer.clearLayers) routeLayer.clearLayers();
+      else map.removeLayer(routeLayer);
+    }
+
+    // 3. 清除用家至站點嘅步行路線 / 導航線 (解除註解並生效)
+    if (typeof userToStopRouteLayer !== "undefined" && userToStopRouteLayer) {
+      map.removeLayer(userToStopRouteLayer);
+      userToStopRouteLayer = null;
+    }
+
+    // 4. 清除用家自己個 GPS 定位 Marker (假設叫 userMarker)
+    if (typeof userMarker !== "undefined" && userMarker) {
+      map.removeLayer(userMarker);
+      userMarker = null;
+    }
+
+    // 5. 終極絕招 (如果上面仲有嘢清唔走)：
+    // 掃描地圖上所有物件，如果唔係底圖 (TileLayer) 就剷走佢
+    map.eachLayer(function (layer) {
+      // _url 係底圖 (例如 OpenStreetMap) 嘅專屬屬性
+      // 同埋排除 stopsLayer，費事下次加 Marker 唔見咗
+      if (!layer._url && layer !== stopsLayer) {
+        map.removeLayer(layer);
+      }
+    });
+
+    // 6. 視角重置返去香港中心
+    map.setView([22.32, 114.17], 12); 
   }
 
   const userInfo = document.getElementById("userWalkInfo");
   if (userInfo) userInfo.textContent = "";
 }
+
 
 
 /* ========== Step2: 揀方向 ========== */
