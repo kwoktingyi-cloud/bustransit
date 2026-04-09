@@ -1,7 +1,9 @@
-const BASE = "https://data.etabus.gov.hk/v1/transport/kmb";
+// KMB 固定 KMB_BASE（之後城巴會用另一組 URL）
+const KMB_BASE = "https://data.etabus.gov.hk/v1/transport/kmb";
 
-let allRoutes = [];
-let uniqueRoutes = [];
+// 多公司共用的 route list（KMB + CTB + 之後 GMB）
+let allRoutes = [];      // 全部公司路線
+let uniqueRoutes = [];   // 去重後（同一公司同一路線只留一條）
 let allStopsMap = new Map();
 let currentRoute = null;
 let currentServiceType = "1";
@@ -175,6 +177,81 @@ async function fetchJSON(url, retries = 5, delayMs = 200) {
       await new Promise(r => setTimeout(r, delayMs));
     }
   }
+}
+
+/* ========== 多公司 Route Loader ========== */
+
+// 統一的路線格式：
+// {
+//   company: "KMB" | "CTB",
+//   route: "118",
+//   bound: "I" | "O" | null,
+//   service_type: "1",
+//   orig_tc: "...",
+//   dest_tc: "..."
+// }
+
+// 1) KMB：用你原本個 API
+async function kmbLoadAllRoutesAndStops() {
+  const [routeRes, stopRes, routeStopListRes] = await Promise.all([
+    fetchJSON(`${KMB_BASE}/route/`),
+    fetchJSON(`${KMB_BASE}/stop/`),
+    fetchJSON(`${KMB_BASE}/route-stop`)
+  ]);
+
+  const kmbRoutesRaw = routeRes.data || [];
+  const routeMap = new Map();
+  const kmbRoutes = [];
+
+  for (const r of kmbRoutesRaw) {
+    const key = `KMB-${r.route}-${r.service_type || "1"}`;
+    if (!routeMap.has(key)) {
+      const obj = {
+        company: "KMB",
+        route: r.route,
+        bound: null,                   // 方向之後用 route-stop 再判
+        service_type: r.service_type || "1",
+        orig_tc: r.orig_tc,
+        dest_tc: r.dest_tc
+      };
+      routeMap.set(key, obj);
+      kmbRoutes.push(obj);
+    }
+  }
+
+  // KMB stop / route-stop 保持你原本結構
+  const stops = stopRes.data || [];
+  allStopsMap = new Map(stops.map(s => [s.stop, s]));
+
+  routesByStopId = {};
+  const rsAll = routeStopListRes.data || [];
+  rsAll.forEach(rs => {
+    if (!routesByStopId[rs.stop]) routesByStopId[rs.stop] = [];
+    routesByStopId[rs.stop].push({
+      company: "KMB",
+      route: rs.route,
+      bound: rs.bound,
+      service_type: rs.service_type,
+      seq: rs.seq
+    });
+  });
+
+  return kmbRoutes;
+}
+
+// 2) 城巴：先起 skeleton（之後你可以按 data.gov.hk 填足）
+// 參考資料：Citybus route / stop / ETA API on data.gov.hk
+async function ctbLoadAllRoutesAndStops() {
+  // TODO: 之後實做
+  // 概念：
+  // 1. 用 data.gov.hk 城巴 route list API 拉所有 CTB 路線
+  // 2. 轉成同上面 KMB 一樣格式的物件：
+  //    { company: "CTB", route, bound, service_type, orig_tc, dest_tc }
+  // 3. 同時填充 allStopsMap（stop_id -> { name_tc, lat, long }）
+  // 4. 同時填充 routesByStopId（stop_id -> [{ company:"CTB", route, ... }]）
+  //
+  // 暫時先返回空陣列，等你之後慢慢加。
+  return [];
 }
 
 /* ========== 距離 / 速度 / 時間 ========== */
@@ -515,34 +592,26 @@ function setTrackingEta(etaObj, rowElement) {
 
 async function init() {
   try {
-    const [routeRes, stopRes, routeStopListRes] = await Promise.all([
-      fetchJSON(`${BASE}/route/`),
-      fetchJSON(`${BASE}/stop/`),
-      fetchJSON(`${BASE}/route-stop`)
+    // ★ 新：一次過 load KMB + CTB（CTB 暫時係空）
+    const [kmbRoutes, ctbRoutes] = await Promise.all([
+      kmbLoadAllRoutesAndStops(),
+      ctbLoadAllRoutesAndStops()
     ]);
-    allRoutes = routeRes.data || [];
 
-    const routeMap = new Map();
+    // 合併成 allRoutes
+    allRoutes = [...kmbRoutes, ...ctbRoutes];
+
+    // uniqueRoutes：同一公司 + 同一路線只留一條
+    const uMap = new Map();
     for (const r of allRoutes) {
-      if (!routeMap.has(r.route)) routeMap.set(r.route, r);
+      const key = `${r.company}-${r.route}-${r.service_type}`;
+      if (!uMap.has(key)) {
+        uMap.set(key, r);
+      }
     }
-    uniqueRoutes = Array.from(routeMap.values());
+    uniqueRoutes = Array.from(uMap.values());
 
-    const stops = stopRes.data || [];
-    allStopsMap = new Map(stops.map(s => [s.stop, s]));
-
-    routesByStopId = {};
-    const rsAll = routeStopListRes.data || [];
-    rsAll.forEach(rs => {
-      if (!routesByStopId[rs.stop]) routesByStopId[rs.stop] = [];
-      routesByStopId[rs.stop].push({
-        route: rs.route,
-        bound: rs.bound,
-        service_type: rs.service_type,
-        seq: rs.seq
-      });
-    });
-
+    // 之後流程同你原本差唔多
     currentInput = "";
     updateRouteInputDisplay();
     candidateRoutes = uniqueRoutes.slice();
@@ -560,12 +629,10 @@ async function init() {
       "載入路線 / 巴士站失敗：" + e.message;
     alert("初始化失敗，請開 F12 → Console 睇詳情。");
   }
-  
 
-    checkUrlForRoute();
-  
-  
+  checkUrlForRoute();
 }
+
 
 /* ========== Step1: 路線輸入 ========== */
 
@@ -582,25 +649,43 @@ function updateRouteInputDisplay() {
 function filterRoutesByInput() {
   if (!currentInput) {
     candidateRoutes = [];
-  } else {
-    const kw = currentInput.toLowerCase();
-    candidateRoutes = uniqueRoutes.filter(r =>
-      r.route.toLowerCase().startsWith(kw)
-    );
+    return;
   }
+  const kw = currentInput.toLowerCase();
+
+  // 先揀出所有公司嘅匹配路線
+  const matched = allRoutes.filter(r => r.route.toLowerCase().startsWith(kw));
+
+  // 再用 route code 去重，並且記住有邊啲公司
+  const byRoute = new Map();
+  matched.forEach(r => {
+    const code = r.route;
+    if (!byRoute.has(code)) {
+      byRoute.set(code, {
+        route: code,
+        orig_tc: r.orig_tc,
+        dest_tc: r.dest_tc,
+        companies: new Set([r.company]),
+        samples: [r]   // 之後用嚟 select 某間公司
+      });
+    } else {
+      const obj = byRoute.get(code);
+      obj.companies.add(r.company);
+      obj.samples.push(r);
+    }
+  });
+
+  candidateRoutes = Array.from(byRoute.values());
 }
 
 function renderRouteList() {
   const container = document.getElementById("routeList");
   container.innerHTML = "";
-
   if (currentRoute) return;
-
   if (!currentInput) {
     container.textContent = "請先輸入至少一個字元。";
     return;
   }
-
   if (candidateRoutes.length === 0) {
     container.textContent = "冇符合路線";
     return;
@@ -609,12 +694,43 @@ function renderRouteList() {
   candidateRoutes.slice(0, 100).forEach(r => {
     const div = document.createElement("div");
     div.className = "route-item";
-    div.textContent = `${r.route}：${r.orig_tc} ↔ ${r.dest_tc}`;
-    div.onclick = () => selectRoute(r);
+
+    // r.companies 係一個 Set
+    const cos = Array.from(r.companies);
+    const coLabel =
+      cos.length === 1
+        ? (cos[0] === "KMB" ? "（九巴）" :
+           cos[0] === "CTB" ? "（城巴）" :
+           `（${cos[0]}）`)
+        : "（九巴 / 城巴）";
+
+    div.textContent = `${r.route}${coLabel}：${r.orig_tc} ↔ ${r.dest_tc}`;
+
+    // 點擊：如果得一間公司，就直接用嗰個 sample
+    // 如果多間公司，可以簡單揀其中一個（之後你可以加 popup 俾 user 揀）
+    div.onclick = () => {
+      const samples = r.samples;
+      const kmb = samples.find(x => x.company === "KMB");
+      const ctb = samples.find(x => x.company === "CTB");
+
+      let target = kmb || ctb || samples[0]; // 暫時預設優先九巴，其次城巴
+
+      selectRoute(target);
+    };
+
     container.appendChild(div);
   });
 }
 
+
+function updateAfterInputChange() {
+  updateRouteInputDisplay();
+  filterRoutesByInput();
+  renderRouteList();
+  renderVirtualKeyboard();
+}
+
+/* ========== Step4 虛擬鍵盤 ========== */
 function renderVirtualKeyboard() {
   const container = document.getElementById("vk-container");
   container.innerHTML = "";
@@ -622,7 +738,9 @@ function renderVirtualKeyboard() {
   if (currentRoute && keyboardHidden) {
     const clear = document.createElement("div");
     clear.className = "vk-key special";
-    clear.textContent = "清除";
+    clear.textContent = "X";
+    clear.style.backgroundColor = "#ffcccc"; // 淺紅色
+    clear.style.color = "#cc0000"; // 深紅字
     clear.onclick = () => {
       resetAllState();
     };
@@ -633,35 +751,81 @@ function renderVirtualKeyboard() {
   const baseRoutes = currentInput ? candidateRoutes : uniqueRoutes;
   const usage = computeNextCharUsage(baseRoutes, currentInput);
 
-  const labelDigits = document.createElement("div");
-  labelDigits.className = "vk-label";
-  labelDigits.textContent = "數字";
-  container.appendChild(labelDigits);
-
-  const digitRow = document.createElement("div");
-  digitRow.className = "vk-row";
-  for (let d = 0; d <= 9; d++) {
-    const ch = String(d);
-    const key = document.createElement("div");
-    key.className = "vk-key";
-    key.textContent = ch;
-    if (!usage.digits[ch]) {
-      key.classList.add("disabled");
-    } else {
-      key.onclick = () => {
-        if (!currentRoute && !key.classList.contains("disabled")) {
-          currentInput += ch;
-          updateAfterInputChange();
-        }
-      };
+  // --- 1. 頂部控制鍵：刪除 & 清除(X) ---
+  const topRow = document.createElement("div");
+  topRow.className = "vk-row";
+  
+  const backspace = document.createElement("div");
+  backspace.className = "vk-key special";
+  backspace.textContent = "刪除";
+  backspace.onclick = () => {
+    if (currentRoute) return;
+    if (currentInput.length > 0) {
+      currentInput = currentInput.slice(0, -1);
+      updateAfterInputChange();
     }
-    digitRow.appendChild(key);
-  }
-  container.appendChild(digitRow);
+  };
+  
+  const clear = document.createElement("div");
+  clear.className = "vk-key special";
+  clear.textContent = "X";
+  clear.style.backgroundColor = "#ffcccc"; // 淺紅色
+  clear.style.color = "#cc0000";
+  clear.onclick = () => {
+    resetAllState();
+  };
+  
+  topRow.appendChild(backspace);
+  topRow.appendChild(clear);
+  container.appendChild(topRow);
 
+  // --- 2. 數字 Numpad 佈局 ---
+  const numpadLayout = [
+    [1, 2, 3],
+    [4, 5, 6],
+    [7, 8, 9],
+    [null, 0, null] // null 用作佔位符，令 0 置中
+  ];
+
+  numpadLayout.forEach(rowDigits => {
+    const digitRow = document.createElement("div");
+    digitRow.className = "vk-row";
+    
+    rowDigits.forEach(d => {
+      if (d === null) {
+        // 空白佔位符
+        const spacer = document.createElement("div");
+        spacer.className = "vk-key";
+        spacer.style.visibility = "hidden"; 
+        digitRow.appendChild(spacer);
+        return;
+      }
+      
+      const ch = String(d);
+      const key = document.createElement("div");
+      key.className = "vk-key";
+      key.textContent = ch;
+      
+      if (!usage.digits[ch]) {
+        key.classList.add("disabled");
+      } else {
+        key.onclick = () => {
+          if (!currentRoute && !key.classList.contains("disabled")) {
+            currentInput += ch;
+            updateAfterInputChange();
+          }
+        };
+      }
+      digitRow.appendChild(key);
+    });
+    container.appendChild(digitRow);
+  });
+
+  // --- 3. 英文字母 ---
   const labelLetters = document.createElement("div");
   labelLetters.className = "vk-label";
   labelLetters.textContent = "英文字母";
+  labelLetters.style.marginTop = "10px"; // 加少少空位隔開 Numpad
   container.appendChild(labelLetters);
 
   const letters = Object.keys(usage.letters).filter(ch => usage.letters[ch]);
@@ -688,38 +852,7 @@ function renderVirtualKeyboard() {
     });
     container.appendChild(letterRow);
   }
-
-  const row2 = document.createElement("div");
-  row2.className = "vk-row";
-  const backspace = document.createElement("div");
-  backspace.className = "vk-key special";
-  backspace.textContent = "刪除";
-  backspace.onclick = () => {
-    if (currentRoute) return;
-    if (currentInput.length > 0) {
-      currentInput = currentInput.slice(0, -1);
-      updateAfterInputChange();
-    }
-  };
-  const clear = document.createElement("div");
-  clear.className = "vk-key special";
-  clear.textContent = "清除";
-  clear.onclick = () => {
-    resetAllState();
-  };
-  row2.appendChild(backspace);
-  row2.appendChild(clear);
-  container.appendChild(row2);
 }
-
-function updateAfterInputChange() {
-  updateRouteInputDisplay();
-  filterRoutesByInput();
-  renderRouteList();
-  renderVirtualKeyboard();
-}
-
-/* ========== Step4 虛擬鍵盤 ========== */
 
 function renderTransferVirtualKeyboard() {
   const container = document.getElementById("transferVkContainer");
@@ -729,7 +862,9 @@ function renderTransferVirtualKeyboard() {
   if (transferKeyboardHidden) {
     const clear = document.createElement("div");
     clear.className = "vk-key special";
-    clear.textContent = "清除";
+    clear.textContent = "X";
+    clear.style.backgroundColor = "#ffcccc"; // 淺紅色
+    clear.style.color = "#cc0000";
     clear.onclick = () => {
       transferCurrentInput = "";
       transferCandidateRoutes = [];
@@ -747,35 +882,85 @@ function renderTransferVirtualKeyboard() {
   const baseRoutes = transferCurrentInput ? transferCandidateRoutes : uniqueRoutes;
   const usage = computeNextCharUsage(baseRoutes, transferCurrentInput);
 
-  const labelDigits = document.createElement("div");
-  labelDigits.className = "vk-label";
-  labelDigits.textContent = "數字";
-  container.appendChild(labelDigits);
-
-  const digitRow = document.createElement("div");
-  digitRow.className = "vk-row";
-  for (let d = 0; d <= 9; d++) {
-    const ch = String(d);
-    const key = document.createElement("div");
-    key.className = "vk-key";
-    key.textContent = ch;
-    if (!usage.digits[ch]) {
-      key.classList.add("disabled");
-    } else {
-      key.onclick = () => {
-        if (!key.classList.contains("disabled")) {
-          transferCurrentInput += ch;
-          updateAfterTransferInputChange();
-        }
-      };
+  // --- 1. 頂部控制鍵：刪除 & 清除(X) ---
+  const topRow = document.createElement("div");
+  topRow.className = "vk-row";
+  
+  const backspace = document.createElement("div");
+  backspace.className = "vk-key special";
+  backspace.textContent = "刪除";
+  backspace.onclick = () => {
+    if (transferCurrentInput.length > 0) {
+      transferCurrentInput = transferCurrentInput.slice(0, -1);
+      updateAfterTransferInputChange();
     }
-    digitRow.appendChild(key);
-  }
-  container.appendChild(digitRow);
+  };
+  
+  const clear = document.createElement("div");
+  clear.className = "vk-key special";
+  clear.textContent = "X";
+  clear.style.backgroundColor = "#ffcccc"; // 淺紅色
+  clear.style.color = "#cc0000";
+  clear.onclick = () => {
+    transferCurrentInput = "";
+    transferCandidateRoutes = [];
+    const d1 = document.getElementById("transferRouteInputDisplay");
+    const d2 = document.getElementById("transferRouteList");
+    if (d1) d1.textContent = "(未輸入)";
+    if (d2) d2.textContent = "請輸入路線，會以同名站作為預設轉車站。";
+    renderTransferVirtualKeyboard();
+  };
+  
+  topRow.appendChild(backspace);
+  topRow.appendChild(clear);
+  container.appendChild(topRow);
 
+  // --- 2. 數字 Numpad 佈局 ---
+  const numpadLayout = [
+    [1, 2, 3],
+    [4, 5, 6],
+    [7, 8, 9],
+    [null, 0, null]
+  ];
+
+  numpadLayout.forEach(rowDigits => {
+    const digitRow = document.createElement("div");
+    digitRow.className = "vk-row";
+    
+    rowDigits.forEach(d => {
+      if (d === null) {
+        const spacer = document.createElement("div");
+        spacer.className = "vk-key";
+        spacer.style.visibility = "hidden"; 
+        digitRow.appendChild(spacer);
+        return;
+      }
+      
+      const ch = String(d);
+      const key = document.createElement("div");
+      key.className = "vk-key";
+      key.textContent = ch;
+      
+      if (!usage.digits[ch]) {
+        key.classList.add("disabled");
+      } else {
+        key.onclick = () => {
+          if (!key.classList.contains("disabled")) {
+            transferCurrentInput += ch;
+            updateAfterTransferInputChange();
+          }
+        };
+      }
+      digitRow.appendChild(key);
+    });
+    container.appendChild(digitRow);
+  });
+
+  // --- 3. 英文字母 ---
   const labelLetters = document.createElement("div");
   labelLetters.className = "vk-label";
   labelLetters.textContent = "英文字母";
+  labelLetters.style.marginTop = "10px"; // 加少少空位隔開 Numpad
   container.appendChild(labelLetters);
 
   const letters = Object.keys(usage.letters).filter(ch => usage.letters[ch]);
@@ -800,34 +985,10 @@ function renderTransferVirtualKeyboard() {
     });
     container.appendChild(letterRow);
   }
-
-  const row2 = document.createElement("div");
-  row2.className = "vk-row";
-  const backspace = document.createElement("div");
-  backspace.className = "vk-key special";
-  backspace.textContent = "刪除";
-  backspace.onclick = () => {
-    if (transferCurrentInput.length > 0) {
-      transferCurrentInput = transferCurrentInput.slice(0, -1);
-      updateAfterTransferInputChange();
-    }
-  };
-  const clear = document.createElement("div");
-  clear.className = "vk-key special";
-  clear.textContent = "清除";
-  clear.onclick = () => {
-    transferCurrentInput = "";
-    transferCandidateRoutes = [];
-    const d1 = document.getElementById("transferRouteInputDisplay");
-    const d2 = document.getElementById("transferRouteList");
-    if (d1) d1.textContent = "(未輸入)";
-    if (d2) d2.textContent = "請輸入路線，會以同名站作為預設轉車站。";
-    renderTransferVirtualKeyboard();
-  };
-  row2.appendChild(backspace);
-  row2.appendChild(clear);
-  container.appendChild(row2);
 }
+
+
+
 
 function updateAfterTransferInputChange() {
   const display = document.getElementById("transferRouteInputDisplay");
@@ -863,6 +1024,7 @@ function updateAfterTransferInputChange() {
 
   renderTransferVirtualKeyboard();
 }
+
 
 /* ========== 清 Step4 / 全清 ========== */
 
@@ -1112,8 +1274,8 @@ async function selectRoute(route) {
     const st = currentServiceType;
 
     const [inData, outData] = await Promise.allSettled([
-      fetchJSON(`${BASE}/route-stop/${routeId}/inbound/${st}`),
-      fetchJSON(`${BASE}/route-stop/${routeId}/outbound/${st}`)
+      fetchJSON(`${KMB_BASE}/route-stop/${routeId}/inbound/${st}`),
+      fetchJSON(`${KMB_BASE}/route-stop/${routeId}/outbound/${st}`)
     ]);
 
     if (inData.status === "fulfilled") {
@@ -1231,7 +1393,7 @@ async function loadRouteStopsForCurrentDirection() {
 
   try {
     const rsData = await fetchJSON(
-      `${BASE}/route-stop/${routeId}/${currentDirection}/${serviceType}`
+      `${KMB_BASE}/route-stop/${routeId}/${currentDirection}/${serviceType}`
     );
     const routeStopList = rsData.data || [];
 
@@ -1532,7 +1694,7 @@ function selectStop(stopId) {
   async function loadEta() {
     try {
       const data = await fetchJSON(
-        `${BASE}/eta/${stopId}/${currentRoute.route}/${currentServiceType}`
+        `${KMB_BASE}/eta/${stopId}/${currentRoute.route}/${currentServiceType}`
       );
       let list = data.data || [];
       if (currentDirectionCode) {
@@ -1632,7 +1794,7 @@ async function ensureDefaultTrackingAtOrigin() {
 
   try {
     const data = await fetchJSON(
-      `${BASE}/eta/${originStopId}/${currentRoute.route}/${currentServiceType}`
+      `${KMB_BASE}/eta/${originStopId}/${currentRoute.route}/${currentServiceType}`
     );
     let list = data.data || [];
     list = list.filter(item => item.dir === currentDirectionCode && item.eta);
@@ -1793,7 +1955,7 @@ async function guessBoardingBusAtTransferStop() {
 
   try {
     const data = await fetchJSON(
-      `${BASE}/eta/${transferStopId}/${currentRoute.route}/${currentServiceType}`
+      `${KMB_BASE}/eta/${transferStopId}/${currentRoute.route}/${currentServiceType}`
     );
     let list = data.data || [];
     list = list.filter(item => item.dir === currentDirectionCode && item.eta);
@@ -1874,7 +2036,7 @@ async function loadEtaDetailForStop(stopId) {
 
   try {
     const data = await fetchJSON(
-      `${BASE}/eta/${stopId}/${currentRoute.route}/${currentServiceType}`
+      `${KMB_BASE}/eta/${stopId}/${currentRoute.route}/${currentServiceType}`
     );
     let list = data.data || [];
     if (currentDirectionCode) {
@@ -1955,7 +2117,7 @@ async function loadEtaSummaryForAllStopsNormal() {
   if (!currentRoute) return;
 
   const promises = routeStops.map(s =>
-    fetchJSON(`${BASE}/eta/${s.stop_id}/${currentRoute.route}/${currentServiceType}`)
+    fetchJSON(`${KMB_BASE}/eta/${s.stop_id}/${currentRoute.route}/${currentServiceType}`)
       .then(data => ({ stop_id: s.stop_id, list: data.data || [] }))
       .catch(() => ({ stop_id: s.stop_id, list: [] }))
   );
@@ -2022,7 +2184,7 @@ async function loadEtaSummaryForAllStops() {
   let originEta = null;
   try {
     const data = await fetchJSON(
-      `${BASE}/eta/${originStopId}/${currentRoute.route}/${currentServiceType}`
+      `${KMB_BASE}/eta/${originStopId}/${currentRoute.route}/${currentServiceType}`
     );
     let list = data.data || [];
     if (currentDirectionCode) {
@@ -2083,7 +2245,7 @@ async function loadHeadwayInfo() {
     const targetStopId = currentStopId || routeStops[0].stop_id;
 
     const data = await fetchJSON(
-      `${BASE}/eta/${targetStopId}/${currentRoute.route}/${currentServiceType}`
+      `${KMB_BASE}/eta/${targetStopId}/${currentRoute.route}/${currentServiceType}`
     );
     let list = data.data || [];
     if (currentDirectionCode) {
@@ -2161,8 +2323,8 @@ async function selectTransferRoute(route) {
     const st = transferServiceType;
 
     const [inData, outData] = await Promise.allSettled([
-      fetchJSON(`${BASE}/route-stop/${routeId}/inbound/${st}`),
-      fetchJSON(`${BASE}/route-stop/${routeId}/outbound/${st}`)
+      fetchJSON(`${KMB_BASE}/route-stop/${routeId}/inbound/${st}`),
+      fetchJSON(`${KMB_BASE}/route-stop/${routeId}/outbound/${st}`)
     ]);
 
     let inName = "?";
@@ -2228,7 +2390,7 @@ async function loadTransferRouteStopsForCurrentDirection() {
 
   try {
     const rsData = await fetchJSON(
-      `${BASE}/route-stop/${routeId}/${transferDirection}/${serviceType}`
+      `${KMB_BASE}/route-stop/${routeId}/${transferDirection}/${serviceType}`
     );
     const routeStopList = rsData.data || [];
 
@@ -2423,7 +2585,7 @@ async function loadTransferEtaSummaryForAllStops() {
   if (!transferRoute) return;
 
   const promises = transferRouteStops.map(s =>
-    fetchJSON(`${BASE}/eta/${s.stop_id}/${transferRoute.route}/${transferServiceType}`)
+    fetchJSON(`${KMB_BASE}/eta/${s.stop_id}/${transferRoute.route}/${transferServiceType}`)
       .then(data => ({ stop_id: s.stop_id, list: data.data || [] }))
       .catch(() => ({ stop_id: s.stop_id, list: [] }))
   );
@@ -2517,11 +2679,51 @@ async function loadTransferHeadwayInfo() {
       btnShowAll = document.createElement("button");
       btnShowAll.className = "btn-show-all-stops";
       btnShowAll.textContent = "顯示全部站";
-      btnShowAll.onclick = () => {
-        const items = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
-        items.forEach(x => x.style.display = "");
-        btnShowAll.remove();
-      };
+    btnShowAll.onclick = () => {
+		console.log("run");
+      // 1. 強制清空全域變數 (話畀系統知：而家無轉車站)
+      transferCurrentStopId = null;
+
+      // 2. 搵齊畫面上所有站，逐個大清洗
+      const items = document.querySelectorAll("#transferStopList .stop-item");
+      items.forEach(item => {
+        // 強制顯示
+        item.style.display = "";
+        
+        // 強制搣走所有 Highlight 同打開咗 ETA 嘅 Label
+        item.classList.remove("selected", "eta-showing", "transfer-tracked");
+
+        // 強制清空 ETA 區塊嘅文字同 HTML
+        const etaBlock = item.querySelector(".eta-block");
+        if (etaBlock) {
+          etaBlock.innerHTML = "";
+          etaBlock.textContent = "";
+        }
+
+        // 3. 強制重新綁定 onclick (用 getAttribute 確保拎到最準嘅 ID)
+        const sid = item.getAttribute("data-stop-id");
+        item.onclick = async () => {
+          if (!transferCurrentStopId) {
+            // 第一吓實會行呢度，因為上面已經 null 咗
+            await selectTransferStop(sid);
+          } else {
+            // 揀完之後，再撳其他站就純睇 ETA
+            if (sid === transferCurrentStopId) return;
+            if (typeof checkTransferStopEta === "function") {
+              await checkTransferStopEta(sid);
+            }
+          }
+        };
+		console.log("done");
+      });
+
+      // 4. 清空步行時間文字
+      const walkInfoDiv = document.getElementById("transferWalkInfo");
+      if (walkInfoDiv) walkInfoDiv.textContent = "";
+
+      // 5. 自我毀滅個 Button
+      btnShowAll.remove();
+    };
       infoDiv.appendChild(document.createTextNode(" "));
       infoDiv.appendChild(btnShowAll);
     }
@@ -2543,7 +2745,7 @@ function clearTransferStopSelectionUI() {
 async function selectTransferStop(stopId) {
   transferCurrentStopId = stopId;
   clearTransferStopSelectionUI();
-  const el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"]`);
+  const el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"]`); //----------------------------------------------------------------------------
   if (!el) return;
   el.classList.add("selected");
 
@@ -2553,7 +2755,7 @@ async function selectTransferStop(stopId) {
   let etaList = [];
   try {
     const data = await fetchJSON(
-      `${BASE}/eta/${stopId}/${transferRoute.route}/${transferServiceType}`
+      `${KMB_BASE}/eta/${stopId}/${transferRoute.route}/${transferServiceType}`
     );
     let list = data.data || [];
     if (transferDirectionCode) {
@@ -2621,6 +2823,8 @@ async function selectTransferStop(stopId) {
         if (diffMin >= 0 && diffMin < bestWaitMin) {
           bestWaitMin = diffMin;
           bestBus = { etaTime, raw: item };
+		  // 假設你喺 selectTransferStop 入面搵到 bestBus 之後：
+			window.transferBestBus = bestBus; // { time: Date, status: "departed" | "not_departed" 等 }
         }
       });
 
@@ -2671,34 +2875,27 @@ async function selectTransferStop(stopId) {
   }
 
 		const allItems = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
-		allItems.forEach(node => {
-		  node.style.display = (node.dataset.stopId === stopId) ? "" : "none";
-		});
+		  
+		  // 1. 先搵出你揀嗰個「轉車站」喺個清單入面排第幾個 (Index)
+		  const selectedIndex = allItems.findIndex(node => node.dataset.stopId === stopId);
+
+		  // 2. 根據排位決定顯示定隱藏
+		  allItems.forEach((node, index) => {
+			if (index < selectedIndex) {
+			  // 喺轉車站之前嘅站 -> 隱藏
+			  node.style.display = "none";
+			} else {
+			  // 轉車站，同埋佢之後嘅所有站 -> 顯示
+			  node.style.display = "";
+			}
+		  });
 
 		// ★ 新增：畫第二架車 route + 綠線
 		selectSecondRoute(stopId);
 }
 
-  // ★ 喺 transferHeadwayInfo 加「顯示全部站」按鈕
-  const infoDiv = document.getElementById("transferHeadwayInfo");
-  if (infoDiv) {
-    // 清除舊 button，避免重覆
-    const oldBtn = infoDiv.querySelector(".btn-show-all-stops");
-    if (oldBtn) oldBtn.remove();
 
-    const btnShowAll = document.createElement("button");
-    btnShowAll.className = "btn-show-all-stops";
-    btnShowAll.textContent = "顯示全部站";
-    btnShowAll.onclick = () => {
-      const items = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
-      items.forEach(x => x.style.display = "");
-      btnShowAll.remove();
-    };
 
-    infoDiv.appendChild(document.createTextNode(" "));
-    infoDiv.appendChild(btnShowAll);
-  
-}
 
 
 function renderTransferStopList() {
@@ -2737,12 +2934,209 @@ function renderTransferStopList() {
     div.appendChild(header);
     div.appendChild(etaBlock);
 
-    // 點擊站 → 呼叫 selectTransferStop
-    div.onclick = () => selectTransferStop(s.stop_id);
+    // ★ 乾淨版 onclick 邏輯：未揀就揀，揀咗就純睇 ETA
+    div.onclick = async () => {
+      if (!transferCurrentStopId) {
+        // 情況 1：未揀轉車站 -> 呼叫原本嘅 selectTransferStop
+        await selectTransferStop(s.stop_id);
+      } else {
+        // 情況 2：已經有轉車站
+        if (s.stop_id === transferCurrentStopId) {
+          return; // 撳返自己無動作
+        } else {
+          // 撳其他站 -> 純睇 ETA
+          if (typeof checkTransferStopEta === "function") {
+            await checkTransferStopEta(s.stop_id);
+          }
+        }
+      }
+    };
 
     container.appendChild(div);
   });
 }
+
+
+
+async function checkTransferStopEta(stopId) {
+  // 1. 收埋其他站嘅 ETA (除咗轉車站同自己)
+  const allItems = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
+  allItems.forEach(item => {
+    const thisStopId = item.dataset.stopId;
+    if (thisStopId !== stopId && thisStopId !== transferCurrentStopId) {
+      item.classList.remove("eta-showing");
+      const block = item.querySelector(".eta-block");
+      if (block) block.innerHTML = "";
+      
+      const sSpan = item.querySelector(".stop-eta-summary");
+      if (sSpan) sSpan.textContent = "";
+    }
+  });
+
+  const el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"]`); 
+  if (!el) return;
+
+  const etaBlock = el.querySelector(".eta-block");
+  const summarySpan = el.querySelector(".stop-eta-summary"); 
+
+  // Toggle：如果打開緊，再撳就收埋
+  if (el.classList.contains("eta-showing")) {
+    el.classList.remove("eta-showing");
+    etaBlock.innerHTML = "";
+    if (summarySpan) summarySpan.textContent = ""; 
+    return;
+  }
+
+  el.classList.add("eta-showing");
+  etaBlock.textContent = "載入 ETA 中...";
+  if (summarySpan) {
+    summarySpan.textContent = "計算中..."; 
+    summarySpan.style.color = "#999999";
+    summarySpan.style.fontWeight = "normal";
+  }
+
+  try {
+    const data = await fetchJSON(
+      `${KMB_BASE}/eta/${stopId}/${transferRoute.route}/${transferServiceType}`
+    );
+    let list = data.data || [];
+    
+    if (transferDirectionCode) {
+      list = list.filter(item => item.dir === transferDirectionCode && item.eta);
+    }
+
+    etaBlock.innerHTML = "";
+    if (!list.length) {
+      etaBlock.textContent = "暫時冇班次資料";
+    } 
+
+    const actualEtas = [];
+    const rowElementsMap = new Map();
+
+    list.forEach((item, idx) => {
+      const d = formatDetailLine(item);
+      if (!d.etaTime) return;
+
+      const etaObj = {
+        index: idx,
+        time: d.etaTime,
+        status: d.status,
+        isScheduled: d.isScheduled
+      };
+      actualEtas.push(etaObj);
+
+      const row = document.createElement("div");
+      row.className = "eta-row";
+      if (d.minutes <= 0) {
+        row.classList.add("eta-imminent");
+      } else {
+        row.style.color = typeof grayColorByMinutes === "function" ? grayColorByMinutes(d.minutes) : "#333";
+      }
+      
+      const contentNode = document.createElement("span");
+      contentNode.textContent = d.text;
+      if (d.isScheduled) contentNode.style.fontStyle = "italic";
+      
+      row.appendChild(contentNode);
+      etaBlock.appendChild(row);
+
+      rowElementsMap.set(d.etaTime.getTime(), row);
+    });
+
+    if (!actualEtas.length && !list.length) {
+      // 冇 ETA 嘅情況下等下面 fallback 處理
+    }
+
+ // ==========================================
+    // ★ 1. 預先計定個預計時間 (用作 Fallback 或 Tracking)
+    // ==========================================
+    let isTracked = false;
+    let estimatedTravelMin = 0;
+    let estimatedArriveTime = null;
+
+    if (window.transferBestBus && window.transferBestBus.etaTime instanceof Date && transferCurrentStopId) {
+      const tStop = transferRouteStops.find(s => s.stop_id === transferCurrentStopId);
+      const cStop = transferRouteStops.find(s => s.stop_id === stopId);
+      
+      if (tStop && cStop) {
+        const seqDiff = parseInt(cStop.seq) - parseInt(tStop.seq);
+        if (seqDiff > 0) estimatedTravelMin = seqDiff * 2; 
+      }
+      estimatedArriveTime = new Date(window.transferBestBus.etaTime.getTime() + estimatedTravelMin * 60000);
+    }
+
+    // ==========================================
+    // ★ 2. 嘗試 Tracking
+    // ==========================================
+    if (estimatedArriveTime && actualEtas.length > 0) {
+      let targetStatus = "not_departed";
+      if (typeof formatDetailLine === "function") {
+         const detail = formatDetailLine(window.transferBestBus.raw);
+         if (detail && detail.status) targetStatus = detail.status;
+      }
+
+      const trackResult = findClosestMatchingBus(estimatedArriveTime, targetStatus, actualEtas);
+
+      if (trackResult && trackResult.type === "ok") {
+        const matchedTimeKey = trackResult.bus.time.getTime();
+        const targetRow = rowElementsMap.get(matchedTimeKey);
+        
+        if (targetRow) {
+          targetRow.classList.add("transfer-tracked");
+        }
+
+        if (summarySpan) {
+          const arriveDate = trackResult.bus.time;
+          const hh = String(arriveDate.getHours()).padStart(2, "0");
+          const mm = String(arriveDate.getMinutes()).padStart(2, "0");
+
+          summarySpan.textContent = `搭緊: 預計 ${hh}:${mm} 到達`;
+          summarySpan.style.color = "#007bff"; 
+          summarySpan.style.fontWeight = "bold"; 
+        }
+        isTracked = true; // 成功追蹤！
+      }
+    }
+
+    // ==========================================
+    // ★ 3. Fallback: 如果追唔到，就出「無法追蹤」
+    // ==========================================
+    if (!isTracked && summarySpan) {
+      // 優先嘗試用你原本提供嘅 Global 變數 (cumulativeTravelFromOrigin 同 baseDepart)
+      let finalTravelMin = null;
+      let finalArriveTime = null;
+
+      if (typeof cumulativeTravelFromOrigin !== "undefined" && cumulativeTravelFromOrigin[stopId] && typeof baseDepart !== "undefined" && baseDepart) {
+        finalTravelMin = cumulativeTravelFromOrigin[stopId].travelMinutes || 0;
+        finalArriveTime = new Date(baseDepart.getTime() + finalTravelMin * 60000);
+      } 
+      // 如果 Global 變數讀唔到 (頭先「無wo」嘅原因)，就用上面計好咗嘅 estimatedArriveTime 頂上！
+      else if (estimatedArriveTime) {
+        finalTravelMin = estimatedTravelMin;
+        finalArriveTime = estimatedArriveTime;
+      }
+
+      // 如果是但一邊計到時間，就印出嚟
+      if (finalArriveTime !== null) {
+        const hh = String(finalArriveTime.getHours()).padStart(2, "0");
+        const mm = String(finalArriveTime.getMinutes()).padStart(2, "0");
+
+        summarySpan.textContent = `無法追蹤: 預計行駛 ${finalTravelMin} 分鐘 (${hh}:${mm} 到達)`;
+        summarySpan.style.fontWeight = "normal";
+        summarySpan.style.color = "#555555";
+      } else {
+        // 如果真係乜都無得計 (例如未揀 BestBus)，就清空算數
+        summarySpan.textContent = "";
+      }
+    }
+
+  } catch (e) {
+    console.error(e);
+    etaBlock.textContent = "載入 ETA 失敗：" + e.message;
+    if (summarySpan) summarySpan.textContent = "";
+  }
+}
+
 
 // 1. 畫第一程藍線同藍點 (確保有數字 + 記住 seq)
 async function showRouteStopsOnMap(stops) {
@@ -3170,8 +3564,8 @@ async function handleDir2Logic(route, staParam) {
     try {
         // 同時攞晒 Inbound 同 Outbound 嘅車站資料
         const [inRes, outRes] = await Promise.all([
-            fetch(`${BASE}/route-stop/${route}/1/inbound`).then(r => r.json()),
-            fetch(`${BASE}/route-stop/${route}/1/outbound`).then(r => r.json())
+            fetch(`${KMB_BASE}/route-stop/${route}/1/inbound`).then(r => r.json()),
+            fetch(`${KMB_BASE}/route-stop/${route}/1/outbound`).then(r => r.json())
         ]);
 
         const inStops = inRes.data || [];
