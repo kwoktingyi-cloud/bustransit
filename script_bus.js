@@ -1517,6 +1517,20 @@ function renderStopList() {
   const container = document.getElementById("stopList");
   if (!container) return;
 
+  // ★ 核心補救：如果 originSeq 或 transferSeq 係 null，我哋自己搵返出嚟！
+  let actualOriginSeq = originSeq;
+  if (originStopId && !actualOriginSeq) {
+    // 搵同 ID 嘅第一個站（必定係頭站），攞佢個 seq
+    const match = routeStops.find(s => s.stop_id === originStopId);
+    if (match) actualOriginSeq = match.seq;
+  }
+
+  let actualTransferSeq = transferSeq;
+  if (transferStopId && !actualTransferSeq) {
+    const match = routeStops.find(s => s.stop_id === transferStopId);
+    if (match) actualTransferSeq = match.seq;
+  }
+
   // ─── 第 1 部分：處理頂部 UI 狀態 ───
   const infoDiv = document.getElementById("interchangeInfo");
   const ctrlDiv = document.getElementById("interchangeControls");
@@ -1529,7 +1543,7 @@ function renderStopList() {
   let originIndex = -1;
 
   if (mode === "interchange_pick" && originStopId) {
-    const origin = routeStops.find(s => s.stop_id === originStopId && s.seq == originSeq) 
+    const origin = routeStops.find(s => s.stop_id === originStopId && s.seq == actualOriginSeq) 
                 || routeStops.find(s => s.stop_id === originStopId);
     if (origin) originIndex = routeStops.indexOf(origin);
 
@@ -1537,9 +1551,9 @@ function renderStopList() {
     if (infoDiv) infoDiv.textContent = `轉車模式：上車站 ${name}，請揀轉車站（只可以揀之後嘅站）。`;
 
   } else if (mode === "interchange_pair" && originStopId && transferStopId) {
-    const origin = routeStops.find(s => s.stop_id === originStopId && s.seq == originSeq) 
+    const origin = routeStops.find(s => s.stop_id === originStopId && s.seq == actualOriginSeq) 
                 || routeStops.find(s => s.stop_id === originStopId);
-    const trans  = routeStops.find(s => s.stop_id === transferStopId && s.seq == transferSeq) 
+    const trans  = routeStops.find(s => s.stop_id === transferStopId && s.seq == actualTransferSeq) 
                 || routeStops.find(s => s.stop_id === transferStopId);
     
     if (origin) originIndex = routeStops.indexOf(origin);
@@ -1567,25 +1581,20 @@ function renderStopList() {
   routeStops.forEach((s, index) => {
     let isVisible = true;
 
-    // ★ 核心改動：直接用 == 同 != 去比較，避開 NaN 伏位
     if (mode === "interchange_pair") {
-      // Pair 模式：非上車、非轉車站，一律隱藏
-      const isOrigin = (s.stop_id === originStopId && s.seq == originSeq);
-      const isTransfer = (s.stop_id === transferStopId && s.seq == transferSeq);
+      // Pair 模式：用 actualOriginSeq 精準對比，只顯示上車同轉車站
+      const isOrigin = (s.stop_id === originStopId && s.seq == actualOriginSeq);
+      const isTransfer = (s.stop_id === transferStopId && s.seq == actualTransferSeq);
       
-      // 容錯補底 (萬一無 seq，退一步對 ID)
-      const isOriginSafe = (s.stop_id === originStopId && !originSeq);
-      const isTransferSafe = (s.stop_id === transferStopId && !transferSeq);
-
-      if (!isOrigin && !isTransfer && !isOriginSafe && !isTransferSafe) {
+      if (!isOrigin && !isTransfer) {
         isVisible = false;
       }
       
     } else if (mode === "interchange_pick") {
       // Pick 模式：防禦循環線！
-      // 如果個站 ID 係上車站，但 seq 唔係上車站嗰個（即係同一條線出現兩次嘅尾站），強制隱藏
-      if (originStopId && s.stop_id === originStopId && originSeq) {
-        if (s.seq != originSeq) {
+      // 如果個站 ID 係上車站，但 seq 唔係我哋搵到嘅頭站 seq（即係循環線尾站），強制隱藏
+      if (originStopId && s.stop_id === originStopId) {
+        if (s.seq != actualOriginSeq) {
           isVisible = false;
         }
       }
@@ -1678,15 +1687,16 @@ async function exitInterchangeMode() {
 }
 
 function onInterchangeButtonClick(stopId, seq) {
+
   let targetSeq = parseInt(seq);
   if (isNaN(targetSeq)) {
     const found = routeStops.find(s => s.stop_id === stopId);
     if (found) targetSeq = parseInt(found.seq);
   }
-
+	
   if (mode === "normal") {
     originStopId = stopId;
-    
+
     // ★ 循環線終極防禦：就算佢撳尾站，都格硬當佢撳頭站！
     const allMatches = routeStops.filter(s => s.stop_id === stopId);
     if (allMatches.length > 1) {
@@ -1695,8 +1705,9 @@ function onInterchangeButtonClick(stopId, seq) {
     }
 
     originSeq = targetSeq; // 記低上車站嘅站序 (必定係頭站)
+
+
     mode = "interchange_pick";
-    
     recomputeCumulativeTravelFromOrigin(stopId); 
     renderStopList();
     selectStop(stopId, targetSeq);  
@@ -1729,6 +1740,7 @@ function onInterchangeButtonClick(stopId, seq) {
       guessBoardingBusAtTransferStop();
     });
 
+
     if (typeof allStopMarkers !== "undefined" && map) {
       let marker = allStopMarkers.find(m => m.stopId === stopId && m.seq == targetSeq);
       if (!marker) marker = allStopMarkers.find(m => m.stopId === stopId);
@@ -1739,6 +1751,9 @@ function onInterchangeButtonClick(stopId, seq) {
       }
     }
   }
+  // ★ 加喺度：自動追蹤上車站第一班車
+
+    autoTrackFirstEta(originStopId, originSeq);
 }
 
 function clearStopSelectionUI() {
@@ -1752,7 +1767,8 @@ function clearStopSelectionUI() {
 
 function onStopClicked(stopId,seq) {
   originStopId = stopId;
-
+	originSeq = seq;
+	
   if (mode === "normal") {
     mode = "interchange_pick";
   }
@@ -2220,6 +2236,38 @@ async function loadEtaDetailForStop(stopId, seq) {
     etaBlock.textContent = "載入 ETA 失敗：" + e.message;
   }
 }
+
+// 自動追蹤第一班車 Helper
+function autoTrackFirstEta(stopId, seq) {
+  let attempts = 0;
+  
+  // 每 500ms Check 一次 ETA load 完未，最多 Check 10 次 (5秒)
+  const interval = setInterval(() => {
+    attempts++;
+    
+    // 搵返對應嘅車站 UI
+    const stopDiv = document.querySelector(`.stop-item[data-stop-id="${stopId}"][data-seq="${seq}"]`);
+    
+    if (stopDiv) {
+      // ⚠️ 注意：請將 '.eta-item' 改返做你實際裝 ETA 果行嘅 class name！
+      // 常見可能係 '.eta-row', '.eta-record', 或者直接係 'button.eta-btn'
+      const firstEtaBtn = stopDiv.querySelector('.btn-track'); 
+      
+      if (firstEtaBtn) {
+		console.log(firstEtaBtn);
+        firstEtaBtn.click(); // 模擬用家手動撳第一班車
+        console.log(`已自動追蹤車站 ${stopId} 嘅第一班車`);
+        clearInterval(interval); // 搞掂就收工
+        return;
+      }
+    }
+    
+    if (attempts >= 10) {
+      clearInterval(interval); // 等太耐都無就放棄，廢事無限 Loop
+    }
+  }, 500);
+}
+
 
 /* ========== 單線班距 / summary ========== */
 
