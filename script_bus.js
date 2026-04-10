@@ -2254,9 +2254,9 @@ function autoTrackFirstEta(stopId, seq) {
       const firstEtaBtn = stopDiv.querySelector('.btn-track'); 
       
       if (firstEtaBtn) {
-		console.log(firstEtaBtn);
+
         firstEtaBtn.click(); // 模擬用家手動撳第一班車
-        console.log(`已自動追蹤車站 ${stopId} 嘅第一班車`);
+
         clearInterval(interval); // 搞掂就收工
         return;
       }
@@ -2921,10 +2921,23 @@ function clearTransferStopSelectionUI() {
   });
 }
 
-async function selectTransferStop(stopId) {
+// ★ 加入 seq 參數
+async function selectTransferStop(stopId, seq) {
   transferCurrentStopId = stopId;
+  
+  // ★ 循環線補底：如果無傳入 seq，搵同 ID 第一個站嘅 seq 當頭站
+  let actualSeq = seq;
+  if (!actualSeq) {
+    const match = transferRouteStops.find(s => s.stop_id === stopId);
+    if (match) actualSeq = match.seq;
+  }
+  window.transferCurrentSeq = actualSeq; // ★ 記低個轉車站 seq，等陣其他 function 用
+
   clearTransferStopSelectionUI();
-  const el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"]`); //----------------------------------------------------------------------------
+  
+  // ★ 用埋 seq 去 querySelector，避免循環線點錯尾站
+  let el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"][data-seq="${actualSeq}"]`); 
+  if (!el) el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"]`); // Fallback
   if (!el) return;
   el.classList.add("selected");
 
@@ -2937,6 +2950,11 @@ async function selectTransferStop(stopId) {
       `${KMB_BASE}/eta/${stopId}/${transferRoute.route}/${transferServiceType}`
     );
     let list = data.data || [];
+	
+	if (!isNaN(actualSeq)) {
+      list = list.filter(item => parseInt(item.seq) === parseInt(actualSeq));
+    }
+	
     if (transferDirectionCode) {
       list = list.filter(item => item.dir === transferDirectionCode);
     }
@@ -2979,18 +2997,15 @@ async function selectTransferStop(stopId) {
       const walkMinRaw = walkingMinutesBetweenStops(transferStopId, stopId);
       const walkMin = walkMinRaw == null ? 0 : walkMinRaw;
 
-		let arriveAtC;
-		if (trackedTransferArriveTime) {
-		  // Case 1：Step 3 係轉車站 match 到架車 → 用實際落車時間 + 步行
-		  arriveAtC = new Date(trackedTransferArriveTime.getTime() + walkMin * 60000);
-		} else {
-		  // Case 2：追蹤唔到 → 用預計 selectedEtaTime + travelMin + walkMin
-		  arriveAtC = new Date(
-			selectedEtaTime.getTime() + (travelMin + walkMin) * 60000
-		  );
-		}
+      let arriveAtC;
+      if (trackedTransferArriveTime) {
+        arriveAtC = new Date(trackedTransferArriveTime.getTime() + walkMin * 60000);
+      } else {
+        arriveAtC = new Date(
+          selectedEtaTime.getTime() + (travelMin + walkMin) * 60000
+        );
+      }
 
-      // 找第一班 eta >= arriveAtC
       let bestBus = null;
       let bestWaitMin = Infinity;
 
@@ -3002,27 +3017,22 @@ async function selectTransferStop(stopId) {
         if (diffMin >= 0 && diffMin < bestWaitMin) {
           bestWaitMin = diffMin;
           bestBus = { etaTime, raw: item };
-		  // 假設你喺 selectTransferStop 入面搵到 bestBus 之後：
-			window.transferBestBus = bestBus; // { time: Date, status: "departed" | "not_departed" 等 }
+          window.transferBestBus = bestBus; 
         }
       });
 
-      // 步行時間文字
       let walkText;
       if (walkMin < 1) walkText = "<1分鐘";
       else if (walkMin > 60) walkText = ">1小時";
       else walkText = `${Math.round(walkMin)}分鐘`;
 
-      // 清除舊紅色 highlight
       const rows = el.querySelectorAll(".eta-row");
       rows.forEach(row => row.classList.remove("transfer-tracked"));
 
       if (!bestBus || !isFinite(bestWaitMin)) {
-        // 無下一班可接：只顯示步行 + 約幾點到達
         const hhmmArrive = formatTimeHHMM(arriveAtC);
         summaryText = `步行：約 ${walkText}；未有班次（約 ${hhmmArrive} 到達轉車站）`;
       } else {
-        // 有班次可接：顯示步行＋等候，並 highlight 嗰班
         let waitText;
         if (bestWaitMin < 1) waitText = "<1分鐘";
         else if (bestWaitMin > 60) waitText = ">1小時";
@@ -3053,29 +3063,24 @@ async function selectTransferStop(stopId) {
     }
   }
 
-		const allItems = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
-		  
-		  // 1. 先搵出你揀嗰個「轉車站」喺個清單入面排第幾個 (Index)
-		  const selectedIndex = allItems.findIndex(node => node.dataset.stopId === stopId);
+  const allItems = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
+  
+  // ★ 精準搵出呢個站嘅 index，用 ID 同 seq 齊齊對
+  let selectedIndex = allItems.findIndex(node => node.dataset.stopId === stopId && node.dataset.seq == actualSeq);
+  if (selectedIndex === -1) {
+    selectedIndex = allItems.findIndex(node => node.dataset.stopId === stopId); // Fallback
+  }
 
-		  // 2. 根據排位決定顯示定隱藏
-		  allItems.forEach((node, index) => {
-			if (index < selectedIndex) {
-			  // 喺轉車站之前嘅站 -> 隱藏
-			  node.style.display = "none";
-			} else {
-			  // 轉車站，同埋佢之後嘅所有站 -> 顯示
-			  node.style.display = "";
-			}
-		  });
+  allItems.forEach((node, index) => {
+    if (index < selectedIndex) {
+      node.style.display = "none";
+    } else {
+      node.style.display = "";
+    }
+  });
 
-		// ★ 新增：畫第二架車 route + 綠線
-		selectSecondRoute(stopId);
+  selectSecondRoute(stopId);
 }
-
-
-
-
 
 function renderTransferStopList() {
   const container = document.getElementById("transferStopList");
@@ -3085,6 +3090,7 @@ function renderTransferStopList() {
     const div = document.createElement("div");
     div.className = "stop-item";
     div.dataset.stopId = s.stop_id;
+    div.dataset.seq = s.seq; // ★ 循環線對策：綁定埋 seq 落 DOM 度
 
     const header = document.createElement("div");
     header.className = "stop-header";
@@ -3113,19 +3119,20 @@ function renderTransferStopList() {
     div.appendChild(header);
     div.appendChild(etaBlock);
 
-    // ★ 乾淨版 onclick 邏輯：未揀就揀，揀咗就純睇 ETA
+    // ★ 乾淨版 onclick 邏輯：加入 seq 判斷
     div.onclick = async () => {
       if (!transferCurrentStopId) {
-        // 情況 1：未揀轉車站 -> 呼叫原本嘅 selectTransferStop
-        await selectTransferStop(s.stop_id);
+        // 情況 1：未揀轉車站 -> 呼叫 selectTransferStop 時帶埋 seq
+        await selectTransferStop(s.stop_id, s.seq);
       } else {
         // 情況 2：已經有轉車站
-        if (s.stop_id === transferCurrentStopId) {
-          return; // 撳返自己無動作
+        // ★ 確保 ID 同 seq 都一樣先當係撳返自己
+        if (s.stop_id === transferCurrentStopId && s.seq == window.transferCurrentSeq) {
+          return; 
         } else {
-          // 撳其他站 -> 純睇 ETA
+          // 撳其他站 -> 純睇 ETA (帶埋 seq)
           if (typeof checkTransferStopEta === "function") {
-            await checkTransferStopEta(s.stop_id);
+            await checkTransferStopEta(s.stop_id, s.seq);
           }
         }
       }
@@ -3135,14 +3142,27 @@ function renderTransferStopList() {
   });
 }
 
+// ★ 加入 seq 參數
+async function checkTransferStopEta(stopId, seq) {
+	console.log("run");
+  // ★ 循環線補底
+  let actualSeq = seq;
+  if (!actualSeq) {
+    const match = transferRouteStops.find(s => s.stop_id === stopId);
+    if (match) actualSeq = match.seq;
+  }
 
-
-async function checkTransferStopEta(stopId) {
   // 1. 收埋其他站嘅 ETA (除咗轉車站同自己)
   const allItems = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
   allItems.forEach(item => {
     const thisStopId = item.dataset.stopId;
-    if (thisStopId !== stopId && thisStopId !== transferCurrentStopId) {
+    const thisSeq = item.dataset.seq;
+    
+    // ★ 判斷係咪自己或者轉車站，要連埋 seq 一齊睇
+    const isTransferStation = (thisStopId === transferCurrentStopId && thisSeq == window.transferCurrentSeq);
+    const isCurrentStation = (thisStopId === stopId && thisSeq == actualSeq);
+
+    if (!isTransferStation && !isCurrentStation) {
       item.classList.remove("eta-showing");
       const block = item.querySelector(".eta-block");
       if (block) block.innerHTML = "";
@@ -3152,7 +3172,9 @@ async function checkTransferStopEta(stopId) {
     }
   });
 
-  const el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"]`); 
+  // ★ 用 ID + seq 精準搵 element
+  let el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"][data-seq="${actualSeq}"]`); 
+  if (!el) el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"]`);
   if (!el) return;
 
   const etaBlock = el.querySelector(".eta-block");
@@ -3179,10 +3201,22 @@ async function checkTransferStopEta(stopId) {
       `${KMB_BASE}/eta/${stopId}/${transferRoute.route}/${transferServiceType}`
     );
     let list = data.data || [];
+
+    if (!isNaN(actualSeq)) {
+        list = list.filter(item => parseInt(item.seq) === parseInt(actualSeq));
+    }
     
     if (transferDirectionCode) {
       list = list.filter(item => item.dir === transferDirectionCode && item.eta);
     }
+
+
+ //   if (currentDirectionCode) {
+ //     list = list.filter(item => item.dir === currentDirectionCode);
+//    }
+//
+
+
 
     etaBlock.innerHTML = "";
     if (!list.length) {
@@ -3222,20 +3256,17 @@ async function checkTransferStopEta(stopId) {
       rowElementsMap.set(d.etaTime.getTime(), row);
     });
 
-    if (!actualEtas.length && !list.length) {
-      // 冇 ETA 嘅情況下等下面 fallback 處理
-    }
-
- // ==========================================
     // ★ 1. 預先計定個預計時間 (用作 Fallback 或 Tracking)
-    // ==========================================
     let isTracked = false;
     let estimatedTravelMin = 0;
     let estimatedArriveTime = null;
 
     if (window.transferBestBus && window.transferBestBus.etaTime instanceof Date && transferCurrentStopId) {
-      const tStop = transferRouteStops.find(s => s.stop_id === transferCurrentStopId);
-      const cStop = transferRouteStops.find(s => s.stop_id === stopId);
+      // ★ 喺 Array 入面搵返個站，都要加入 seq 嘅條件！
+      const tStop = transferRouteStops.find(s => s.stop_id === transferCurrentStopId && s.seq == window.transferCurrentSeq) 
+                 || transferRouteStops.find(s => s.stop_id === transferCurrentStopId);
+      const cStop = transferRouteStops.find(s => s.stop_id === stopId && s.seq == actualSeq) 
+                 || transferRouteStops.find(s => s.stop_id === stopId);
       
       if (tStop && cStop) {
         const seqDiff = parseInt(cStop.seq) - parseInt(tStop.seq);
@@ -3244,9 +3275,7 @@ async function checkTransferStopEta(stopId) {
       estimatedArriveTime = new Date(window.transferBestBus.etaTime.getTime() + estimatedTravelMin * 60000);
     }
 
-    // ==========================================
     // ★ 2. 嘗試 Tracking
-    // ==========================================
     if (estimatedArriveTime && actualEtas.length > 0) {
       let targetStatus = "not_departed";
       if (typeof formatDetailLine === "function") {
@@ -3273,15 +3302,12 @@ async function checkTransferStopEta(stopId) {
           summarySpan.style.color = "#007bff"; 
           summarySpan.style.fontWeight = "bold"; 
         }
-        isTracked = true; // 成功追蹤！
+        isTracked = true; 
       }
     }
 
-    // ==========================================
-    // ★ 3. Fallback: 如果追唔到，就出「無法追蹤」
-    // ==========================================
+    // ★ 3. Fallback
     if (!isTracked && summarySpan) {
-      // 優先嘗試用你原本提供嘅 Global 變數 (cumulativeTravelFromOrigin 同 baseDepart)
       let finalTravelMin = null;
       let finalArriveTime = null;
 
@@ -3289,13 +3315,11 @@ async function checkTransferStopEta(stopId) {
         finalTravelMin = cumulativeTravelFromOrigin[stopId].travelMinutes || 0;
         finalArriveTime = new Date(baseDepart.getTime() + finalTravelMin * 60000);
       } 
-      // 如果 Global 變數讀唔到 (頭先「無wo」嘅原因)，就用上面計好咗嘅 estimatedArriveTime 頂上！
       else if (estimatedArriveTime) {
         finalTravelMin = estimatedTravelMin;
         finalArriveTime = estimatedArriveTime;
       }
 
-      // 如果是但一邊計到時間，就印出嚟
       if (finalArriveTime !== null) {
         const hh = String(finalArriveTime.getHours()).padStart(2, "0");
         const mm = String(finalArriveTime.getMinutes()).padStart(2, "0");
@@ -3304,7 +3328,6 @@ async function checkTransferStopEta(stopId) {
         summarySpan.style.fontWeight = "normal";
         summarySpan.style.color = "#555555";
       } else {
-        // 如果真係乜都無得計 (例如未揀 BestBus)，就清空算數
         summarySpan.textContent = "";
       }
     }
@@ -3460,7 +3483,6 @@ function resetFirstRouteFull() {
 
 
 
-
 function findNearestStopToLatLng(lat, lon, stops) {
   let best = null;
   let bestDist = Infinity;
@@ -3518,7 +3540,6 @@ function createNumberedIcon(seq, highlighted) {
 }
 
 
-
 // 令 Leaflet 喺全螢幕變化時重算尺寸
 function invalidateMapSizeOnFullscreenChange() {
   if (!map) return;
@@ -3531,7 +3552,6 @@ document.addEventListener('fullscreenchange', invalidateMapSizeOnFullscreenChang
 document.addEventListener('webkitfullscreenchange', invalidateMapSizeOnFullscreenChange);
 document.addEventListener('mozfullscreenchange', invalidateMapSizeOnFullscreenChange);
 document.addEventListener('MSFullscreenChange', invalidateMapSizeOnFullscreenChange);
-
 
 
 
@@ -3568,7 +3588,6 @@ function showFullSecondRoute() {
     secondRouteMarkers.push(redLine);
   }
 }
-
 
 
 function clearSecondRouteVisual() {
