@@ -731,15 +731,15 @@ function renderRouteList() {
     return;
   }
 
-  const byRoute = new Map();
+const byRoute = new Map();
   candidateRoutes.forEach(r => {
-    const code = r.route;
+    const code = String(r.route).toUpperCase(); // 確保大階
     
-    // ★ 智能判斷：係咪常規聯營過海線 (1, 3, 6, 9字頭)
-    const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(code);
+    // ★ 終極版聯營線判斷：過海線 (1,3,6,9字頭) + 大嶼山特例 (S1, R8)
+    const isJointRoute = /^(N)?[1369]\d{2}[A-Z]?$/.test(code) || ["S1", "R8"].includes(code);
     
-    // ★ 核心修正：如果唔係聯營線 (例如 72)，就將公司名加落 Key 度強制分開佢！
-    const key = isCrossHarbour ? code : `${code}-${r.company}`;
+    // 如果係聯營線就合併，唔係就加公司名拆開
+    const key = isJointRoute ? code : `${code}-${r.company}`;
 
     if (!byRoute.has(key)) {
       byRoute.set(key, {
@@ -1916,7 +1916,7 @@ async function selectStop(stopId, seq) {
   async function loadEta() {
     try {
       let combinedEtaList = [];
-      const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName);
+      const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName) || ["S1", "R8"].includes(routeName);
 
       // ==========================================
       // 【Step 1】攞「主公司」嘅 ETA
@@ -2250,7 +2250,7 @@ async function guessBoardingBusAtTransferStop() {
   // ==========================================
   const company = currentRoute.company || "KMB";
   const routeName = currentRoute.route;
-  const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName);
+  const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName) || ["S1", "R8"].includes(routeName);
 
   let destKey = (currentRoute.dest_tc || "").substring(0, 2);
   const allItems = document.querySelectorAll("#stopList .stop-item");
@@ -2434,7 +2434,7 @@ async function loadEtaDetailForStop(stopId, seq) {
     let combinedEtaList = [];
     const company = currentRoute.company || "KMB";
     const routeName = currentRoute.route;
-    const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName);
+    const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName) || ["S1", "R8"].includes(routeName);
 
     // ==========================================
     // 【Step 1】攞「主公司」嘅 ETA
@@ -2742,7 +2742,7 @@ async function loadHeadwayInfo() {
     let combinedEtaList = [];
     const company = currentRoute.company || "KMB";
     const routeName = currentRoute.route;
-    const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName);
+    const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName) || ["S1", "R8"].includes(routeName);
 
     // ★ 核心修正 1：準備終點站關鍵字 (防對家公司撈亂對面海方向嘅班次)
     let destKey = (currentRoute.dest_tc || "").substring(0, 2);
