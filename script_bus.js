@@ -386,7 +386,6 @@ function walkingMinutesBetweenStops(stopIdA, stopIdB) {
 }
 
 
-
 function computeSegmentDistanceMeters(prevStop, thisStop) {
   if (!prevStop || !thisStop) return null;
   const prevInfo = allStopsMap.get(prevStop.stop_id);
@@ -653,7 +652,6 @@ function setTrackingEta(etaObj, rowElement) {
   }
 }
 
-
 /* ========== INIT ========== */
 
 async function init() {
@@ -691,7 +689,6 @@ async function init() {
   checkUrlForRoute();
 }
 
-
 /* ========== Step1: 路線輸入 ========== */
 
 function updateRouteInputDisplay() {
@@ -726,7 +723,7 @@ function renderRouteList() {
   
   if (currentRoute) return;
   if (!currentInput) {
-    container.textContent = "請先輸入至少一個字元。"; // 保持你嘅優良設計
+    container.textContent = "請先輸入至少一個字元。"; 
     return;
   }
   if (candidateRoutes.length === 0) {
@@ -734,20 +731,26 @@ function renderRouteList() {
     return;
   }
 
-  // 💡 修正 3：將「九巴城巴合併」嘅邏輯搬嚟呢度！只影響畫面顯示。
   const byRoute = new Map();
   candidateRoutes.forEach(r => {
     const code = r.route;
-    if (!byRoute.has(code)) {
-      byRoute.set(code, {
+    
+    // ★ 智能判斷：係咪常規聯營過海線 (1, 3, 6, 9字頭)
+    const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(code);
+    
+    // ★ 核心修正：如果唔係聯營線 (例如 72)，就將公司名加落 Key 度強制分開佢！
+    const key = isCrossHarbour ? code : `${code}-${r.company}`;
+
+    if (!byRoute.has(key)) {
+      byRoute.set(key, {
         route: code,
         orig_tc: r.orig_tc,
         dest_tc: r.dest_tc,
         companies: new Set([r.company]),
-        samples: [r]   // 之後用嚟 select 某間公司
+        samples: [r]
       });
     } else {
-      const obj = byRoute.get(code);
+      const obj = byRoute.get(key);
       obj.companies.add(r.company);
       obj.samples.push(r);
     }
@@ -759,7 +762,6 @@ function renderRouteList() {
     const div = document.createElement("div");
     div.className = "route-item";
 
-    // r.companies 係一個 Set
     const cos = Array.from(r.companies);
     const coLabel =
       cos.length === 1
@@ -770,12 +772,12 @@ function renderRouteList() {
 
     div.textContent = `${r.route}${coLabel}：${r.orig_tc} ↔ ${r.dest_tc}`;
 
-    // 點擊：如果有兩間公司，暫時預設優先九巴，其次城巴
     div.onclick = () => {
       const samples = r.samples;
       const kmb = samples.find(x => x.company === "KMB");
       const ctb = samples.find(x => x.company === "CTB");
 
+      // 聯營線預設掟九巴入去，等 ETA function 去 call 對家
       let target = kmb || ctb || samples[0]; 
       selectRoute(target);
     };
@@ -783,6 +785,7 @@ function renderRouteList() {
     container.appendChild(div);
   });
 }
+
 
 function updateAfterInputChange() {
   updateRouteInputDisplay();
@@ -1873,33 +1876,46 @@ async function selectStop(stopId, seq) {
   if (!currentRoute) return;
   const company = currentRoute.company;
   const routeName = currentRoute.route;
-  const targetDest = currentRoute.dest_tc.substring(0, 2); // 攞目的地頭兩個字，例如「中環」、「大埔」
 
-  // 1. 高亮 Step 3 站列表
+  // ==========================================
+  // 【防彈版】由 UI 攞終點站名 (無視數字、無須特定 class)
+  // ==========================================
   const allItems = document.querySelectorAll("#stopList .stop-item");
+  let destKey = "";
+
+  if (allItems.length > 0) {
+    const lastStopEl = allItems[allItems.length - 1];
+    const cloneEl = lastStopEl.cloneNode(true);
+    
+    const etaDiv = cloneEl.querySelector(".eta-block");
+    if (etaDiv) etaDiv.remove();
+    
+    let cleanName = cloneEl.textContent.replace(/^[\d\s.\-、]+/, "");
+    cleanName = cleanName.replace(/\s+/g, "");
+    
+    destKey = cleanName.substring(0, 2); 
+  } else {
+    destKey = (currentRoute.dest_tc || "").substring(0, 2);
+  }
+
+  // 1. 高亮 UI
   allItems.forEach(el => {
     const elStopId = el.dataset.stopId;
     const elSeq = parseInt(el.dataset.seq);
     el.classList.toggle("selected", elStopId === stopId && elSeq === targetSeq);
   });
 
-  // 2. 重新載入該站 ETA
   const el = document.querySelector(`#stopList .stop-item[data-stop-id="${stopId}"][data-seq="${targetSeq}"]`);
   if (!el) return;
-
   const etaBlock = el.querySelector(".eta-block");
   if (!etaBlock) return;
   etaBlock.textContent = "載入 ETA 中...";
 
-  if (mainEtaTimer) {
-    clearInterval(mainEtaTimer);
-    mainEtaTimer = null;
-  }
+  if (mainEtaTimer) { clearInterval(mainEtaTimer); mainEtaTimer = null; }
 
   async function loadEta() {
     try {
       let combinedEtaList = [];
-      // 支援 1, 3, 6, 9 字頭及 N 線過海聯營
       const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName);
 
       // ==========================================
@@ -1907,71 +1923,86 @@ async function selectStop(stopId, seq) {
       // ==========================================
       try {
         const mainData = await BusAPI.getEta(company, stopId, routeName, currentServiceType);
-        let mainList = mainData.data || [];
+        let mainList = (mainData.data || []).filter(item => parseInt(item.seq) === targetSeq);
         
-        // 過濾 Seq 同方向 (九巴需要 dir)
-        mainList = mainList.filter(item => parseInt(item.seq) === targetSeq);
         if (company === "KMB" && currentDirectionCode) {
           mainList = mainList.filter(item => item.dir === currentDirectionCode);
         }
         
-        mainList.forEach(item => item._company = company);
-        combinedEtaList.push(...mainList);
-      } catch (e) { console.log("主公司 ETA error"); }
+        mainList.forEach(item => {
+          item._company = company;
+          combinedEtaList.push(item);
+        });
+      } catch (e) { console.error("Main ETA failed"); }
 
       // ==========================================
-      // 【Step 2】聯營線攞「對家公司」嘅 ETA (目的地比對法)
+      // 【Step 2】聯營線攞「對家公司」ETA (用剛才抽到嘅 destKey 去 filter)
       // ==========================================
-      if (isCrossHarbour) {
+      if (isCrossHarbour && destKey) {
         const oppCompany = company === "KMB" ? "CTB" : "KMB";
-        
         try {
-          // 攞晒對家 Inbound 同 Outbound 嘅路線站位
-          const [oppInRes, oppOutRes] = await Promise.all([
+          const [oppIn, oppOut] = await Promise.all([
             BusAPI.getRouteStops(oppCompany, routeName, "inbound", currentServiceType).catch(() => ({data:[]})),
             BusAPI.getRouteStops(oppCompany, routeName, "outbound", currentServiceType).catch(() => ({data:[]}))
           ]);
 
-          // 搵出對家公司喺同一個 Seq 嘅 Stop ID (可能係 In 或 Out)
-          const candidates = [];
-          const inS = (oppInRes.data || []).find(s => parseInt(s.seq) === targetSeq);
-          if (inS) candidates.push(inS.stop);
-          const outS = (oppOutRes.data || []).find(s => parseInt(s.seq) === targetSeq);
-          if (outS && outS.stop !== inS?.stop) candidates.push(outS.stop);
+          const oppStopIds = new Set();
+          const s1 = (oppIn.data || []).find(s => parseInt(s.seq) === targetSeq);
+          if (s1) oppStopIds.add(s1.stop);
+          const s2 = (oppOut.data || []).find(s => parseInt(s.seq) === targetSeq);
+          if (s2) oppStopIds.add(s2.stop);
 
-          // 對每個候選站 Call ETA
-          for (let oppStopId of candidates) {
-            const oppData = await BusAPI.getEta(oppCompany, oppStopId, routeName, currentServiceType);
-            let oppList = oppData.data || [];
-            
-            oppList.forEach(item => {
-              // ★ 關鍵：只有目的地吻合嘅先放入 List，防止攞咗對面馬路嘅車
+          const etaPromises = Array.from(oppStopIds).map(sid => 
+            BusAPI.getEta(oppCompany, sid, routeName, currentServiceType).catch(() => ({data:[]}))
+          );
+          
+          const etaResults = await Promise.all(etaPromises);
+          
+          etaResults.forEach(res => {
+            (res.data || []).forEach(item => {
               const itemDest = item.dest_tc || "";
-              if (parseInt(item.seq) === targetSeq && itemDest.includes(targetDest)) {
+              if (parseInt(item.seq) === targetSeq && itemDest.includes(destKey)) {
                 item._company = oppCompany;
                 combinedEtaList.push(item);
               }
             });
-          }
-        } catch (oppErr) { console.log("對家 ETA 失敗", oppErr); }
+          });
+        } catch (e) { console.error("Opponent ETA failed"); }
       }
 
       // ==========================================
-      // 【Step 3】過濾垃圾數據 + 排序
+      // 【Step 3】過濾無效數據、X巴時段 + 排序
       // ==========================================
+      const seen = new Set();
       combinedEtaList = combinedEtaList.filter(item => {
         const etaStr = String(item.eta || "").trim().toUpperCase();
-        const rmwStr = String(item.rmw_tc || "").trim().toUpperCase();
-        return !(etaStr === "" || etaStr === "N/A" || rmwStr === "暫時沒有預定班次");
+        const rmwStr = String(item.rmw_tc || "").trim();
+
+        // 1. 踢走所有無效嘅 ETA (空字串、N/A、null)
+        if (etaStr === "" || etaStr === "N/A" || etaStr === "NULL" || etaStr === "UNDEFINED") {
+            return false;
+        }
+
+        // 2. ★ 踢走所有「X巴時段」、「非九巴時段」、「沒有預定班次」等無謂備註
+        if (rmwStr.includes("時段") || rmwStr.includes("預定班次") || rmwStr === "離開") {
+            return false;
+        }
+
+        // 3. 去重 (防止同時間同目的地出現兩次)
+        const key = `${item._company}_${etaStr}_${item.dest_tc}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+
+        return true;
       });
 
-      combinedEtaList.sort((a, b) => (new Date(a.eta || 0) - new Date(b.eta || 0)));
+      combinedEtaList.sort((a, b) => new Date(a.eta) - new Date(b.eta));
 
       // ==========================================
-      // 【Step 4】畫出 UI
+      // 【Step 4】畫 UI
       // ==========================================
       etaBlock.innerHTML = "";
-      if (!combinedEtaList.length) {
+      if (combinedEtaList.length === 0) {
         etaBlock.textContent = "暫時冇班次資料";
       } else {
         combinedEtaList.forEach(item => {
@@ -1982,7 +2013,7 @@ async function selectStop(stopId, seq) {
 
           const contentNode = document.createElement("span");
           const badge = isCrossHarbour ? (item._company === "KMB" ? "[九巴] " : "[城巴] ") : "";
-          contentNode.textContent = badge + text; 
+          contentNode.textContent = badge + text;
           row.appendChild(contentNode);
 
           const btnTrack = document.createElement("button");
@@ -2005,7 +2036,6 @@ async function selectStop(stopId, seq) {
   mainEtaTimer = setInterval(loadEta, 30000);
   setTimeout(() => { if (typeof focusMapToStop === 'function') focusMapToStop(stopId, 16, true); }, 500);
 }
-
 
 
 function focusMapToStop(stopId, zoomLevel = 16, openPopup = false) {
@@ -2191,7 +2221,14 @@ async function guessBoardingBusAtTransferStop() {
   }
 
   // 進入時先清一次轉車站 highlight
-  const stopElInit = document.querySelector(`.stop-item[data-stop-id="${transferStopId}"]`);
+  // 由於我哋有 transferSeq，盡量用得精準啲，無就 fallback 用 ID
+  let targetSeq = typeof transferSeq !== "undefined" ? transferSeq : null;
+  let stopElInit = targetSeq 
+    ? document.querySelector(`.stop-item[data-stop-id="${transferStopId}"][data-seq="${targetSeq}"]`)
+    : document.querySelector(`.stop-item[data-stop-id="${transferStopId}"]`);
+    
+  if (!stopElInit) stopElInit = document.querySelector(`.stop-item[data-stop-id="${transferStopId}"]`);
+
   if (stopElInit) {
     stopElInit.querySelectorAll(".eta-row.transfer-tracked")
       .forEach(row => row.classList.remove("transfer-tracked"));
@@ -2208,20 +2245,99 @@ async function guessBoardingBusAtTransferStop() {
   const travelMin = info.travelMinutes || 0;
   const arriveAtTransfer = new Date(departTime.getTime() + travelMin * 60000);
 
-  try {
-    const data = await fetchJSON(
-      `${KMB_BASE}/eta/${transferStopId}/${currentRoute.route}/${currentServiceType}`
-    );
-    let list = data.data || [];
-    list = list.filter(item => item.dir === currentDirectionCode && item.eta);
+  // ==========================================
+  // 【準備終極跨公司 ETA】
+  // ==========================================
+  const company = currentRoute.company || "KMB";
+  const routeName = currentRoute.route;
+  const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName);
 
-    if (!list.length) {
+  let destKey = (currentRoute.dest_tc || "").substring(0, 2);
+  const allItems = document.querySelectorAll("#stopList .stop-item");
+  if (allItems.length > 0) {
+    const lastStopEl = allItems[allItems.length - 1];
+    let cleanName = lastStopEl.textContent.replace(/^[\d\s.\-、]+/, "").replace(/\s+/g, "");
+    if (cleanName.length >= 2) destKey = cleanName.substring(0, 2); 
+  }
+
+  try {
+    let combinedEtaList = [];
+
+    // Step 1: 攞主公司 ETA
+    try {
+      let mainData;
+      if (typeof BusAPI !== 'undefined' && BusAPI.getEta) {
+        mainData = await BusAPI.getEta(company, transferStopId, routeName, currentServiceType);
+      } else {
+        mainData = await fetchJSON(`${KMB_BASE}/eta/${transferStopId}/${routeName}/${currentServiceType}`);
+      }
+      let mainList = mainData.data || [];
+      if (currentDirectionCode && company === "KMB") {
+        mainList = mainList.filter(item => item.dir === currentDirectionCode);
+      }
+      if (targetSeq !== null) {
+        mainList = mainList.filter(item => parseInt(item.seq) === parseInt(targetSeq));
+      }
+      mainList.forEach(item => { item._company = company; combinedEtaList.push(item); });
+    } catch (e) { console.error("Guess Main ETA failed"); }
+
+    // Step 2: 攞對家公司 ETA (聯營線專用)
+    if (isCrossHarbour && destKey && typeof BusAPI !== 'undefined') {
+      const oppCompany = company === "KMB" ? "CTB" : "KMB";
+      try {
+        const [oppIn, oppOut] = await Promise.all([
+          BusAPI.getRouteStops(oppCompany, routeName, "inbound", currentServiceType).catch(() => ({data:[]})),
+          BusAPI.getRouteStops(oppCompany, routeName, "outbound", currentServiceType).catch(() => ({data:[]}))
+        ]);
+
+        const oppStopIds = new Set();
+        if (targetSeq !== null) {
+          const s1 = (oppIn.data || []).find(s => parseInt(s.seq) === parseInt(targetSeq));
+          if (s1) oppStopIds.add(s1.stop);
+          const s2 = (oppOut.data || []).find(s => parseInt(s.seq) === parseInt(targetSeq));
+          if (s2) oppStopIds.add(s2.stop);
+        }
+
+        const etaPromises = Array.from(oppStopIds).map(sid => 
+          BusAPI.getEta(oppCompany, sid, routeName, currentServiceType).catch(() => ({data:[]}))
+        );
+        const etaResults = await Promise.all(etaPromises);
+        
+        etaResults.forEach(res => {
+          (res.data || []).forEach(item => {
+            const itemDest = item.dest_tc || "";
+            if (itemDest.includes(destKey)) {
+              if (targetSeq !== null && parseInt(item.seq) !== parseInt(targetSeq)) return;
+              item._company = oppCompany;
+              combinedEtaList.push(item);
+            }
+          });
+        });
+      } catch (e) { console.error("Guess Opponent ETA failed"); }
+    }
+
+    // Step 3: 過濾 X巴時段 及 無效班次
+    const seen = new Set();
+    combinedEtaList = combinedEtaList.filter(item => {
+      const etaStr = String(item.eta || "").trim().toUpperCase();
+      const rmwStr = String(item.rmw_tc || "").trim();
+
+      if (etaStr === "" || etaStr === "N/A" || etaStr === "NULL" || etaStr === "UNDEFINED") return false;
+      if (rmwStr.includes("時段") || rmwStr.includes("預定班次") || rmwStr === "離開") return false;
+
+      const key = `${item._company}_${etaStr}_${item.dest_tc}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    if (!combinedEtaList.length) {
       trackedTransferArriveTime = null;
       setBoardingInfoTextForTransferStop("無法追蹤");
       return;
     }
 
-    const actualEtas = list.map((item, idx) => {
+    const actualEtas = combinedEtaList.map((item, idx) => {
       const d = formatDetailLine(item);
       if (!d.etaTime) return null;
       return {
@@ -2238,6 +2354,9 @@ async function guessBoardingBusAtTransferStop() {
       return;
     }
 
+    // ==========================================
+    // 【配對及畫 UI】
+    // ==========================================
     const targetStatus = selectedEtaStatus || "not_departed";
     const result = findClosestMatchingBus(arriveAtTransfer, targetStatus, actualEtas);
 
@@ -2249,20 +2368,22 @@ async function guessBoardingBusAtTransferStop() {
 
     const matched = result.bus;
 
-    // ★ 成功追蹤：記低實際到達轉車站時間（第一架）
+    // ★ 成功追蹤：記低實際到達轉車站時間
     trackedTransferArriveTime = matched.time;
 
     const tStr = formatTimeHHMM(matched.time);
     setBoardingInfoTextForTransferStop(`搭緊：${tStr}`);
 
-    // 同步高亮轉車站 eta-block 入面對應嗰行（可選，視乎你原本有冇做）
+    // ★ 同步高亮轉車站 eta-block 入面對應嗰行
     if (stopElInit) {
       const etaRows = stopElInit.querySelectorAll(".eta-row");
       etaRows.forEach(row => {
         const span = row.querySelector("span");
         if (!span) return;
         const text = span.textContent || "";
-        if (text.startsWith(tStr)) {
+        
+        // 【核心修正】用 includes 代替 startsWith，防止比 [城巴] 標籤阻礙
+        if (text.includes(tStr)) {
           row.classList.add("transfer-tracked");
         } else {
           row.classList.remove("transfer-tracked");
@@ -2283,11 +2404,11 @@ async function loadEtaDetailForStop(stopId, seq) {
   // 確保 seq 係數字
   const targetSeq = parseInt(seq);
 
+  // 1. 搵 UI Element
   let el = null;
   if (!isNaN(targetSeq)) {
     el = document.querySelector(`.stop-item[data-stop-id="${stopId}"][data-seq="${targetSeq}"]`);
   }
-  
   if (!el) {
     el = document.querySelector(`.stop-item[data-stop-id="${stopId}"]`);
   }
@@ -2297,63 +2418,147 @@ async function loadEtaDetailForStop(stopId, seq) {
   if (!etaBlock) return;
   etaBlock.textContent = "載入 ETA 中...";
 
+  // 2. 準備終點站關鍵字 (用嚟對齊城巴方向)
+  let destKey = (currentRoute.dest_tc || "").substring(0, 2);
+  const allItems = document.querySelectorAll("#stopList .stop-item");
+  if (allItems.length > 0) {
+    const lastStopEl = allItems[allItems.length - 1];
+    const cloneEl = lastStopEl.cloneNode(true);
+    const etaDiv = cloneEl.querySelector(".eta-block");
+    if (etaDiv) etaDiv.remove();
+    let cleanName = cloneEl.textContent.replace(/^[\d\s.\-、]+/, "").replace(/\s+/g, "");
+    if (cleanName.length >= 2) destKey = cleanName.substring(0, 2); 
+  }
+
   try {
-    const data = await fetchJSON(
-      `${KMB_BASE}/eta/${stopId}/${currentRoute.route}/${currentServiceType}`
-    );
-    let list = data.data || [];
+    let combinedEtaList = [];
+    const company = currentRoute.company || "KMB";
+    const routeName = currentRoute.route;
+    const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName);
 
-    if (!isNaN(targetSeq)) {
-      list = list.filter(item => parseInt(item.seq) === targetSeq);
-    }
-    
-    if (currentDirectionCode) {
-      list = list.filter(item => item.dir === currentDirectionCode);
+    // ==========================================
+    // 【Step 1】攞「主公司」嘅 ETA
+    // ==========================================
+    try {
+      // 建議用 BusAPI.getEta 統一處理，如果無，就跌返落你原本個 fetchJSON
+      let mainData;
+      if (typeof BusAPI !== 'undefined' && BusAPI.getEta) {
+        mainData = await BusAPI.getEta(company, stopId, routeName, currentServiceType);
+      } else {
+        mainData = await fetchJSON(`${KMB_BASE}/eta/${stopId}/${routeName}/${currentServiceType}`);
+      }
+      
+      let mainList = mainData.data || [];
+      if (!isNaN(targetSeq)) {
+        mainList = mainList.filter(item => parseInt(item.seq) === targetSeq);
+      }
+      if (currentDirectionCode && company === "KMB") {
+        mainList = mainList.filter(item => item.dir === currentDirectionCode);
+      }
+      mainList.forEach(item => {
+        item._company = company;
+        combinedEtaList.push(item);
+      });
+    } catch (e) { console.error("Main ETA failed", e); }
+
+    // ==========================================
+    // 【Step 2】聯營線攞「對家公司」ETA (用關鍵字過濾)
+    // ==========================================
+    if (isCrossHarbour && destKey && typeof BusAPI !== 'undefined') {
+      const oppCompany = company === "KMB" ? "CTB" : "KMB";
+      try {
+        const [oppIn, oppOut] = await Promise.all([
+          BusAPI.getRouteStops(oppCompany, routeName, "inbound", currentServiceType).catch(() => ({data:[]})),
+          BusAPI.getRouteStops(oppCompany, routeName, "outbound", currentServiceType).catch(() => ({data:[]}))
+        ]);
+
+        const oppStopIds = new Set();
+        const s1 = (oppIn.data || []).find(s => parseInt(s.seq) === targetSeq);
+        if (s1) oppStopIds.add(s1.stop);
+        const s2 = (oppOut.data || []).find(s => parseInt(s.seq) === targetSeq);
+        if (s2) oppStopIds.add(s2.stop);
+
+        const etaPromises = Array.from(oppStopIds).map(sid => 
+          BusAPI.getEta(oppCompany, sid, routeName, currentServiceType).catch(() => ({data:[]}))
+        );
+        const etaResults = await Promise.all(etaPromises);
+        
+        etaResults.forEach(res => {
+          (res.data || []).forEach(item => {
+            const itemDest = item.dest_tc || "";
+            if (parseInt(item.seq) === targetSeq && itemDest.includes(destKey)) {
+              item._company = oppCompany;
+              combinedEtaList.push(item);
+            }
+          });
+        });
+      } catch (e) { console.error("Opponent ETA failed", e); }
     }
 
+    // ==========================================
+    // 【Step 3】過濾無效數據、時段備註 + 排序
+    // ==========================================
+    const seen = new Set();
+    combinedEtaList = combinedEtaList.filter(item => {
+      const etaStr = String(item.eta || "").trim().toUpperCase();
+      const rmwStr = String(item.rmw_tc || "").trim();
+
+      if (etaStr === "" || etaStr === "N/A" || etaStr === "NULL" || etaStr === "UNDEFINED") return false;
+      if (rmwStr.includes("時段") || rmwStr.includes("預定班次") || rmwStr === "離開") return false;
+
+      const key = `${item._company}_${etaStr}_${item.dest_tc}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+
+      return true;
+    });
+
+    combinedEtaList.sort((a, b) => new Date(a.eta) - new Date(b.eta));
+
+    // ==========================================
+    // 【Step 4】畫 UI (保留你原本嘅邏輯)
+    // ==========================================
     etaBlock.innerHTML = "";
-    if (!list.length) {
+    if (!combinedEtaList.length) {
       etaBlock.textContent = "暫時冇班次資料";
     } else {
-      list.forEach(item => {
-        // 假設你有 formatDetailLine 處理文字
+      combinedEtaList.forEach(item => {
         const { text, minutes, isScheduled, status, etaTime } = formatDetailLine(item);
 
         const row = document.createElement("div");
         row.className = "eta-row";
         if (minutes <= 0) {
           row.classList.add("eta-imminent");
-        } else {
+        } else if (typeof grayColorByMinutes === 'function') {
+          // 保留你原本嘅顏色漸變效果
           row.style.color = grayColorByMinutes(minutes);
         }
 
         const contentNode = document.createElement("span");
-        contentNode.textContent = text;
+        // 加入公司 Badge 方便識別
+        const badge = isCrossHarbour ? (item._company === "KMB" ? "[九巴] " : "[城巴] ") : "";
+        contentNode.textContent = badge + text;
         if (isScheduled) contentNode.style.fontStyle = "italic";
         row.appendChild(contentNode);
 
-        // ★ 核心改動：判斷需唔需要顯示「追蹤」按鈕
+        // ★ 保留你嘅核心改動：判斷需唔需要顯示「追蹤」按鈕
         let showTrackBtn = true;
-        if (mode === "interchange_pair" || mode === "interchange_pick") {
-          // 檢查呢個站係咪「上車站」
+        if (typeof mode !== 'undefined' && (mode === "interchange_pair" || mode === "interchange_pick")) {
           const isOrigin = (stopId === originStopId && (!originSeq || targetSeq === parseInt(originSeq)));
-          // 如果唔係上車站，就隱藏追蹤按鈕
           if (!isOrigin) {
             showTrackBtn = false;
           }
         }
 
-        // 只有符合條件（正常模式，或者係轉車模式嘅上車站）先會畫個 Button 出嚟
         if (showTrackBtn) {
           const btnTrack = document.createElement("button");
           btnTrack.className = "btn-track";
           btnTrack.textContent = "追蹤";
           btnTrack.onclick = (e) => {
             e.stopPropagation();
-            setTrackingEta(
-              { id: item.eta_seq || null, etaTime, status },
-              row
-            );
+            if (typeof setTrackingEta === 'function') {
+               setTrackingEta({ id: item.eta_seq || `${routeName}_${item.seq}_${item.eta}`, etaTime, status }, row);
+            }
           };
           row.appendChild(btnTrack);
         }
@@ -2367,11 +2572,14 @@ async function loadEtaDetailForStop(stopId, seq) {
   }
 }
 
+
+
+
 // 自動追蹤第一班車 Helper
 function autoTrackFirstEta(stopId, seq) {
   let attempts = 0;
   
-  // 每 500ms Check 一次 ETA load 完未，最多 Check 10 次 (5秒)
+  // 每 500ms Check 一次 ETA load 完未，最多 Check 20 次 (10秒)
   const interval = setInterval(() => {
     attempts++;
     
@@ -2379,21 +2587,22 @@ function autoTrackFirstEta(stopId, seq) {
     const stopDiv = document.querySelector(`.stop-item[data-stop-id="${stopId}"][data-seq="${seq}"]`);
     
     if (stopDiv) {
-      // ⚠️ 注意：請將 '.eta-item' 改返做你實際裝 ETA 果行嘅 class name！
-      // 常見可能係 '.eta-row', '.eta-record', 或者直接係 'button.eta-btn'
+      // 我哋喺 loadEtaDetailForStop 入面已經統一將追蹤制叫 '.btn-track'
       const firstEtaBtn = stopDiv.querySelector('.btn-track'); 
       
       if (firstEtaBtn) {
-
-        firstEtaBtn.click(); // 模擬用家手動撳第一班車
-
-        clearInterval(interval); // 搞掂就收工
+        // 一見到第一班車個制，即刻模擬手動撳落去
+        firstEtaBtn.click(); 
+        console.log("自動追蹤成功！");
+        clearInterval(interval); // 搞掂收工
         return;
       }
     }
     
-    if (attempts >= 10) {
-      clearInterval(interval); // 等太耐都無就放棄，廢事無限 Loop
+    // 等咗 10 秒 (20次 x 500ms) 都無就放棄，避免無限 Loop
+    if (attempts >= 20) {
+      console.log("自動追蹤 Timeout，可能真係無車");
+      clearInterval(interval); 
     }
   }, 500);
 }
@@ -2519,42 +2728,118 @@ async function loadHeadwayInfo() {
   if (!infoDiv) return;
   infoDiv.textContent = "計算班距中...";
 
-  if (!currentRoute || !currentDirection) {
+  if (!currentRoute || !currentDirection || !routeStops || !routeStops.length) {
     infoDiv.textContent = "";
     return;
   }
 
   try {
-    if (!routeStops || !routeStops.length) {
-      infoDiv.textContent = "";
-      return;
+    // 抽當前揀緊嗰個站出嚟計，無就用頭站
+    const targetStopInfo = routeStops.find(s => s.stop_id === currentStopId) || routeStops[0];
+    const targetStopId = targetStopInfo.stop_id;
+    const targetSeq = parseInt(targetStopInfo.seq);
+
+    let combinedEtaList = [];
+    const company = currentRoute.company || "KMB";
+    const routeName = currentRoute.route;
+    const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName);
+
+    // ★ 核心修正 1：準備終點站關鍵字 (防對家公司撈亂對面海方向嘅班次)
+    let destKey = (currentRoute.dest_tc || "").substring(0, 2);
+    if (routeStops.length > 0) {
+      const lastStop = routeStops[routeStops.length - 1];
+      let cleanName = lastStop.name_tc.replace(/^[\d\s.\-、]+/, "").replace(/\s+/g, "");
+      if (cleanName.length >= 2) destKey = cleanName.substring(0, 2); 
     }
 
-    const targetStopId = currentStopId || routeStops[0].stop_id;
+    // ==========================================
+    // 1. 攞 KMB 主公司班次
+    // ==========================================
+    try {
+      const mainData = await fetchJSON(`${KMB_BASE}/eta/${targetStopId}/${routeName}/${currentServiceType}`);
+      let mainList = mainData.data || [];
+      if (currentDirectionCode) {
+        mainList = mainList.filter(item => item.dir === currentDirectionCode);
+      }
+      mainList.forEach(item => combinedEtaList.push(item));
+    } catch (e) { console.error("Headway KMB ETA failed"); }
 
-    const data = await fetchJSON(
-      `${KMB_BASE}/eta/${targetStopId}/${currentRoute.route}/${currentServiceType}`
-    );
-    let list = data.data || [];
-    if (currentDirectionCode) {
-      list = list.filter(item => item.dir === currentDirectionCode);
+    // ==========================================
+    // 2. 攞 CTB 城巴班次 (只限聯營線)
+    // ==========================================
+    if (isCrossHarbour && destKey && typeof BusAPI !== "undefined") {
+      const oppCompany = company === "KMB" ? "CTB" : "KMB";
+      try {
+        const [oppIn, oppOut] = await Promise.all([
+          BusAPI.getRouteStops(oppCompany, routeName, "inbound", currentServiceType).catch(() => ({data:[]})),
+          BusAPI.getRouteStops(oppCompany, routeName, "outbound", currentServiceType).catch(() => ({data:[]}))
+        ]);
+        
+        const oppStopIds = new Set();
+        const s1 = (oppIn.data || []).find(s => parseInt(s.seq) === targetSeq);
+        if (s1) oppStopIds.add(s1.stop);
+        const s2 = (oppOut.data || []).find(s => parseInt(s.seq) === targetSeq);
+        if (s2) oppStopIds.add(s2.stop);
+
+        const etaPromises = Array.from(oppStopIds).map(sid => 
+          BusAPI.getEta(oppCompany, sid, routeName, currentServiceType).catch(() => ({data:[]}))
+        );
+        const etaResults = await Promise.all(etaPromises);
+        
+        etaResults.forEach(res => {
+          (res.data || []).forEach(item => {
+            const itemDest = item.dest_tc || "";
+            // ★ 核心修正 2：一定要過濾目的地，否則城巴會俾埋反方向班次你！
+            if (itemDest.includes(destKey)) {
+              combinedEtaList.push(item);
+            }
+          });
+        });
+      } catch (e) { console.error("Headway CTB ETA failed"); }
     }
 
+    // ==========================================
+    // 3. 過濾垃圾數據 + 分鐘級去重 + 排序
+    // ==========================================
     const times = [];
-    list.forEach(item => {
-      if (item.eta) times.push(new Date(item.eta));
+    const seen = new Set();
+    
+    combinedEtaList.forEach(item => {
+      const etaStr = String(item.eta || "").trim().toUpperCase();
+      const rmwStr = String(item.rmw_tc || "").trim();
+      
+      if (etaStr === "" || etaStr === "N/A" || etaStr === "NULL") return;
+      if (rmwStr.includes("時段") || rmwStr.includes("預定班次") || rmwStr === "離開") return;
+      
+      const t = new Date(item.eta);
+      if (isNaN(t.getTime())) return;
+
+      // ★ 核心修正 3：以「分鐘」為單位去重。
+      // 萬一九巴同城巴同時報 18:30 嗰班車，只會計一次，唔會搞到有 0 分鐘班距。
+      const key = `${t.getFullYear()}-${t.getMonth()}-${t.getDate()}-${t.getHours()}-${t.getMinutes()}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+
+      times.push(t);
     });
+
     times.sort((a, b) => a - b);
 
-    if (!times || times.length < 2) {
+    if (times.length < 2) {
       infoDiv.textContent = "班距資料不足。";
       return;
     }
 
+    // ==========================================
+    // 4. 計算平均班距
+    // ==========================================
     const diffs = [];
     for (let i = 1; i < times.length; i++) {
       const diffMin = Math.round((times[i] - times[i - 1]) / 60000);
-      if (diffMin > 0) diffs.push(diffMin);
+      // 容許 2 至 60 分鐘嘅正常班距 (307 嘅 30 分鐘會完美跌入呢度)
+      if (diffMin >= 2 && diffMin <= 60) {
+        diffs.push(diffMin);
+      }
     }
 
     if (!diffs.length) {
@@ -2565,9 +2850,9 @@ async function loadHeadwayInfo() {
     const sum = diffs.reduce((a, b) => a + b, 0);
     const avg = Math.round(sum / diffs.length);
 
-    const stopInfo = routeStops.find(s => s.stop_id === targetStopId);
-    const stopNameLocal = stopInfo ? stopInfo.name_tc : "此站";
+    const stopNameLocal = targetStopInfo ? targetStopInfo.name_tc : "此站";
     infoDiv.textContent = `${stopNameLocal} 大約 ${avg} 分鐘一班車`;
+
   } catch (e) {
     console.error("loadHeadwayInfo error", e);
     infoDiv.textContent = "班距資料不足。";
@@ -2989,7 +3274,7 @@ async function loadTransferHeadwayInfo() {
       btnShowAll.className = "btn-show-all-stops";
       btnShowAll.textContent = "顯示全部站";
     btnShowAll.onclick = () => {
-		console.log("run");
+
       // 1. 強制清空全域變數 (話畀系統知：而家無轉車站)
       transferCurrentStopId = null;
 
@@ -3023,7 +3308,7 @@ async function loadTransferHeadwayInfo() {
             }
           }
         };
-		console.log("done");
+
       });
 
       // 4. 清空步行時間文字
@@ -3274,7 +3559,7 @@ function renderTransferStopList() {
 
 // ★ 加入 seq 參數
 async function checkTransferStopEta(stopId, seq) {
-	console.log("run");
+
   // ★ 循環線補底
   let actualSeq = seq;
   if (!actualSeq) {
