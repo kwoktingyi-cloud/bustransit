@@ -1068,18 +1068,68 @@ function updateAfterTransferInputChange() {
   }
 
   const kw = transferCurrentInput.toLowerCase();
-  transferCandidateRoutes = uniqueRoutes.filter(r =>
+  
+  // 1. 先搵晒所有開頭符合嘅路線出嚟 (未去重)
+  const rawCandidates = uniqueRoutes.filter(r =>
     r.route.toLowerCase().startsWith(kw)
   );
 
-  if (!transferCandidateRoutes.length) {
+  // 2. ★ 完美融合版：用 Map 處理去重 + 聯營線合併
+  const byRoute = new Map();
+
+  rawCandidates.forEach(r => {
+    const code = String(r.route).toUpperCase(); // 確保大階
+    const company = r.company || "KMB";
+    
+    // 判斷係咪聯營線：過海線 (1,3,6,9字頭) + 大嶼山特例 (S1, R8)
+    const isJointRoute = /^(N)?[1369]\d{2}[A-Z]?$/.test(code) || ["S1", "R8"].includes(code);
+    
+    // 聯營線用 code 做 key (會合併)，獨營線用 code-company 做 key (會拆開)
+    const key = isJointRoute ? code : `${code}-${company}`;
+
+    if (!byRoute.has(key)) {
+      // 第一次見呢條線，開個新 Record
+      byRoute.set(key, {
+        route: code,
+        orig_tc: r.orig_tc,
+        dest_tc: r.dest_tc,
+        companies: new Set([company]),
+        sampleObj: r // 留返個原始 Object 畀等陣 onclick 掟入 function
+      });
+    } else {
+      // 已經見過，將間公司加埋入去 (例如加 CTB 入去，就會變 九巴+城巴)
+      byRoute.get(key).companies.add(company);
+    }
+  });
+
+  // 3. 將 Map 轉返做 Array
+  const groupedRoutes = Array.from(byRoute.values());
+  
+  // ★ Update 返 transferCandidateRoutes 畀 Virtual Keyboard 用
+  transferCandidateRoutes = groupedRoutes.map(g => g.sampleObj);
+
+  // 4. 顯示結果
+  if (!groupedRoutes.length) {
     listDiv.textContent = "冇符合路線";
   } else {
-    transferCandidateRoutes.slice(0, 100).forEach(r => {
+    groupedRoutes.slice(0, 100).forEach(group => {
       const div = document.createElement("div");
       div.className = "route-item";
-      div.textContent = `${r.route}：${r.orig_tc} ↔ ${r.dest_tc}`;
-      div.onclick = () => selectTransferRoute(r);
+
+      // 處理公司 Label 顯示
+      const cos = Array.from(group.companies);
+      const coLabel = cos.length === 1
+        ? (cos[0] === "CTB" ? "（城巴）" : "（九巴）")
+        : "（九巴 / 城巴）";
+
+      div.textContent = `${group.route} ${coLabel}：${group.orig_tc} ↔ ${group.dest_tc}`;
+
+      div.onclick = () => {
+        // 聯營線求其掟其中一個 sample (通常係搵到嘅第一個) 入去就得
+        // ETA function 會識得自動搞掂聯營
+        selectTransferRoute(group.sampleObj);
+      };
+      
       listDiv.appendChild(div);
     });
   }
@@ -1169,8 +1219,18 @@ function resetTransferOnly() {
   const tSec = document.getElementById("transfer-search-section");
   if (tSec) tSec.style.display = "block";
 
-  const mainLine = document.getElementById("transfer-main-line");
-  if (mainLine) mainLine.innerHTML = "轉車路線：";
+const mainLine = document.getElementById("transfer-main-line");
+  const inputDisplay = document.getElementById("transferRouteInputDisplay"); // 搵返個仔出嚟
+
+  if (mainLine) {
+    // 1. 安全起見用 textContent 寫字（呢一刻個仔會短暫消失）
+    mainLine.textContent = "轉車路線："; 
+    
+    // 2. 將個仔原封不動咁 append 返入去 mainLine 嘅最後面
+    if (inputDisplay) {
+      mainLine.appendChild(inputDisplay);
+    }
+  }
 
   const d1 = document.getElementById("transferRouteInputDisplay");
   if (d1) d1.textContent = "(未輸入)";
@@ -1599,7 +1659,7 @@ async function loadRouteStopsForCurrentDirection() {
     console.error(e);
     if (stopList) stopList.textContent =
       "載入路線站點失敗：" + e.message;
-    if (hInfo) hInfo.textContent = "班距資料不足。";
+    if (hInfo) 		transferHeadNotOk();
   }
 }
 
@@ -3032,8 +3092,8 @@ async function loadTransferRouteStopsForCurrentDirection() {
   if (d1) d1.innerHTML = "載入路線站點中...";
   transferCurrentStopId = null;
   transferEtaTimesByStop = {};
-  const d2 = document.getElementById("transferHeadwayInfo");
-  if (d2) d2.textContent = "計算班距中...";
+ // const d2 = document.getElementById("transferHeadwayInfo");
+//  if (d2) d2.textContent = "計算班距中...";
 
   try {
     let routeStopList = [];
@@ -3148,11 +3208,27 @@ async function loadTransferRouteStopsForCurrentDirection() {
     console.error(e);
     const d1b = document.getElementById("transferStopList");
     if (d1b) d1b.textContent = "載入路線站點失敗：" + e.message;
-    const d2b = document.getElementById("transferHeadwayInfo");
-    if (d2b) d2b.textContent = "班距資料不足。";
-  }
+	transferHeadNotOk();
+ 	
+	}
+	
 }
+  
 
+
+function transferHeadNotOk(){
+    const d2b = document.getElementById("transferHeadwayInfo");  
+	const btn = document.querySelector(".btn-show-all-stops"); // 搵返個仔出嚟
+			console.log(document.querySelector(".btn-show-all-stops"));
+    if (d2b) {
+		d2b.textContent = "班距資料不足。";
+    if (btn) {
+
+        d2b.appendChild(btn);
+    }	
+	
+}
+}
 
 function clearSecondRouteVisual() {
   // 移除紅色 tag
@@ -3224,11 +3300,18 @@ function shrinkTransferLayoutAfterDirectionChosen() {
     const btnText = document.getElementById("transferDirOutbound").textContent || "";
     dirName = btnText.replace(/^往\s*|\s*方向$/g, "");
   }
-
+  
   const mainLine = document.getElementById("transfer-main-line");
+  const inputDisplay = document.getElementById("transferRouteInputDisplay"); // 搵返個仔出嚟
+
   if (mainLine) {
     mainLine.textContent = `轉車路線：${routeText}`;
     if (dirName) mainLine.textContent += ` 往 ${dirName} 方向`;
+    
+    // 2. 將個仔原封不動咁 append 返入去 mainLine 嘅最後面
+    if (inputDisplay) {
+      mainLine.appendChild(inputDisplay);
+    }
   }
 
   const t1 = document.getElementById("step4-title");
@@ -3247,7 +3330,6 @@ function shrinkTransferLayoutAfterDirectionChosen() {
   const stopBlock = document.getElementById("transfer-stop-block");
   if (stopBlock) stopBlock.style.display = "";
 }
-
 
 
 async function loadTransferEtaSummaryForAllStops() {
@@ -3314,35 +3396,7 @@ async function loadTransferHeadwayInfo() {
       infoDiv.textContent = "";
       return;
     }
-
-    const targetStopId = transferCurrentStopId || transferRouteStops[0].stop_id;
-    const times = (transferEtaTimesByStop && transferEtaTimesByStop[targetStopId])
-      ? transferEtaTimesByStop[targetStopId]
-      : [];
-
-    if (!times || times.length < 2) {
-      infoDiv.textContent = "班距資料不足。";
-      return;
-    }
-
-    const diffs = [];
-    for (let i = 1; i < times.length; i++) {
-      const diffMin = Math.round((times[i] - times[i - 1]) / 60000);
-      if (diffMin > 0) diffs.push(diffMin);
-    }
-
-    if (!diffs.length) {
-      infoDiv.textContent = "班距資料不足。";
-      return;
-    }
-
-    const sum = diffs.reduce((a, b) => a + b, 0);
-    const avg = Math.round(sum / diffs.length);
-
-    const stopInfo = transferRouteStops.find(s => s.stop_id === targetStopId);
-    const stopNameLocal = stopInfo ? stopInfo.name_tc : "此站";
-    infoDiv.textContent = `${stopNameLocal} 大約 ${avg} 分鐘一班車`;
-
+	
     let btnShowAll = infoDiv.querySelector(".btn-show-all-stops");
     if (!btnShowAll) {
       btnShowAll = document.createElement("button");
@@ -3395,10 +3449,40 @@ async function loadTransferHeadwayInfo() {
     };
       infoDiv.appendChild(document.createTextNode(" "));
       infoDiv.appendChild(btnShowAll);
+    }	
+
+    const targetStopId = transferCurrentStopId || transferRouteStops[0].stop_id;
+    const times = (transferEtaTimesByStop && transferEtaTimesByStop[targetStopId])
+      ? transferEtaTimesByStop[targetStopId]
+      : [];
+
+    if (!times || times.length < 2) {
+		transferHeadNotOk();
+      return;
     }
+
+    const diffs = [];
+    for (let i = 1; i < times.length; i++) {
+      const diffMin = Math.round((times[i] - times[i - 1]) / 60000);
+      if (diffMin > 0) diffs.push(diffMin);
+    }
+
+    if (!diffs.length) {
+		transferHeadNotOk();
+      return;
+    }
+
+    const sum = diffs.reduce((a, b) => a + b, 0);
+    const avg = Math.round(sum / diffs.length);
+
+    const stopInfo = transferRouteStops.find(s => s.stop_id === targetStopId);
+    const stopNameLocal = stopInfo ? stopInfo.name_tc : "此站";
+    infoDiv.textContent = `${stopNameLocal} 大約 ${avg} 分鐘一班車`;
+
+
   } catch (e) {
     console.error("loadTransferHeadwayInfo error", e);
-    infoDiv.textContent = "班距資料不足。";
+		transferHeadNotOk();
   }
 }
 
@@ -3436,15 +3520,26 @@ async function selectTransferStop(stopId, seq) {
 
   let etaList = [];
   try {
-    const data = await fetchJSON(
-      `${KMB_BASE}/eta/${stopId}/${transferRoute.route}/${transferServiceType}`
-    );
-    let list = data.data || [];
-	
-	if (!isNaN(actualSeq)) {
+    let list = [];
+    const company = transferRoute.company || "KMB"; // ★ 攞返間公司出嚟
+
+    // ★ 核心修正：九巴 / 城巴 ETA API 分流
+    if (company === "KMB") {
+      const data = await fetchJSON(
+        `${KMB_BASE}/eta/${stopId}/${transferRoute.route}/${transferServiceType}`
+      );
+      list = data.data || [];
+    } else if (company === "CTB") {
+      // 直 Call 城巴 Data.gov.hk ETA API
+      const res = await fetch(`https://rt.data.gov.hk/v1/transport/citybus-nwfb/eta/CTB/${stopId}/${transferRoute.route}`);
+      const json = await res.json();
+      list = json.data || [];
+    }
+
+    if (!isNaN(actualSeq)) {
       list = list.filter(item => parseInt(item.seq) === parseInt(actualSeq));
     }
-	
+    
     if (transferDirectionCode) {
       list = list.filter(item => item.dir === transferDirectionCode);
     }
@@ -3572,6 +3667,7 @@ async function selectTransferStop(stopId, seq) {
   selectSecondRoute(stopId);
 }
 
+
 function renderTransferStopList() {
   const container = document.getElementById("transferStopList");
   if (!container) return;
@@ -3632,7 +3728,7 @@ function renderTransferStopList() {
   });
 }
 
-// ★ 加入 seq 參數
+
 async function checkTransferStopEta(stopId, seq) {
 
   // ★ 循環線補底
@@ -3687,10 +3783,21 @@ async function checkTransferStopEta(stopId, seq) {
   }
 
   try {
-    const data = await fetchJSON(
-      `${KMB_BASE}/eta/${stopId}/${transferRoute.route}/${transferServiceType}`
-    );
-    let list = data.data || [];
+    let list = [];
+    const company = transferRoute.company || "KMB"; // ★ 攞返間公司出嚟
+
+    // ★ 核心修正：九巴 / 城巴 ETA API 分流
+    if (company === "KMB") {
+      const data = await fetchJSON(
+        `${KMB_BASE}/eta/${stopId}/${transferRoute.route}/${transferServiceType}`
+      );
+      list = data.data || [];
+    } else if (company === "CTB") {
+      // 直 Call 城巴 Data.gov.hk ETA API
+      const res = await fetch(`https://rt.data.gov.hk/v1/transport/citybus-nwfb/eta/CTB/${stopId}/${transferRoute.route}`);
+      const json = await res.json();
+      list = json.data || [];
+    }
 
     if (!isNaN(actualSeq)) {
         list = list.filter(item => parseInt(item.seq) === parseInt(actualSeq));
@@ -3699,14 +3806,6 @@ async function checkTransferStopEta(stopId, seq) {
     if (transferDirectionCode) {
       list = list.filter(item => item.dir === transferDirectionCode && item.eta);
     }
-
-
- //   if (currentDirectionCode) {
- //     list = list.filter(item => item.dir === currentDirectionCode);
-//    }
-//
-
-
 
     etaBlock.innerHTML = "";
     if (!list.length) {
@@ -3828,7 +3927,6 @@ async function checkTransferStopEta(stopId, seq) {
     if (summarySpan) summarySpan.textContent = "";
   }
 }
-
 
 // 1. 畫第一程藍線同藍點 (確保有數字 + 記住 seq)
 async function showRouteStopsOnMap(stops) {
