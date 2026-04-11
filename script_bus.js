@@ -2733,8 +2733,7 @@ async function loadHeadwayInfo() {
     return;
   }
 
-  try {
-    // 抽當前揀緊嗰個站出嚟計，無就用頭站
+try {
     const targetStopInfo = routeStops.find(s => s.stop_id === currentStopId) || routeStops[0];
     const targetStopId = targetStopInfo.stop_id;
     const targetSeq = parseInt(targetStopInfo.seq);
@@ -2742,9 +2741,10 @@ async function loadHeadwayInfo() {
     let combinedEtaList = [];
     const company = currentRoute.company || "KMB";
     const routeName = currentRoute.route;
-    const isCrossHarbour = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName) || ["S1", "R8"].includes(routeName);
+    
+    // ★ 修正 1：統一叫 isJointRoute，唔好再叫 isCrossHarbour 啦！
+    const isJointRoute = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName) || ["S1", "R8"].includes(routeName);
 
-    // ★ 核心修正 1：準備終點站關鍵字 (防對家公司撈亂對面海方向嘅班次)
     let destKey = (currentRoute.dest_tc || "").substring(0, 2);
     if (routeStops.length > 0) {
       const lastStop = routeStops[routeStops.length - 1];
@@ -2753,22 +2753,43 @@ async function loadHeadwayInfo() {
     }
 
     // ==========================================
-    // 1. 攞 KMB 主公司班次
+    // 1. 攞主公司班次 (自動判斷 KMB 定 CTB)
     // ==========================================
-    try {
-      const mainData = await fetchJSON(`${KMB_BASE}/eta/${targetStopId}/${routeName}/${currentServiceType}`);
-      let mainList = mainData.data || [];
-      if (currentDirectionCode) {
-        mainList = mainList.filter(item => item.dir === currentDirectionCode);
-      }
-      mainList.forEach(item => combinedEtaList.push(item));
-    } catch (e) { console.error("Headway KMB ETA failed"); }
+    if (company === "KMB") {
+      try {
+        const mainData = await fetchJSON(`${KMB_BASE}/eta/${targetStopId}/${routeName}/${currentServiceType}`);
+        let mainList = mainData.data || [];
+        if (currentDirectionCode) {
+          mainList = mainList.filter(item => item.dir === currentDirectionCode);
+        }
+        mainList.forEach(item => combinedEtaList.push(item));
+      } catch (e) { console.error("Headway KMB main ETA failed"); }
+    } 
+    else if (company === "CTB" && typeof BusAPI !== "undefined") {
+      try {
+        const mainData = await BusAPI.getEta("CTB", targetStopId, routeName, currentServiceType);
+        let mainList = mainData.data || [];
+        
+        // ★ 修正 2：城巴都一樣用 dir ("I"/"O") 過濾方向，最穩陣！
+        if (currentDirectionCode) {
+          mainList = mainList.filter(item => item.dir === currentDirectionCode);
+        }
+
+        mainList.forEach(item => {
+          const itemDest = item.dest_tc || "";
+          // destKey 作為雙重保險
+          if (destKey && itemDest && !itemDest.includes(destKey)) return;
+          combinedEtaList.push(item);
+        });
+      } catch (e) { console.error("Headway CTB main ETA failed"); }
+    }
 
     // ==========================================
-    // 2. 攞 CTB 城巴班次 (只限聯營線)
+    // 2. 攞聯營線「對家」班次 (只限主線係九巴嘅聯營線)
     // ==========================================
-    if (isCrossHarbour && destKey && typeof BusAPI !== "undefined") {
-      const oppCompany = company === "KMB" ? "CTB" : "KMB";
+    // 呢度終於認得 isJointRoute 啦！
+    if (isJointRoute && company === "KMB" && destKey && typeof BusAPI !== "undefined") {
+      const oppCompany = "CTB";
       try {
         const [oppIn, oppOut] = await Promise.all([
           BusAPI.getRouteStops(oppCompany, routeName, "inbound", currentServiceType).catch(() => ({data:[]})),
@@ -2789,13 +2810,12 @@ async function loadHeadwayInfo() {
         etaResults.forEach(res => {
           (res.data || []).forEach(item => {
             const itemDest = item.dest_tc || "";
-            // ★ 核心修正 2：一定要過濾目的地，否則城巴會俾埋反方向班次你！
             if (itemDest.includes(destKey)) {
               combinedEtaList.push(item);
             }
           });
         });
-      } catch (e) { console.error("Headway CTB ETA failed"); }
+      } catch (e) { console.error("Headway CTB opp ETA failed"); }
     }
 
     // ==========================================
@@ -2873,18 +2893,27 @@ async function selectTransferRoute(route) {
   transferEtaTimesByStop = {};
 
   const d1 = document.getElementById("transferRouteInputDisplay");
-  if (d1) d1.textContent =
-    `${route.route}（${route.orig_tc} ↔ ${route.dest_tc}）`;
+  if (d1) d1.textContent = `${route.route}（${route.orig_tc} ↔ ${route.dest_tc}）`;
+  
   const d2 = document.getElementById("transferStopList");
   if (d2) d2.innerHTML = "";
+  
   const d3 = document.getElementById("transferHeadwayInfo");
   if (d3) d3.textContent = "";
+
+  // ★ 功能 1：清空路線搜尋結果，隱藏 798A 等其他選項
+  const routeListContainer = document.getElementById("transferRouteList"); // ⚠️ 確保呢個 ID 夾返你 HTML 個名
+  if (routeListContainer) routeListContainer.innerHTML = "";
+  
+  // 順便清埋輸入框 (Optional, 睇你想唔想)
+  // const transferInput = document.getElementById("transferRouteInput");
+  // if (transferInput) transferInput.value = "";
 
   const btnIn = document.getElementById("transferDirInbound");
   const btnOut = document.getElementById("transferDirOutbound");
   if (!btnIn || !btnOut) return;
   
-  // ★ 重置顯示狀態
+  // 重置顯示狀態
   btnIn.style.display = ""; 
   btnOut.style.display = "";
   btnIn.disabled = true;
@@ -2893,43 +2922,62 @@ async function selectTransferRoute(route) {
   btnOut.textContent = "載入方向中...";
 
   transferKeyboardHidden = true;
-  renderTransferVirtualKeyboard();
+  if (typeof renderTransferVirtualKeyboard === "function") {
+    renderTransferVirtualKeyboard();
+  }
 
   try {
     const routeId = transferRoute.route;
     const st = transferServiceType;
+    const company = transferRoute.company || "KMB"; // ★ 攞返間公司出嚟
 
-    const [inData, outData] = await Promise.allSettled([
-      fetchJSON(`${KMB_BASE}/route-stop/${routeId}/inbound/${st}`),
-      fetchJSON(`${KMB_BASE}/route-stop/${routeId}/outbound/${st}`)
-    ]);
+    let inData, outData;
+
+    // ★ 功能 2：九巴城巴分流攞 Route-Stop
+    if (company === "KMB") {
+      [inData, outData] = await Promise.allSettled([
+        fetchJSON(`${KMB_BASE}/route-stop/${routeId}/inbound/${st}`),
+        fetchJSON(`${KMB_BASE}/route-stop/${routeId}/outbound/${st}`)
+      ]);
+    } else if (company === "CTB" && typeof BusAPI !== "undefined") {
+      [inData, outData] = await Promise.allSettled([
+        BusAPI.getRouteStops("CTB", routeId, "inbound", st),
+        BusAPI.getRouteStops("CTB", routeId, "outbound", st)
+      ]);
+    } else {
+      throw new Error("Unknown company or BusAPI not defined");
+    }
 
     let inName = "?";
     let outName = "?";
     let hasInbound = false;
     let hasOutbound = false;
 
-    if (inData.status === "fulfilled") {
-      const list = (inData.value.data || []).sort((a, b) => a.seq - b.seq);
+    // 處理 Inbound 數據
+    if (inData.status === "fulfilled" && inData.value.data) {
+      const list = inData.value.data.sort((a, b) => a.seq - b.seq);
       if (list.length > 0) {
         hasInbound = true;
         const last = list[list.length - 1];
         const stopInfo = allStopsMap.get(last.stop);
-        inName = stopInfo ? stripBracketCode(stopInfo.name_tc) : stripBracketCode(transferRoute.dest_tc);
+        // 如果係城巴，stopInfo 會係 undefined，完美 fallback 去 route.dest_tc
+        inName = stopInfo && stopInfo.name_tc ? stripBracketCode(stopInfo.name_tc) : stripBracketCode(transferRoute.dest_tc);
       }
     }
 
-    if (outData.status === "fulfilled") {
-      const list = (outData.value.data || []).sort((a, b) => a.seq - b.seq);
+    // 處理 Outbound 數據
+    if (outData.status === "fulfilled" && outData.value.data) {
+      const list = outData.value.data.sort((a, b) => a.seq - b.seq);
       if (list.length > 0) {
         hasOutbound = true;
         const last = list[list.length - 1];
         const stopInfo = allStopsMap.get(last.stop);
-        outName = stopInfo ? stripBracketCode(stopInfo.name_tc) : stripBracketCode(transferRoute.orig_tc);
+        // 同上，城巴完美 fallback 去 route.orig_tc
+        outName = stopInfo && stopInfo.name_tc ? stripBracketCode(stopInfo.name_tc) : stripBracketCode(transferRoute.orig_tc);
       }
     }
 
-    // ★ 判斷係咪循環線，隱藏並自動 Click
+    // 判斷係咪循環線，隱藏並自動 Click
     if (hasInbound && hasOutbound) {
       btnIn.textContent = `往 ${inName !== "?" ? inName : stripBracketCode(transferRoute.dest_tc)} 方向`;
       btnIn.disabled = false;
@@ -2939,12 +2987,12 @@ async function selectTransferRoute(route) {
       btnIn.textContent = `往 ${inName !== "?" ? inName : stripBracketCode(transferRoute.dest_tc)} 方向`;
       btnIn.disabled = false;
       btnOut.style.display = "none";
-      setTimeout(() => btnIn.click(), 50); // 自動 Click！
+      setTimeout(() => btnIn.click(), 50);
     } else if (hasOutbound) {
       btnOut.textContent = `往 ${outName !== "?" ? outName : stripBracketCode(transferRoute.orig_tc)} 方向`;
       btnOut.disabled = false;
       btnIn.style.display = "none";
-      setTimeout(() => btnOut.click(), 50); // 自動 Click！
+      setTimeout(() => btnOut.click(), 50);
     } else {
       btnIn.textContent = `無此方向`;
       btnOut.textContent = `無此方向`;
@@ -2952,13 +3000,13 @@ async function selectTransferRoute(route) {
 
     const btnReset = document.getElementById("btnResetTransfer");
     if (btnReset) btnReset.style.display = "inline-block";
+    
   } catch (e) {
-    console.error(e);
+    console.error("載入轉車方向失敗:", e);
     btnIn.textContent = "往 ? 方向";
     btnOut.textContent = "往 ? 方向";
   }
 }
-
 
 document.getElementById("transferDirInbound").addEventListener("click", () => {
   if (!transferRoute) return;
@@ -2978,6 +3026,7 @@ async function loadTransferRouteStopsForCurrentDirection() {
   if (!transferRoute || !transferDirection) return;
   const routeId = transferRoute.route;
   const serviceType = transferServiceType;
+  const company = transferRoute.company || "KMB"; // ★ 攞返間公司出嚟
 
   const d1 = document.getElementById("transferStopList");
   if (d1) d1.innerHTML = "載入路線站點中...";
@@ -2987,22 +3036,51 @@ async function loadTransferRouteStopsForCurrentDirection() {
   if (d2) d2.textContent = "計算班距中...";
 
   try {
-    const rsData = await fetchJSON(
-      `${KMB_BASE}/route-stop/${routeId}/${transferDirection}/${serviceType}`
-    );
-    const routeStopList = rsData.data || [];
+    let routeStopList = [];
 
-    transferRouteStops = routeStopList
-      .map(rs => {
-        const stopInfo = allStopsMap.get(rs.stop);
-        return {
-          stop_id: rs.stop,
-          seq: rs.seq,
-          name_tc: stopInfo ? stopInfo.name_tc : `(未知站名) ${rs.stop}`,
-          name_en: stopInfo ? stopInfo.name_en : ""
-        };
-      })
-      .sort((a, b) => a.seq - b.seq);
+    // ★ 核心修正：九巴同城巴分流攞站點清單
+    if (company === "KMB") {
+      const rsData = await fetchJSON(
+        `${KMB_BASE}/route-stop/${routeId}/${transferDirection}/${serviceType}`
+      );
+      routeStopList = rsData.data || [];
+    } else if (company === "CTB" && typeof BusAPI !== "undefined") {
+      const rsData = await BusAPI.getRouteStops("CTB", routeId, transferDirection, serviceType);
+      routeStopList = rsData.data || [];
+    } else {
+      throw new Error("Unknown company or BusAPI not defined");
+    }
+
+// ★ 終極修正：並行 (Parallel) 查站名補飛機制
+    const stopPromises = routeStopList.map(async (rs) => {
+      let stopInfo = allStopsMap.get(rs.stop);
+      
+      // 如果 allStopsMap 搵唔到呢個站 (通常係城巴站未 load)
+      if (!stopInfo && company === "CTB") {
+        try {
+          // 直接 Call 城巴 Data.gov.hk API 攞單一車站資料
+          const res = await fetch(`https://rt.data.gov.hk/v1/transport/citybus-nwfb/stop/${rs.stop}`);
+          const json = await res.json();
+          if (json && json.data) {
+            stopInfo = json.data;
+            // ★ 寫入 allStopsMap！下次再撳同一個站就唔使 Call API，秒出！
+            allStopsMap.set(rs.stop, stopInfo); 
+          }
+        } catch (e) {
+          console.error(`無法載入城巴站名 (ID: ${rs.stop})`, e);
+        }
+      }
+
+      return {
+        stop_id: rs.stop,
+        seq: rs.seq,
+        name_tc: stopInfo && stopInfo.name_tc ? stopInfo.name_tc : (rs.name_tc || `(未知站名) ${rs.stop}`),
+        name_en: stopInfo && stopInfo.name_en ? stopInfo.name_en : (rs.name_en || "")
+      };
+    });
+
+    // 等待所有站名都查完，然後順序排返好
+    transferRouteStops = (await Promise.all(stopPromises)).sort((a, b) => a.seq - b.seq);
 
     shrinkTransferLayoutAfterDirectionChosen();
 
@@ -3020,7 +3098,7 @@ async function loadTransferRouteStopsForCurrentDirection() {
       }
     }, 30000);
 
-    // ★ 重點：搵預設第二程上車站
+    // ★ 搵預設第二程上車站
     if (transferStopName) {
       let targetStop = null;
 
@@ -3064,15 +3142,12 @@ async function loadTransferRouteStopsForCurrentDirection() {
 
       if (targetStop) {
         await selectTransferStop(targetStop.stop_id);
-        // 如你想 UI 顯示用 fallback 嗰個名，可以更新：
-        // transferStopName = normalizeStopName(targetStop.name_tc);
       }
     }
   } catch (e) {
     console.error(e);
     const d1b = document.getElementById("transferStopList");
-    if (d1b) d1b.textContent =
-      "載入路線站點失敗：" + e.message;
+    if (d1b) d1b.textContent = "載入路線站點失敗：" + e.message;
     const d2b = document.getElementById("transferHeadwayInfo");
     if (d2b) d2b.textContent = "班距資料不足。";
   }
