@@ -115,6 +115,30 @@ let originSeq = null;
 let transferSeq = null;
 
 
+// 定義儲存名稱同有效時間 (1小時 = 3600000 毫秒)
+const STORAGE_KEY = "bus_app_state";
+const EXPIRY_TIME = 3600000; 
+
+function saveAppState() {
+    const state = {
+        // 呢度儲存你 App 入面重要嘅變數
+        firstRoute: typeof currentRoute !== 'undefined' ? currentRoute : null,
+		firstDirection: typeof currentDirection !== 'undefined' ? currentDirection : null,
+		firstDirectionCode: typeof currentDirectionCode !== 'undefined' ? currentDirectionCode : null,		
+		
+        transferRoute: typeof transferRoute !== 'undefined' ? transferRoute : null,
+        transferStopId: typeof transferCurrentStopId !== 'undefined' ? transferCurrentStopId : null,
+        transferSeq: window.transferCurrentSeq || null,
+        timestamp: new Date().getTime()
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+	console.log(state);
+    console.log("App 狀態已儲存");
+}
+
+
+
+
 function initMap() {
   if (map) return;
 
@@ -1654,6 +1678,7 @@ async function loadRouteStopsForCurrentDirection() {
     }, 30000);
     
     // (幫你清咗呢度原本重複寫多咗嘅 map function)
+	saveAppState(); // ★ 加呢句，記住用家最後揀咗乜
 
   } catch (e) {
     console.error(e);
@@ -1927,6 +1952,7 @@ function onStopClicked(stopId,seq) {
   recomputeCumulativeTravelFromOrigin(stopId);
   renderStopList();
   selectStop(stopId,seq);   // ★ 每次 click 行都即時顯示 ETA
+  saveAppState(); // ★ 加呢句，記住用家最後揀咗乜
 }
 
 async function selectStop(stopId, seq) {
@@ -3665,6 +3691,8 @@ async function selectTransferStop(stopId, seq) {
   });
 
   selectSecondRoute(stopId);
+  
+  saveAppState(); // ★ 加呢句，記住用家最後揀咗乜
 }
 
 
@@ -4213,6 +4241,8 @@ function checkUrlForRoute() {
         const rtName = typeof r === 'string' ? r : r.route;
         return rtName === targetRoute;
     });
+	
+	console.log(foundRouteObj);
 
     if (foundRouteObj) {
         console.log("URL: 自動選擇路線 " + targetRoute);
@@ -4421,3 +4451,41 @@ async function handleDir2Logic(route, staParam) {
 init();
 
 initMap();
+
+
+window.onload = async function() {
+    const saved = localStorage.getItem(STORAGE_KEY);
+    if (!saved) return;
+
+    const state = JSON.parse(saved);
+    const now = new Date().getTime();
+
+    // 檢查係咪 1 小時內
+    if (now - state.timestamp < EXPIRY_TIME) {
+        console.log("發現 1 小時內嘅紀錄，正在還原...");
+		console.log(state);
+        
+        // 1. 還原第一程 (假設你有個叫 searchRoute 嘅 function)
+        if (state.firstRoute) {
+            // 呢度視乎你點樣 Trigger 搜尋，例如：
+            await selectRoute(state.firstRoute);
+			
+			if(state.firstDirection && state.firstDirectionCode){
+			currentDirection =	state.firstDirection;
+			currentDirectionCode = state.firstDirectionCode;
+			}
+			await loadRouteStopsForCurrentDirection();
+        }
+
+        // 2. 還原轉車站
+        if (state.transferStopId) {
+            // 等一陣確保 DOM 畫好咗先 Trigger 點擊
+            setTimeout(() => {
+                selectTransferStop(state.transferStopId, state.transferSeq);
+            }, 500); 
+        }
+    } else {
+        console.log("紀錄已過期，已清理");
+        localStorage.removeItem(STORAGE_KEY);
+    }
+};
