@@ -297,6 +297,38 @@
   background-color: #ff5252;
 }
 
+/* 電話版優化 Toast */
+#toast-msg {
+    visibility: hidden;
+    width: auto;
+    max-width: 80%;       /* 唔好爆邊 */
+    min-width: 200px;
+    background-color: rgba(51, 51, 51, 0.9); /* 加少少透明感，型啲 */
+    color: #fff;
+    text-align: center;
+    border-radius: 25px;  /* 圓角啲，更似電話 UI */
+    padding: 12px 24px;
+    position: fixed;
+    z-index: 9999;
+    left: 50%;
+    bottom: 50px;         /* 避開電話底層嘅導覽條 */
+    transform: translateX(-50%);
+    font-size: 14px;
+    box-shadow: 0 4px 15px rgba(0,0,0,0.4);
+    white-space: nowrap;  /* 防止站名太長斷行 */
+}
+
+#toast-msg.show {
+    visibility: visible;
+    animation: fadein 0.5s, fadeout 0.5s 2.5s;
+}
+
+/* 動畫效果保持不變 */
+@keyframes fadein { from {bottom: 0; opacity: 0;} to {bottom: 50px; opacity: 1;} }
+@keyframes fadeout { from {bottom: 50px; opacity: 1;} to {bottom: 0; opacity: 0;} }
+
+
+
   </style>
   
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -370,7 +402,7 @@
 		<button id="btnResetTransfer">重新選擇轉車（Step 4）</button>
     </div>
   </div>
-
+<div id="toast-msg"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
         integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="

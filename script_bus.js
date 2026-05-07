@@ -141,7 +141,13 @@ function saveAppState() {
 }
 
 
-
+function showToast(message) {
+    const x = document.getElementById("toast-msg");
+    x.textContent = message;
+    x.className = "show";
+    // 3秒後消失
+    setTimeout(() => { x.className = x.className.replace("show", ""); }, 3000);
+}
 
 function initMap() {
   if (map) return;
@@ -1692,7 +1698,7 @@ async function loadRouteStopsForCurrentDirection() {
 
       // 如果搵到最近嘅站，就當用家 Click 咗佢
       if (nearestStop && typeof onStopClicked === "function") {
-        console.log("📍 自動選取最近車站:", nearestStop.name_tc);
+        showToast(`📍 自動定位：${nearestStop.name_tc}`);
         // 用 setTimeout 畀個 DOM 唞一唞氣，確保 UI Render 完先展開 ETA
         setTimeout(() => {
           onStopClicked(nearestStop.stop_id, nearestStop.seq);
