@@ -124,11 +124,15 @@ function saveAppState() {
         // 呢度儲存你 App 入面重要嘅變數
         firstRoute: typeof currentRoute !== 'undefined' ? currentRoute : null,
 		firstDirection: typeof currentDirection !== 'undefined' ? currentDirection : null,
-		firstDirectionCode: typeof currentDirectionCode !== 'undefined' ? currentDirectionCode : null,		
+		firstDirectionCode: typeof currentDirectionCode !== 'undefined' ? currentDirectionCode : null,	
+		firststopID: typeof originStopId !== 'undefined' ? originStopId : null,
+		firstseq: typeof originSeq !== 'undefined' ? originSeq : null,	
+        transferStopId: typeof transferStopId !== 'undefined' ? transferStopId : null,
+        transferSeq: typeof transferSeq !== 'undefined' ? transferSeq : null,
+		transferRoute: typeof transferRoute !== 'undefined' ? transferRoute : null,
+		transferDirection: typeof transferDirection !== 'undefined' ? transferDirection : null,
+		transferDirectionCode: typeof transferDirectionCode !== 'undefined' ? transferDirectionCode : null,	
 		
-        transferRoute: typeof transferRoute !== 'undefined' ? transferRoute : null,
-        transferStopId: typeof transferCurrentStopId !== 'undefined' ? transferCurrentStopId : null,
-        transferSeq: window.transferCurrentSeq || null,
         timestamp: new Date().getTime()
     };
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
@@ -1219,6 +1223,7 @@ function clearTransferState() {
   if (btnReset) btnReset.style.display = "none";
 
   renderTransferVirtualKeyboard();
+  saveAppState();
 }
 
 function resetTransferOnly() {
@@ -1290,7 +1295,7 @@ const mainLine = document.getElementById("transfer-main-line");
   if (btnReset) btnReset.style.display = "none";
 
   renderTransferVirtualKeyboard();
-
+saveAppState();
 }
 
 /* ========== Step1 大清除 ========== */
@@ -1346,7 +1351,7 @@ function resetAllState() {
   updateRouteInputDisplay();
   renderRouteList();
   renderVirtualKeyboard();
-
+saveAppState();
   // ==========================================
   // ★ 強力清除地圖顯示 (移除所有線 / Marker)
   // ==========================================
@@ -1394,6 +1399,7 @@ function resetAllState() {
 
   const userInfo = document.getElementById("userWalkInfo");
   if (userInfo) userInfo.textContent = "";
+  
 }
 
 
@@ -1860,6 +1866,7 @@ async function exitInterchangeMode() {
   if (prevOrigin) {
     onStopClicked(prevOrigin);
   }
+  saveAppState();
 }
 
 function onInterchangeButtonClick(stopId, seq) {
@@ -1930,6 +1937,7 @@ function onInterchangeButtonClick(stopId, seq) {
   // ★ 加喺度：自動追蹤上車站第一班車
 
     autoTrackFirstEta(originStopId, originSeq);
+	saveAppState();
 }
 
 function clearStopSelectionUI() {
@@ -3086,6 +3094,7 @@ async function selectTransferRoute(route) {
 
     const btnReset = document.getElementById("btnResetTransfer");
     if (btnReset) btnReset.style.display = "inline-block";
+	saveAppState();
     
   } catch (e) {
     console.error("載入轉車方向失敗:", e);
@@ -3229,6 +3238,7 @@ async function loadTransferRouteStopsForCurrentDirection() {
       if (targetStop) {
         await selectTransferStop(targetStop.stop_id);
       }
+	  saveAppState();
     }
   } catch (e) {
     console.error(e);
@@ -4463,7 +4473,6 @@ window.onload = async function() {
     // 檢查係咪 1 小時內
     if (now - state.timestamp < EXPIRY_TIME) {
         console.log("發現 1 小時內嘅紀錄，正在還原...");
-		console.log(state);
         
         // 1. 還原第一程 (假設你有個叫 searchRoute 嘅 function)
         if (state.firstRoute) {
@@ -4473,16 +4482,27 @@ window.onload = async function() {
 			if(state.firstDirection && state.firstDirectionCode){
 			currentDirection =	state.firstDirection;
 			currentDirectionCode = state.firstDirectionCode;
-			}
 			await loadRouteStopsForCurrentDirection();
-        }
-
-        // 2. 還原轉車站
-        if (state.transferStopId) {
-            // 等一陣確保 DOM 畫好咗先 Trigger 點擊
-            setTimeout(() => {
-                selectTransferStop(state.transferStopId, state.transferSeq);
-            }, 500); 
+			if(state.firststopID && state.firstseq){
+			//	originStopId = state.firststopID ;
+			//	originSeq = state.firstseq;
+			await onStopClicked(state.firststopID ,state.firstseq);
+			
+			if(state.transferStopId){
+				await onInterchangeButtonClick(state.transferStopId,state.transferSeq);
+			if(state.transferRoute){			
+				await selectTransferRoute(state.transferRoute);
+				if(state.transferDirection && state.transferDirectionCode){
+					transferDirection = state.transferDirection;
+					transferDirectionCode = state.transferDirectionCode;
+					await loadTransferRouteStopsForCurrentDirection();				
+				}
+			
+			}
+			}		
+			
+			}
+			}
         }
     } else {
         console.log("紀錄已過期，已清理");
