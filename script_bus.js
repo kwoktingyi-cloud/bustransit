@@ -1612,7 +1612,7 @@ function zoomToNearestStopIfHaveGPS() {
 
 async function loadRouteStopsForCurrentDirection() {
   if (!currentRoute || !currentDirection) return;
-  const company = currentRoute.company; // ★ 加多個 company 變數
+  const company = currentRoute.company;
   const routeId = currentRoute.route;
   const serviceType = currentServiceType;
 
@@ -1638,11 +1638,9 @@ async function loadRouteStopsForCurrentDirection() {
   clearTransferState();
 
   try {
-    // ★ 1. 改用 BusAPI 攞車排位 (唔使再寫死 KMB URL)
     const rsData = await BusAPI.getRouteStops(company, routeId, currentDirection, serviceType);
     const routeStopList = rsData.data || [];
 
-    // ★ 2. 用 Promise.all 同 getStopDetail 極速轉換站名
     const stopsWithDetails = await Promise.all(
       routeStopList.map(async (rs) => {
         const stopInfo = await getStopDetail(company, rs.stop);
@@ -1651,27 +1649,63 @@ async function loadRouteStopsForCurrentDirection() {
           seq: rs.seq,
           name_tc: stopInfo && stopInfo.name_tc ? stopInfo.name_tc : `(未知站名) ${rs.stop}`,
           name_en: stopInfo && stopInfo.name_en ? stopInfo.name_en : "",
-          // ★ 順便加埋 lat 同 long，方便你之後 showRouteStopsOnMap 用！
           lat: stopInfo ? stopInfo.lat : null,
           long: stopInfo ? stopInfo.long : null
         };
       })
     );
 
-    // ★ 3. 確保跟 seq 排好次序
     routeStops = stopsWithDetails.sort((a, b) => a.seq - b.seq);
 
     renderStopList();
     await loadEtaSummaryForAllStops();
     await loadHeadwayInfo();
     
-    // 揀好方向、routeStops ready 之後：
     let hl = [];
     if (originStopId) hl.push(originStopId);
     if (transferStopId) hl.push(transferStopId);
 
     showRouteStopsOnMap(routeStops, hl);
     zoomToNearestStopIfHaveGPS(); 
+
+    // ==========================================
+    // ★ 新增：如果有 GPS，自動選取最近車站
+    // ==========================================
+    // 假設你儲存 GPS 嘅變數叫 userLat 同 userLng (請按你實際嘅全域變數名修改)
+    if (typeof userLat !== 'undefined' && typeof userLng !== 'undefined' && userLat && userLng) {
+      let nearestStop = null;
+      let minDistance = Infinity;
+
+      routeStops.forEach(stop => {
+        if (stop.lat && stop.long) {
+          // 用畢氏定理計距離平方 (市區短距離對比夠做，唔使出動 Haversine 公式)
+          const dLat = stop.lat - userLat;
+          const dLng = stop.long - userLng;
+          const dist = (dLat * dLat) + (dLng * dLng);
+
+          if (dist < minDistance) {
+            minDistance = dist;
+            nearestStop = stop;
+          }
+        }
+      });
+
+      // 如果搵到最近嘅站，就當用家 Click 咗佢
+      if (nearestStop && typeof onStopClicked === "function") {
+        console.log("📍 自動選取最近車站:", nearestStop.name_tc);
+        // 用 setTimeout 畀個 DOM 唞一唞氣，確保 UI Render 完先展開 ETA
+        setTimeout(() => {
+          onStopClicked(nearestStop.stop_id, nearestStop.seq);
+          
+          // 如果你想個 List 自動 Scroll 落去嗰個站，可以加埋呢段：
+          const selectedEl = document.querySelector(`.stop-item[data-stop-id="${nearestStop.stop_id}"][data-seq="${nearestStop.seq}"]`);
+          if (selectedEl) {
+            selectedEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }
+        }, 300);
+      }
+    }
+    // ==========================================
 
     if (mainEtaTimer) clearInterval(mainEtaTimer);
     mainEtaTimer = setInterval(async () => {
@@ -1683,14 +1717,12 @@ async function loadRouteStopsForCurrentDirection() {
       }
     }, 30000);
     
-    // (幫你清咗呢度原本重複寫多咗嘅 map function)
-	saveAppState(); // ★ 加呢句，記住用家最後揀咗乜
+    saveAppState();
 
   } catch (e) {
     console.error(e);
-    if (stopList) stopList.textContent =
-      "載入路線站點失敗：" + e.message;
-    if (hInfo) 		transferHeadNotOk();
+    if (stopList) stopList.textContent = "載入路線站點失敗：" + e.message;
+    if (hInfo) transferHeadNotOk();
   }
 }
 
