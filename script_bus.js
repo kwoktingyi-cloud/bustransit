@@ -6201,7 +6201,11 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-// 繪製圓角矩形 Helper (兼容所有 Android WebView / Chrome)
+// =========================================================================
+// ★ 三星瀏覽器 (Samsung Internet) + Even G2 100% 兼容版通知與動態 Logo
+// =========================================================================
+
+// 繪製圓角矩形 Helper
 function drawRoundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -6212,10 +6216,10 @@ function drawRoundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-// ★ 升級版右邊動態 Logo：車牌頂欄 + 圓形倒數進度環 + 特大分鐘 + 底部到站時間膠囊
+// ★ 128x128 輕量高清動態 Logo（完美通過三星瀏覽器大小限制）
 function createCountdownBadgeIcon(minutesLeft, routeCode, hhmmStr) {
   try {
-    const size = 256;
+    const size = 128;
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
@@ -6232,70 +6236,65 @@ function createCountdownBadgeIcon(minutesLeft, routeCode, hhmmStr) {
       grad.addColorStop(0, "#1d4ed8");
       grad.addColorStop(1, "#0f172a");
     }
-    drawRoundRect(ctx, 8, 8, size - 16, size - 16, 48);
+    drawRoundRect(ctx, 4, 4, size - 8, size - 8, 24);
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // 外框微光邊線
-    ctx.lineWidth = 4;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
-    ctx.stroke();
-
     // 2. 頂部巴士路線膠囊 (例如 89S)
-    drawRoundRect(ctx, 36, 22, size - 72, 46, 23);
-    ctx.fillStyle = "rgba(255, 255, 255, 0.18)";
+    drawRoundRect(ctx, 16, 10, size - 32, 24, 12);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.2)";
     ctx.fill();
 
     ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 32px -apple-system, Roboto, sans-serif";
+    ctx.font = "bold 16px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(routeCode || "BUS", size / 2, 46);
+    ctx.fillText(routeCode || "BUS", size / 2, 22);
 
-    // 3. 中央背景進度圓環 (以 20 分鐘為一圈比例)
+    // 3. 中央倒數進度圓環
     const cx = size / 2;
-    const cy = 136;
-    const radius = 54;
+    const cy = 68;
+    const radius = 27;
 
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.lineWidth = 10;
-    ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
     ctx.stroke();
 
     const progress = Math.max(0.05, Math.min(1, (20 - Math.max(0, minutesLeft)) / 20));
     ctx.beginPath();
     ctx.arc(cx, cy, radius, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
-    ctx.lineWidth = 10;
+    ctx.lineWidth = 5;
     ctx.lineCap = "round";
     ctx.strokeStyle = isUrgent ? "#fde047" : "#38bdf8";
     ctx.stroke();
 
-    // 4. 中央特大倒數數字 + 「分」字
+    // 4. 中央特大倒數數字
     ctx.fillStyle = "#ffffff";
     if (minutesLeft <= 0) {
-      ctx.font = "bold 40px -apple-system, Roboto, sans-serif";
-      ctx.fillText("即將", cx, cy - 8);
-      ctx.font = "bold 24px -apple-system, Roboto, sans-serif";
+      ctx.font = "bold 18px sans-serif";
+      ctx.fillText("即將", cx, cy - 4);
+      ctx.font = "bold 12px sans-serif";
       ctx.fillStyle = "#fde047";
-      ctx.fillText("到站", cx, cy + 24);
+      ctx.fillText("到站", cx, cy + 12);
     } else {
-      ctx.font = "bold 64px -apple-system, Roboto, sans-serif";
-      ctx.fillText(String(minutesLeft), cx, cy - 6);
-      ctx.font = "bold 22px -apple-system, Roboto, sans-serif";
+      ctx.font = "bold 30px sans-serif";
+      ctx.fillText(String(minutesLeft), cx, cy - 3);
+      ctx.font = "bold 11px sans-serif";
       ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-      ctx.fillText("分鐘", cx, cy + 32);
+      ctx.fillText("分鐘", cx, cy + 16);
     }
 
     // 5. 底部預計到站時間標籤 (例如 20:48)
     if (hhmmStr) {
-      drawRoundRect(ctx, 54, 204, size - 108, 34, 17);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+      drawRoundRect(ctx, 24, 102, size - 48, 18, 9);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
       ctx.fill();
 
       ctx.fillStyle = "#fde047";
-      ctx.font = "bold 23px monospace, sans-serif";
-      ctx.fillText(hhmmStr, size / 2, 222);
+      ctx.font = "bold 12px monospace, sans-serif";
+      ctx.fillText(hhmmStr, size / 2, 111);
     }
 
     return canvas.toDataURL("image/png");
@@ -6331,6 +6330,7 @@ async function updatePersistentTrackingNotification() {
   const now = new Date();
   const diffMin = Math.round((selectedEtaTime - now) / 60000);
 
+  // 架車開走咗 (< 0 分鐘) 即刻自動關閉通知
   if (diffMin < 0) {
     stopPersistentTrackingNotification();
     return;
@@ -6356,46 +6356,73 @@ async function updatePersistentTrackingNotification() {
   const mm = String(selectedEtaTime.getMinutes()).padStart(2, "0");
   const hhmmStr = `${hh}:${mm}`;
 
-  // ★ Even G2 + Android 雙棲最佳排版：
-  // 唔用複雜 Emoji，確保 G2 綠色 Micro-LED 字體 100% 清晰無方格
+  // ★ 乾淨 4 行直排（完美兼容三星瀏覽器通知列 + Even G2 眼鏡）：
+  // 89S (往水泉澳總站)
+  // 烏溪沙路
+  // 10 分鐘 (20:48)
+  // 距離421米 (3分鐘)
   const titleText = `${currentRoute.route} (往${dirTerm})`;
-  const stopLine  = `${stopName}`;
   const etaLine   = diffMin <= 0
     ? `即將到達 (${hhmmStr})`
     : `${diffMin} 分鐘 (${hhmmStr})`;
 
-  const bodyLines = [stopLine, etaLine];
+  const bodyLines = [stopName, etaLine];
   if (currentWalkDistMeters != null && currentWalkMinutes != null) {
     bodyLines.push(`距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`);
   }
+  const bodyText = bodyLines.join("\n");
 
   if (!("Notification" in window) || Notification.permission !== "granted") return;
 
-  // 手機通知列繼續顯示右邊靚靚動態倒數 Logo
   const badgeIconUrl = createCountdownBadgeIcon(diffMin, currentRoute.route, hhmmStr);
 
-  const options = {
-    body: bodyLines.join("\n"),
+  // ★ 移除會令三星瀏覽器報錯嘅 actions 屬性
+  const optionsWithIcon = {
+    body: bodyText,
     icon: badgeIconUrl,
     tag: "bus-eta-tracker",
-    renotify: true,               // ★ 改為 true！令 Even G2 每分鐘都會收到更新並自動喺鏡片亮起
-    requireInteraction: true,     // ★ 手機通知列保持常駐
-    actions: [
-      { action: "stop", title: "停止追蹤" }
-    ]
+    requireInteraction: true,
+    silent: false
   };
 
+  const fallbackOptions = {
+    body: bodyText,
+    tag: "bus-eta-tracker",
+    requireInteraction: true
+  };
 
-  try {
-    if ("serviceWorker" in navigator) {
+  // 第 1 層：優先嘗試 ServiceWorker 通知 (帶動態 Logo)
+  if ("serviceWorker" in navigator) {
+    try {
       const reg = await navigator.serviceWorker.getRegistration();
       if (reg && reg.showNotification) {
-        await reg.showNotification(titleText, options);
+        await reg.showNotification(titleText, optionsWithIcon);
         return;
       }
+    } catch (e1) {
+      try {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg && reg.showNotification) {
+          await reg.showNotification(titleText, fallbackOptions);
+          return;
+        }
+      } catch (e2) {}
     }
-    activeBusNotification = new Notification(titleText, options);
-  } catch (e) {}
+  }
+
+  // 第 2 層：三星瀏覽器原生 Notification (先關舊通知再發新通知，確保 Even G2 收到更新)
+  try {
+    if (activeBusNotification && typeof activeBusNotification.close === "function") {
+      activeBusNotification.close();
+    }
+    activeBusNotification = new Notification(titleText, optionsWithIcon);
+  } catch (e3) {
+    try {
+      activeBusNotification = new Notification(titleText, fallbackOptions);
+    } catch (e4) {
+      console.error("三星瀏覽器通知發送失敗:", e4);
+    }
+  }
 }
 
 
