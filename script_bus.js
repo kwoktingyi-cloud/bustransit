@@ -6187,25 +6187,60 @@ async function drawUserWalkRouteToStop(stopId) {
     } catch (e) {}
   }
 }
+// --- 3. 🔔 背景不休眠通知列 (靜音音訊保活 + Web Worker 計時 + 右側動態 Logo) ---
 
-// =========================================================================
-// ★ 1. 升級版 Android 通知列 + 256x256 動態進度環車牌 Logo
-// =========================================================================
+var keepAliveAudio = null;
+var bgTimerWorker = null;
 
-if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("./sw.js").catch(() => {});
-  navigator.serviceWorker.addEventListener("message", e => {
-    if (e.data && e.data.type === "STOP_BUS_TRACK") {
-      stopPersistentTrackingNotification();
+// 建立一段 1 秒長、完全無聲 (0 音量) 嘅 WAV Base64，用嚟防止 Android 鎖屏休眠網頁
+function startSilentAudioKeepAlive() {
+  try {
+    if (!keepAliveAudio) {
+      keepAliveAudio = new Audio(
+        "data:audio/wav;base64,UklGRigAAABXQVZFZm10IBIAAAABAAEARKwAAIhYAQACABAAAABkYXRhAgAAAAEA"
+      );
+      keepAliveAudio.loop = true;
+      keepAliveAudio.volume = 0.01;
     }
-  });
+    keepAliveAudio.play().catch(() => {});
+  } catch (e) {}
 }
 
-// =========================================================================
-// ★ 三星瀏覽器 (Samsung Internet) + Even G2 100% 兼容版通知與動態 Logo
-// =========================================================================
+function stopSilentAudioKeepAlive() {
+  try {
+    if (keepAliveAudio) {
+      keepAliveAudio.pause();
+      keepAliveAudio.currentTime = 0;
+    }
+  } catch (e) {}
+}
 
-// 繪製圓角矩形 Helper
+// 用 Web Worker 建立唔會被瀏覽器背景降頻嘅 60 秒計時器
+function startWorkerInterval(callback, ms = 60000) {
+  stopWorkerInterval();
+  try {
+    const blob = new Blob([
+      `let t = setInterval(() => postMessage("tick"), ${ms});
+       onmessage = e => { if (e.data === "stop") clearInterval(t); };`
+    ], { type: "application/javascript" });
+    bgTimerWorker = new Worker(URL.createObjectURL(blob));
+    bgTimerWorker.onmessage = () => callback();
+  } catch (e) {
+    busNotificationTimer = setInterval(callback, ms);
+  }
+}
+
+function stopWorkerInterval() {
+  if (bgTimerWorker) {
+    try { bgTimerWorker.postMessage("stop"); bgTimerWorker.terminate(); } catch (e) {}
+    bgTimerWorker = null;
+  }
+  if (busNotificationTimer) {
+    clearInterval(busNotificationTimer);
+    busNotificationTimer = null;
+  }
+}
+
 function drawRoundRect(ctx, x, y, w, h, r) {
   ctx.beginPath();
   ctx.moveTo(x + r, y);
@@ -6216,10 +6251,9 @@ function drawRoundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
-// ★ 128x128 輕量高清動態 Logo（完美通過三星瀏覽器大小限制）
 function createCountdownBadgeIcon(minutesLeft, routeCode, hhmmStr) {
   try {
-    const size = 128;
+    const size = 192;
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
@@ -6227,7 +6261,6 @@ function createCountdownBadgeIcon(minutesLeft, routeCode, hhmmStr) {
 
     const isUrgent = minutesLeft <= 2;
 
-    // 1. 圓角漸層底卡
     const grad = ctx.createLinearGradient(0, 0, 0, size);
     if (isUrgent) {
       grad.addColorStop(0, "#ef4444");
@@ -6236,65 +6269,61 @@ function createCountdownBadgeIcon(minutesLeft, routeCode, hhmmStr) {
       grad.addColorStop(0, "#1d4ed8");
       grad.addColorStop(1, "#0f172a");
     }
-    drawRoundRect(ctx, 4, 4, size - 8, size - 8, 24);
+    drawRoundRect(ctx, 6, 6, size - 12, size - 12, 36);
     ctx.fillStyle = grad;
     ctx.fill();
 
-    // 2. 頂部巴士路線膠囊 (例如 89S)
-    drawRoundRect(ctx, 16, 10, size - 32, 24, 12);
+    drawRoundRect(ctx, 24, 15, size - 48, 34, 17);
     ctx.fillStyle = "rgba(255, 255, 255, 0.2)";
     ctx.fill();
 
     ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 16px sans-serif";
+    ctx.font = "bold 24px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(routeCode || "BUS", size / 2, 22);
+    ctx.fillText(routeCode || "BUS", size / 2, 33);
 
-    // 3. 中央倒數進度圓環
     const cx = size / 2;
-    const cy = 68;
-    const radius = 27;
+    const cy = 102;
+    const radius = 40;
 
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.lineWidth = 5;
+    ctx.lineWidth = 7;
     ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
     ctx.stroke();
 
     const progress = Math.max(0.05, Math.min(1, (20 - Math.max(0, minutesLeft)) / 20));
     ctx.beginPath();
     ctx.arc(cx, cy, radius, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
-    ctx.lineWidth = 5;
+    ctx.lineWidth = 7;
     ctx.lineCap = "round";
     ctx.strokeStyle = isUrgent ? "#fde047" : "#38bdf8";
     ctx.stroke();
 
-    // 4. 中央特大倒數數字
     ctx.fillStyle = "#ffffff";
     if (minutesLeft <= 0) {
+      ctx.font = "bold 26px sans-serif";
+      ctx.fillText("即將", cx, cy - 6);
       ctx.font = "bold 18px sans-serif";
-      ctx.fillText("即將", cx, cy - 4);
-      ctx.font = "bold 12px sans-serif";
       ctx.fillStyle = "#fde047";
-      ctx.fillText("到站", cx, cy + 12);
+      ctx.fillText("到站", cx, cy + 18);
     } else {
-      ctx.font = "bold 30px sans-serif";
-      ctx.fillText(String(minutesLeft), cx, cy - 3);
-      ctx.font = "bold 11px sans-serif";
+      ctx.font = "bold 46px sans-serif";
+      ctx.fillText(String(minutesLeft), cx, cy - 4);
+      ctx.font = "bold 16px sans-serif";
       ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-      ctx.fillText("分鐘", cx, cy + 16);
+      ctx.fillText("分鐘", cx, cy + 24);
     }
 
-    // 5. 底部預計到站時間標籤 (例如 20:48)
     if (hhmmStr) {
-      drawRoundRect(ctx, 24, 102, size - 48, 18, 9);
+      drawRoundRect(ctx, 36, 152, size - 72, 26, 13);
       ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
       ctx.fill();
 
       ctx.fillStyle = "#fde047";
-      ctx.font = "bold 12px monospace, sans-serif";
-      ctx.fillText(hhmmStr, size / 2, 111);
+      ctx.font = "bold 17px monospace, sans-serif";
+      ctx.fillText(hhmmStr, size / 2, 166);
     }
 
     return canvas.toDataURL("image/png");
@@ -6304,16 +6333,18 @@ function createCountdownBadgeIcon(minutesLeft, routeCode, hhmmStr) {
 }
 
 function stopPersistentTrackingNotification() {
-  if (busNotificationTimer) {
-    clearInterval(busNotificationTimer);
-    busNotificationTimer = null;
-  }
+  stopWorkerInterval();
+  stopSilentAudioKeepAlive();
+
   if (activeBusNotification && typeof activeBusNotification.close === "function") {
     try { activeBusNotification.close(); } catch (e) {}
     activeBusNotification = null;
   }
   if ("serviceWorker" in navigator) {
     navigator.serviceWorker.getRegistration().then(reg => {
+      if (reg && reg.active) {
+        reg.active.postMessage({ type: "STOP_SW_TRACK" });
+      }
       if (reg && reg.getNotifications) {
         reg.getNotifications({ tag: "bus-eta-tracker" }).then(list => list.forEach(n => n.close()));
       }
@@ -6330,7 +6361,7 @@ async function updatePersistentTrackingNotification() {
   const now = new Date();
   const diffMin = Math.round((selectedEtaTime - now) / 60000);
 
-  // 架車開走咗 (< 0 分鐘) 即刻自動關閉通知
+  // 架車開走咗 (< 0 分鐘) 即刻關閉通知並停止背景保活
   if (diffMin < 0) {
     stopPersistentTrackingNotification();
     return;
@@ -6343,7 +6374,7 @@ async function updatePersistentTrackingNotification() {
   const stopObj = routeStops.find(s => s.stop_id === originStopId);
   const stopName = stopObj ? stripBracketCode(stopObj.name_tc) : "";
 
-  if (userLat != null && userLon != null && currentWalkDistMeters == null) {
+  if (userLat != null && userLon != null && originStopId) {
     const info = allStopsMap.get(originStopId);
     if (info && info.lat && info.long) {
       const d = haversineDistanceMeters(userLat, userLon, parseFloat(info.lat), parseFloat(info.long));
@@ -6356,186 +6387,109 @@ async function updatePersistentTrackingNotification() {
   const mm = String(selectedEtaTime.getMinutes()).padStart(2, "0");
   const hhmmStr = `${hh}:${mm}`;
 
-  // ★ 乾淨 4 行直排（完美兼容三星瀏覽器通知列 + Even G2 眼鏡）：
-  // 89S (往水泉澳總站)
-  // 烏溪沙路
-  // 10 分鐘 (20:48)
-  // 距離421米 (3分鐘)
   const titleText = `${currentRoute.route} (往${dirTerm})`;
   const etaLine   = diffMin <= 0
     ? `即將到達 (${hhmmStr})`
     : `${diffMin} 分鐘 (${hhmmStr})`;
 
+  const walkText = (currentWalkDistMeters != null && currentWalkMinutes != null)
+    ? `距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`
+    : "";
+
   const bodyLines = [stopName, etaLine];
-  if (currentWalkDistMeters != null && currentWalkMinutes != null) {
-    bodyLines.push(`距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`);
+  if (walkText) bodyLines.push(walkText);
+
+  // 同步資料俾 Service Worker 做雙重後備
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.getRegistration().then(reg => {
+      if (reg && reg.active) {
+        reg.active.postMessage({
+          type: "START_SW_TRACK",
+          payload: {
+            titleText,
+            stopName,
+            hhmmStr,
+            walkText,
+            etaTimestamp: selectedEtaTime.getTime(),
+            lastMainUpdate: Date.now()
+          }
+        });
+      }
+    }).catch(() => {});
   }
-  const bodyText = bodyLines.join("\n");
 
   if (!("Notification" in window) || Notification.permission !== "granted") return;
 
   const badgeIconUrl = createCountdownBadgeIcon(diffMin, currentRoute.route, hhmmStr);
 
-  // ★ 移除會令三星瀏覽器報錯嘅 actions 屬性
-  const optionsWithIcon = {
-    body: bodyText,
+  const options = {
+    body: bodyLines.join("\n"),
     icon: badgeIconUrl,
     tag: "bus-eta-tracker",
-    requireInteraction: true,
-    silent: false
-  };
-
-  const fallbackOptions = {
-    body: bodyText,
-    tag: "bus-eta-tracker",
+    renotify: true,
     requireInteraction: true
   };
 
-  // 第 1 層：優先嘗試 ServiceWorker 通知 (帶動態 Logo)
-  if ("serviceWorker" in navigator) {
-    try {
+  try {
+    if ("serviceWorker" in navigator) {
       const reg = await navigator.serviceWorker.getRegistration();
       if (reg && reg.showNotification) {
-        await reg.showNotification(titleText, optionsWithIcon);
+        await reg.showNotification(titleText, options);
         return;
       }
-    } catch (e1) {
-      try {
-        const reg = await navigator.serviceWorker.getRegistration();
-        if (reg && reg.showNotification) {
-          await reg.showNotification(titleText, fallbackOptions);
-          return;
-        }
-      } catch (e2) {}
     }
-  }
-
-  // 第 2 層：三星瀏覽器原生 Notification (先關舊通知再發新通知，確保 Even G2 收到更新)
-  try {
     if (activeBusNotification && typeof activeBusNotification.close === "function") {
       activeBusNotification.close();
     }
-    activeBusNotification = new Notification(titleText, optionsWithIcon);
-  } catch (e3) {
-    try {
-      activeBusNotification = new Notification(titleText, fallbackOptions);
-    } catch (e4) {
-      console.error("三星瀏覽器通知發送失敗:", e4);
-    }
-  }
+    activeBusNotification = new Notification(titleText, options);
+  } catch (e) {}
 }
 
-// ★ 補回漏咗嘅啟動器與每分鐘計時器！
 async function startPersistentTrackingNotification() {
+  // ★ 1. 啟動無聲音訊循環，防止三星瀏覽器喺鎖屏/背景時凍結計時器
+  startSilentAudioKeepAlive();
+
   if ("Notification" in window && Notification.permission !== "granted") {
     try { await Notification.requestPermission(); } catch (e) {}
   }
   await updatePersistentTrackingNotification();
 
-  if (busNotificationTimer) clearInterval(busNotificationTimer);
-  busNotificationTimer = setInterval(() => {
+  // ★ 2. 用 Web Worker 每 60 秒精準觸發更新
+  startWorkerInterval(() => {
     if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(pos => {
-        userLat = pos.coords.latitude;
-        userLon = pos.coords.longitude;
-        renderUserLocationSpot();
-        if (originStopId) {
-          const info = allStopsMap.get(originStopId);
-          if (info && info.lat && info.long) {
-            currentWalkDistMeters = Math.round(haversineDistanceMeters(userLat, userLon, parseFloat(info.lat), parseFloat(info.long)));
-            currentWalkMinutes = Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
-          }
-        }
-        updatePersistentTrackingNotification();
-      }, () => updatePersistentTrackingNotification());
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          userLat = pos.coords.latitude;
+          userLon = pos.coords.longitude;
+          renderUserLocationSpot();
+          updatePersistentTrackingNotification();
+        },
+        () => updatePersistentTrackingNotification(),
+        { maximumAge: 30000, timeout: 5000 }
+      );
     } else {
       updatePersistentTrackingNotification();
     }
   }, 60000);
 }
 
-// ★ 補回撳「追蹤」掣時觸發通知嘅 Hook！
+// 當用家打開返畫面時，亦即時同步一次最新倒數
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && bgTimerWorker && selectedEtaTime) {
+    updatePersistentTrackingNotification();
+  }
+});
+
 const _origSetTrackingEta = setTrackingEta;
 setTrackingEta = function(etaObj, rowElement) {
   _origSetTrackingEta(etaObj, rowElement);
   if (rowElement) {
-    showToast("🔔 已啟動到站通知");
+    showToast("🔔 已啟動背景持續到站通知");
     startPersistentTrackingNotification();
-  } else if (busNotificationTimer) {
+  } else if (bgTimerWorker || busNotificationTimer) {
     updatePersistentTrackingNotification();
   }
 };
-// =========================================================================
-// ★ 2. 平板 Mode 左右兩欄「轉車站」自動水平對齊 (半開 / 全開 / 下拉都對齊)
-// =========================================================================
-
-function alignTabletTransferStops(scrollIntoHalfView = false) {
-  const stopListEl = document.getElementById("stopList");
-  const transferStopBlock = document.getElementById("transfer-stop-block");
-  if (!stopListEl || !transferStopBlock) return;
-
-  // 先清走舊嘅補償間距
-  stopListEl.style.marginTop = "6px";
-  transferStopBlock.style.marginTop = "6px";
-
-  // 只喺平板 Mode (>= 768px) 且已經揀咗第一程轉車站 & 第二程轉車站時對齊
-  if (window.innerWidth < 768 || mode !== "interchange_pair" || !transferStopId || !transferCurrentStopId) {
-    return;
-  }
-
-  const primaryPanel = document.getElementById("primary-panel");
-  const transferPanel = document.getElementById("transfer-search-section");
-  if (!primaryPanel || !transferPanel) return;
-
-  let leftTransferEl = document.querySelector(`#stopList .stop-item[data-stop-id="${transferStopId}"][data-seq="${transferSeq}"]`);
-  if (!leftTransferEl) leftTransferEl = document.querySelector(`#stopList .stop-item[data-stop-id="${transferStopId}"]`);
-
-  let rightTransferEl = document.querySelector(`#transferStopList .stop-item[data-stop-id="${transferCurrentStopId}"][data-seq="${window.transferCurrentSeq}"]`);
-  if (!rightTransferEl) rightTransferEl = document.querySelector(`#transferStopList .stop-item.selected`);
-
-  if (!leftTransferEl || !rightTransferEl) return;
-
-  // 計算左右兩個轉車站距離各自 Panel 內容頂部嘅真實距離
-  const leftOffset = (leftTransferEl.getBoundingClientRect().top - primaryPanel.getBoundingClientRect().top) + primaryPanel.scrollTop;
-  const rightOffset = (rightTransferEl.getBoundingClientRect().top - transferPanel.getBoundingClientRect().top) + transferPanel.scrollTop;
-
-  const diff = leftOffset - rightOffset;
-
-  // 如果左邊轉車站位置低過右邊（因為左邊上面有上車站 ETA），自動推低右邊轉車站令兩邊水平對齊！
-  if (diff > 4) {
-    transferStopBlock.style.marginTop = `${6 + Math.round(diff)}px`;
-  } else if (diff < -4) {
-    stopListEl.style.marginTop = `${6 + Math.round(-diff)}px`;
-  }
-
-  // 如果處於半開 (half) 或下拉 (peek) 狀態，同步兩邊 Scroll 位置，確保兩個轉車站齊齊整整露喺畫面中間
-  if (scrollIntoHalfView || currentSheetState === "half" || currentSheetState === "peek") {
-    const targetScroll = Math.max(0, Math.max(leftOffset, rightOffset) - 70);
-    primaryPanel.scrollTo({ top: targetScroll, behavior: "smooth" });
-    transferPanel.scrollTo({ top: targetScroll, behavior: "smooth" });
-  }
-}
-
-// 掛鈎 selectTransferStop、loadEtaDetailForStop 同埋 setBottomSheetState，確保揀完轉車站或展開半開時自動對齊
-const _origSelectTransferStopForAlign = selectTransferStop;
-selectTransferStop = async function(stopId, seq) {
-  await _origSelectTransferStopForAlign(stopId, seq);
-  setTimeout(() => alignTabletTransferStops(true), 80);
-};
-
-const _origSetBottomSheetStateForAlign = setBottomSheetState;
-setBottomSheetState = function(state) {
-  _origSetBottomSheetStateForAlign(state);
-  if (window.innerWidth >= 768 && mode === "interchange_pair") {
-    setTimeout(() => alignTabletTransferStops(state === "half" || state === "peek"), 100);
-  }
-};
-
-window.addEventListener("resize", () => {
-  if (window.innerWidth >= 768 && mode === "interchange_pair") {
-    alignTabletTransferStops(false);
-  }
-});
 
 
 
@@ -6801,7 +6755,7 @@ function renderTransferVirtualKeyboard() {
   container.appendChild(lettersWrap);
 }
 
-// --- 6. 點擊車站與地圖聯動 ---
+// --- 6. 點擊車站與地圖聯動（徹底刪除直線，只畫實際道路導航線） ---
 function onStopClicked(stopId, seq) {
   originStopId = stopId;
   originSeq = seq;
@@ -6815,11 +6769,70 @@ function onStopClicked(stopId, seq) {
   saveAppState();
 }
 
-async function fetchActualRoadGeometry(latlngs, profile = "driving") {
-  if (!latlngs || latlngs.length < 2) return latlngs;
-  if (latlngs.length === 2 && haversineDistanceMeters(latlngs[0][0], latlngs[0][1], latlngs[1][0], latlngs[1][1]) < 15) {
-    return latlngs;
+// 升級版：由你位置行去巴士站（唔畫直線墊底，直接畫實際行人路）
+async function drawUserWalkRouteToStop(stopId) {
+  const walkBox = document.getElementById("userWalkInfo");
+  if (userToStopRouteLayer && map && map.hasLayer(userToStopRouteLayer)) {
+    map.removeLayer(userToStopRouteLayer);
+    userToStopRouteLayer = null;
   }
+  if (!stopId || userLat == null || userLon == null) {
+    currentWalkDistMeters = null;
+    currentWalkMinutes = null;
+    if (walkBox) walkBox.textContent = "";
+    return;
+  }
+
+  const stopInfo = allStopsMap.get(stopId);
+  const stopObj = routeStops.find(s => s.stop_id === stopId);
+  if (!stopInfo) return;
+
+  const sLat = parseFloat(stopInfo.lat), sLon = parseFloat(stopInfo.long);
+  if (!isFinite(sLat) || !isFinite(sLon)) return;
+
+  const straightDist = haversineDistanceMeters(userLat, userLon, sLat, sLon);
+  const stopName = stopObj ? stripBracketCode(stopObj.name_tc) : stripBracketCode(stopInfo.name_tc || "車站");
+
+  currentWalkDistMeters = Math.round(straightDist * 1.2);
+  currentWalkMinutes = Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
+
+  if (walkBox) {
+    walkBox.textContent = `🚶 由你位置行去「${stopName}」：計算實際步程中...`;
+  }
+
+  if (straightDist < 15000) {
+    try {
+      const coordsStr = `${userLon.toFixed(6)},${userLat.toFixed(6)};${sLon.toFixed(6)},${sLat.toFixed(6)}`;
+      const res = await fetch(`https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coordsStr}?overview=full&geometries=geojson`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.routes && data.routes[0]) {
+          const r = data.routes[0];
+          const coords = r.geometry.coordinates.map(c => [c[1], c[0]]);
+          // ★ 攞到實際行人路座標先畫線，唔畫直線！
+          userToStopRouteLayer = L.polyline(coords, {
+            color: "#9333ea", weight: 5, dashArray: "6, 8", opacity: 0.9
+          }).addTo(map);
+
+          currentWalkDistMeters = Math.round(r.distance || straightDist);
+          currentWalkMinutes = Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
+          if (walkBox) {
+            walkBox.textContent = `🚶 由你位置行去「${stopName}」：約 ${currentWalkMinutes} 分鐘（實際步程 ${currentWalkDistMeters} 米）`;
+          }
+          return;
+        }
+      }
+    } catch (e) {}
+  }
+
+  if (walkBox) {
+    walkBox.textContent = `🚶 由你位置行去「${stopName}」：約 ${currentWalkMinutes} 分鐘（約 ${currentWalkDistMeters} 米）`;
+  }
+}
+
+// 透過 OSRM 獲取實際道路幾何座標
+async function fetchActualRoadGeometry(latlngs, profile = "driving") {
+  if (!latlngs || latlngs.length < 2) return [];
   if (!osrmGeometryCache) osrmGeometryCache = new Map();
   const cacheKey = `${profile}_${latlngs.map(p => `${p[0].toFixed(4)},${p[1].toFixed(4)}`).join(";")}`;
   if (osrmGeometryCache.has(cacheKey)) return osrmGeometryCache.get(cacheKey);
@@ -6841,23 +6854,28 @@ async function fetchActualRoadGeometry(latlngs, profile = "driving") {
         const segCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
         if (fullPath.length > 0) segCoords.shift();
         fullPath.push(...segCoords);
-      } else {
-        if (fullPath.length > 0) chunk.shift();
-        fullPath.push(...chunk);
       }
     }
     if (fullPath.length >= 2) {
       osrmGeometryCache.set(cacheKey, fullPath);
       return fullPath;
     }
-  } catch (e) {}
-  return latlngs;
+  } catch (e) {
+    console.warn("OSRM 載入失敗:", e.message);
+  }
+  return [];
 }
 
+// 1. 第一程藍線（刪走直線墊底，只畫實際道路）
 async function showRouteStopsOnMap(stops) {
   const token = ++mainRouteRenderToken;
-  if (window.mainRouteLine && map.hasLayer(window.mainRouteLine)) map.removeLayer(window.mainRouteLine);
-  if (window.allStopMarkers) window.allStopMarkers.forEach(m => { if (map.hasLayer(m)) map.removeLayer(m); });
+  if (window.mainRouteLine && map.hasLayer(window.mainRouteLine)) {
+    map.removeLayer(window.mainRouteLine);
+    window.mainRouteLine = null;
+  }
+  if (window.allStopMarkers) {
+    window.allStopMarkers.forEach(m => { if (map.hasLayer(m)) map.removeLayer(m); });
+  }
   window.allStopMarkers = [];
 
   updateMainSunAdviceUI();
@@ -6899,17 +6917,100 @@ async function showRouteStopsOnMap(stops) {
     latlngs.push([lat, lon]);
   });
 
-  window.mainRouteLine = L.polyline(latlngs, { color: "#1565c0", weight: 5, opacity: 0.85, lineJoin: "round" }).addTo(map);
-  if (latlngs.length > 0) map.fitBounds(window.mainRouteLine.getBounds(), { padding: [30, 30] });
+  if (latlngs.length > 0) {
+    map.fitBounds(L.latLngBounds(latlngs), { padding: [30, 30] });
+  }
 
+  // ★ 等攞到實際馬路幾何座標先至畫條藍線（完全唔畫直線）
   if (latlngs.length >= 2) {
     const roadCoords = await fetchActualRoadGeometry(latlngs, "driving");
-    if (token === mainRouteRenderToken && window.mainRouteLine && map.hasLayer(window.mainRouteLine)) {
-      window.mainRouteLine.setLatLngs(roadCoords);
+    if (token === mainRouteRenderToken && roadCoords.length >= 2) {
+      if (window.mainRouteLine && map.hasLayer(window.mainRouteLine)) {
+        map.removeLayer(window.mainRouteLine);
+      }
+      window.mainRouteLine = L.polyline(roadCoords, {
+        color: "#1565c0", weight: 5, opacity: 0.85, lineJoin: "round"
+      }).addTo(map);
     }
   }
 }
 
+// 2. 切斷第一程藍線（覆蓋舊版直線邏輯，只畫到轉車站嘅實際馬路）
+async function updateFirstRouteFocus(targetStopId) {
+  if (!routeStops || routeStops.length === 0) return;
+  const token = ++mainRouteRenderToken;
+
+  const stopIndex = routeStops.findIndex(s => s.stop_id === targetStopId);
+  if (stopIndex === -1) return;
+  const targetSeq = parseInt(routeStops[stopIndex].seq);
+
+  if (window.allStopMarkers) {
+    window.allStopMarkers.forEach(m => {
+      if (m.seq > targetSeq) {
+        if (map.hasLayer(m)) map.removeLayer(m);
+      } else {
+        if (!map.hasLayer(m)) map.addLayer(m);
+      }
+    });
+  }
+
+  // 先移除舊線，唔俾直線出現
+  if (window.mainRouteLine && map.hasLayer(window.mainRouteLine)) {
+    map.removeLayer(window.mainRouteLine);
+    window.mainRouteLine = null;
+  }
+
+  const partialLatLngs = routeStops.slice(0, stopIndex + 1).map(s => {
+    const info = allStopsMap.get(s.stop_id);
+    if (!info) return null;
+    const lat = parseFloat(info.lat), lon = parseFloat(info.long);
+    return (isFinite(lat) && isFinite(lon)) ? [lat, lon] : null;
+  }).filter(Boolean);
+
+  if (partialLatLngs.length >= 2) {
+    const roadCoords = await fetchActualRoadGeometry(partialLatLngs, "driving");
+    if (token === mainRouteRenderToken && roadCoords.length >= 2) {
+      window.mainRouteLine = L.polyline(roadCoords, {
+        color: "#1565c0", weight: 5, opacity: 0.85, lineJoin: "round"
+      }).addTo(map);
+    }
+  }
+}
+
+// 3. 還原全部第一程藍線（覆蓋舊版直線邏輯）
+async function resetFirstRouteFull() {
+  if (!routeStops || routeStops.length === 0) return;
+  const token = ++mainRouteRenderToken;
+
+  if (window.allStopMarkers) {
+    window.allStopMarkers.forEach(m => {
+      if (!map.hasLayer(m)) map.addLayer(m);
+    });
+  }
+
+  if (window.mainRouteLine && map.hasLayer(window.mainRouteLine)) {
+    map.removeLayer(window.mainRouteLine);
+    window.mainRouteLine = null;
+  }
+
+  const fullLatLngs = routeStops.map(s => {
+    const info = allStopsMap.get(s.stop_id);
+    if (!info) return null;
+    const lat = parseFloat(info.lat), lon = parseFloat(info.long);
+    return (isFinite(lat) && isFinite(lon)) ? [lat, lon] : null;
+  }).filter(Boolean);
+
+  if (fullLatLngs.length >= 2) {
+    const roadCoords = await fetchActualRoadGeometry(fullLatLngs, "driving");
+    if (token === mainRouteRenderToken && roadCoords.length >= 2) {
+      window.mainRouteLine = L.polyline(roadCoords, {
+        color: "#1565c0", weight: 5, opacity: 0.85, lineJoin: "round"
+      }).addTo(map);
+    }
+  }
+}
+
+// 4. 第二程紅線 + 綠色轉車步行線（刪走直線墊底，只畫實際道路）
 async function selectSecondRoute(targetStopId) {
   if (!map || !transferRouteStops || !transferRouteStops.length) return;
   clearSecondRouteVisual();
@@ -6959,29 +7060,26 @@ async function selectSecondRoute(targetStopId) {
     }
   });
 
-  let redLine = null;
-  if (latlngsForSecond.length >= 2) {
-    redLine = L.polyline(latlngsForSecond, { color: "#e53935", weight: 5, opacity: 0.9, lineJoin: "round" }).addTo(map);
-    secondRouteMarkers.push(redLine);
-  }
-
+  // 轉車綠色步行線：等實際行人路座標返嚟先畫
   const firstMarker = window.allStopMarkers.find(m => m.stopId === transferStopId);
   const secondMarker = secondRouteMarkers.find(m => m.stopId === targetStopId);
   if (firstMarker && secondMarker) {
     const walkStart = [firstMarker.getLatLng().lat, firstMarker.getLatLng().lng];
     const walkEnd = [secondMarker.getLatLng().lat, secondMarker.getLatLng().lng];
-    transferLine = L.polyline([walkStart, walkEnd], { color: "#2e7d32", weight: 5, dashArray: "6, 8" }).addTo(map);
     fetchActualRoadGeometry([walkStart, walkEnd], "foot").then(footCoords => {
-      if (token === secondRouteRenderToken && transferLine && map.hasLayer(transferLine)) {
-        transferLine.setLatLngs(footCoords);
+      if (token === secondRouteRenderToken && footCoords.length >= 2) {
+        if (transferLine && map.hasLayer(transferLine)) map.removeLayer(transferLine);
+        transferLine = L.polyline(footCoords, { color: "#2e7d32", weight: 5, dashArray: "6, 8" }).addTo(map);
       }
     });
   }
 
-  if (redLine && latlngsForSecond.length >= 2) {
+  // 第二程紅線：等實際行車馬路座標返嚟先畫
+  if (latlngsForSecond.length >= 2) {
     const roadCoords = await fetchActualRoadGeometry(latlngsForSecond, "driving");
-    if (token === secondRouteRenderToken && map.hasLayer(redLine)) {
-      redLine.setLatLngs(roadCoords);
+    if (token === secondRouteRenderToken && roadCoords.length >= 2) {
+      const redLine = L.polyline(roadCoords, { color: "#e53935", weight: 5, opacity: 0.9, lineJoin: "round" }).addTo(map);
+      secondRouteMarkers.push(redLine);
     }
   }
 }
