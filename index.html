@@ -2,7 +2,7 @@
 <html lang="zh-HK">
 <head>
   <meta charset="UTF-8" />
-  <title>KMB & CTB 實時轉車導航</title>
+  <title>KMB & CTB 實時轉車與防曬坐位導航</title>
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <style>
     :root {
@@ -17,214 +17,59 @@
       --text-main: #0f172a;
       --text-muted: #64748b;
       --border: #e2e8f0;
-      --radius: 16px;
     }
 
-    * {
-      box-sizing: border-box;
-      -webkit-tap-highlight-color: transparent;
-    }
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
     html, body {
-      margin: 0;
-      padding: 0;
-      width: 100%;
-      height: 100%;
-      overflow: hidden;
+      margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang HK", "Microsoft JhengHei", sans-serif;
-      color: var(--text-main);
-      background: #e2e8f0;
+      color: var(--text-main); background: #e2e8f0;
     }
 
-    /* ========= 1. 全螢幕地圖 ========= */
-    #map {
-      position: fixed;
-      inset: 0;
-      width: 100vw;
-      height: 100vh;
-      z-index: 1;
+    /* 1. 全螢幕地圖 */
+    #map { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 1; }
+    .leaflet-bottom { bottom: 92px !important; transition: bottom 0.25s ease; }
+
+    /* 用家 GPS 綠點 */
+    .user-gps-dot {
+      width: 16px; height: 16px; background: #00c853; border: 3px solid #fff; border-radius: 50%;
+      box-shadow: 0 0 0 6px rgba(0, 200, 83, 0.28), 0 2px 6px rgba(0,0,0,0.4);
     }
 
-    /* 令地圖右上角/右下角按鈕唔會被抽屜遮住 */
-    .leaflet-bottom {
-      bottom: 92px !important;
-      transition: bottom 0.25s ease;
-    }
-
-    /* ========= 2. 底部上拉抽屜 (Bottom Sheet) ========= */
+    /* 2. 底部上拉抽屜 (電話版預設全闊) */
     #bottom-sheet {
-      position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 0;
-      height: 82vh;
-      max-height: 86vh;
-      max-width: 1180px;
-      margin: 0 auto;
-      background: rgba(255, 255, 255, 0.97);
+      position: fixed; left: 0; right: 0; bottom: 0;
+      height: 82vh; max-height: 86vh;
+      background: rgba(255, 255, 255, 0.98);
       backdrop-filter: blur(12px);
       border-radius: 20px 20px 0 0;
       box-shadow: 0 -6px 30px rgba(15, 23, 42, 0.18);
-      z-index: 1000;
-      display: flex;
-      flex-direction: column;
-      /* 預設收起：只露出頂部 76px 拉柄與狀態欄 */
+      z-index: 1000; display: flex; flex-direction: column;
       transform: translateY(calc(100% - 76px));
-      transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1);
-      will-change: transform;
+      transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1),
+                  width 0.32s cubic-bezier(0.22, 1, 0.36, 1);
+      will-change: transform, width;
       border: 1px solid rgba(226, 232, 240, 0.9);
     }
+    #bottom-sheet.sheet-collapsed { transform: translateY(calc(100% - 76px)); }
+    #bottom-sheet.sheet-half { transform: translateY(32%); }
+    #bottom-sheet.sheet-full { transform: translateY(0%); }
+    #bottom-sheet.dragging { transition: none !important; }
 
-    /* 三段抽屜狀態：收起 (collapsed) / 半開 (half) / 全開 (full) */
-    #bottom-sheet.sheet-collapsed {
-      transform: translateY(calc(100% - 76px));
-    }
-    #bottom-sheet.sheet-half {
-      transform: translateY(34%);
-    }
-    #bottom-sheet.sheet-full {
-      transform: translateY(0%);
-    }
-    #bottom-sheet.dragging {
-      transition: none !important;
-    }
-
-    /* 抽屜頂部拉柄區 (可上下拉動 / 點擊展開) */
-    #sheet-header {
-      padding: 8px 16px 10px;
-      cursor: grab;
-      user-select: none;
-      touch-action: none;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-      background: #ffffff;
-      border-radius: 20px 20px 0 0;
-    }
-    #sheet-header:active {
-      cursor: grabbing;
-    }
-
-    .sheet-pill {
-      width: 44px;
-      height: 5px;
-      background: #cbd5e1;
-      border-radius: 999px;
-      margin: 0 auto 8px;
-    }
-
-    .sheet-title-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-    }
-
-    .sheet-brand {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      font-size: 16px;
-      font-weight: 800;
-      color: var(--primary-dark);
-      min-width: 0;
-    }
-    .sheet-brand span.status-hint {
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--text-muted);
-      background: #f1f5f9;
-      padding: 3px 10px;
-      border-radius: 999px;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-    }
-
-    .sheet-quick-btns {
-      display: flex;
-      gap: 6px;
-      flex-shrink: 0;
-    }
-    .btn-sheet-toggle {
-      padding: 4px 10px;
-      font-size: 12px;
-      font-weight: 700;
-      border-radius: 999px;
-      background: var(--primary-light);
-      color: var(--primary);
-      border: none;
-      margin: 0;
-    }
-
-    /* ========= 電話版：第一程 / 第二程 切換 Tabs ========= */
-    #mobile-leg-tabs {
-      display: none;
-      padding: 6px 12px;
-      background: #f1f5f9;
-      gap: 6px;
-      border-bottom: 1px solid var(--border);
-      flex-shrink: 0;
-    }
-    .leg-tab-btn {
-      flex: 1;
-      padding: 7px 10px;
-      margin: 0;
-      border-radius: 8px;
-      font-size: 13px;
-      font-weight: 700;
-      border: 1px solid transparent;
-      background: transparent;
-      color: var(--text-muted);
-      text-align: center;
-      box-shadow: none;
-    }
-    .leg-tab-btn.active-leg1 {
-      background: #ffffff;
-      color: var(--primary);
-      border-color: #bfdbfe;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    }
-    .leg-tab-btn.active-leg2 {
-      background: #ffffff;
-      color: var(--secondary);
-      border-color: #fecdd3;
-      box-shadow: 0 1px 3px rgba(0,0,0,0.08);
-    }
-
-    /* ========= 3. 抽屜內容區：平板左右並排 / 電話單欄切換 ========= */
-    #sheet-body {
-      flex: 1;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-      overflow: hidden;
-      background: var(--bg);
-    }
-
-    /* 第一程統一面板 (Step 1 + 2 + 3 合一) */
-    #primary-panel {
-      flex: 1;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-      overflow-y: auto;
-      padding: 10px 12px 24px;
-      background: #ffffff;
-    }
-
-    /* 第二程轉車面板 (Step 4) */
-    #transfer-search-section {
-      flex: 1;
-      min-height: 0;
-      overflow-y: auto;
-      padding: 10px 12px 24px;
-      background: #ffffff;
-    }
-
-    /* 平板及電腦版 (>= 768px)：當開啟轉車時自動左右 50/50 並排 */
+    /* ★ 平板模式 (>= 768px)：平時電話 Size (390px) 泊右下角，有 Step 4 轉車先變闊 (780px) 左右並排 */
     @media (min-width: 768px) {
+      #bottom-sheet {
+        left: auto;
+        right: 16px;
+        width: 500px;
+        max-width: calc(100vw - 32px);
+      }
+      #bottom-sheet.has-transfer {
+        width: 1000px;
+      }
       #sheet-body {
-        flex-direction: row;
+        flex-direction: row !important;
       }
       #primary-panel {
         border-right: 1px solid var(--border);
@@ -237,509 +82,204 @@
       }
     }
 
-    /* 電話版 (< 768px)：轉車模式下透過 Tab 切換顯示第一程或第二程 */
+    /* ★ 電話模式 (< 768px)：轉車時顯示頂部 Tab 切換 */
     @media (max-width: 767px) {
-      #bottom-sheet.has-transfer #mobile-leg-tabs {
-        display: flex;
-      }
-      #bottom-sheet.has-transfer.mobile-show-leg2 #primary-panel {
-        display: none !important;
-      }
-      #bottom-sheet.has-transfer.mobile-show-leg1 #transfer-search-section {
-        display: none !important;
-      }
+      #bottom-sheet.has-transfer #mobile-leg-tabs { display: flex; }
+      #bottom-sheet.has-transfer.mobile-show-leg2 #primary-panel { display: none !important; }
+      #bottom-sheet.has-transfer.mobile-show-leg1 #transfer-search-section { display: none !important; }
     }
 
-    /* ========= 4. Step 1+2+3 融合為一格無縫介面 ========= */
-    .unified-step-block {
-      margin: 0;
-      padding: 0;
-      border: none;
-      box-shadow: none;
-      background: transparent;
+    /* 抽屜頂部拉柄 */
+    #sheet-header {
+      padding: 8px 16px 10px; cursor: grab; user-select: none; touch-action: none;
+      border-bottom: 1px solid var(--border); flex-shrink: 0; background: #fff;
+      border-radius: 20px 20px 0 0;
+    }
+    .sheet-pill { width: 44px; height: 5px; background: #cbd5e1; border-radius: 999px; margin: 0 auto 8px; }
+    .sheet-title-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .sheet-brand { display: flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 800; color: var(--primary-dark); min-width: 0; }
+    .sheet-brand span.status-hint {
+      font-size: 12px; font-weight: 600; color: var(--text-muted); background: #f1f5f9;
+      padding: 3px 10px; border-radius: 999px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .btn-sheet-toggle {
+      padding: 4px 10px; font-size: 12px; font-weight: 700; border-radius: 999px;
+      background: var(--primary-light); color: var(--primary); border: none; margin: 0;
     }
 
-    /* 頂部路線輸入標題列 */
+    /* 電話版 Tabs */
+    #mobile-leg-tabs {
+      display: none; padding: 6px 12px; background: #f1f5f9; gap: 6px;
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .leg-tab-btn {
+      flex: 1; padding: 7px 10px; margin: 0; border-radius: 8px; font-size: 13px; font-weight: 700;
+      border: 1px solid transparent; background: transparent; color: var(--text-muted);
+    }
+    .leg-tab-btn.active-leg1 { background: #fff; color: var(--primary); border-color: #bfdbfe; }
+    .leg-tab-btn.active-leg2 { background: #fff; color: var(--secondary); border-color: #fecdd3; }
+
+    /* 抽屜主體 */
+    #sheet-body { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; background: var(--bg); }
+    #primary-panel, #transfer-search-section {
+      flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px 28px; background: #fff;
+    }
+    #primary-panel { display: flex; flex-direction: column; }
+
+    /* Step 1+2+3 無縫合一 */
+    .unified-step-block { margin: 0; padding: 0; border: none; background: transparent; }
     .route-header-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      background: #f8fafc;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 6px 10px;
-      margin-bottom: 8px;
+      display: flex; align-items: center; justify-content: space-between;
+      background: #f8fafc; border: 1px solid var(--border); border-radius: 10px;
+      padding: 6px 10px; margin-bottom: 8px;
     }
-    .route-header-title {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      flex-wrap: wrap;
-    }
+    .route-header-title { font-size: 13px; font-weight: 700; color: var(--text-muted); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+    #routeInputDisplay { font-size: 16px; font-weight: 800; color: var(--primary); }
+    #transferRouteInputDisplay { font-size: 16px; font-weight: 800; color: var(--secondary); }
 
-    #routeInputDisplay,
-    #transferRouteInputDisplay {
-      font-size: 16px;
-      font-weight: 800;
-      color: var(--primary);
+    /* 固定高度輸入與鍵盤區（數字鍵鎖死唔跳位，下面只顯示可撳字母） */
+    #step1-layout, #transfer-step1-layout {
+      display: flex; align-items: stretch; gap: 8px;
+      height: 276px; min-height: 276px; max-height: 276px;
+      margin-bottom: 8px; background: #f8fafc; border: 1px solid var(--border);
+      border-radius: 12px; padding: 8px; overflow: hidden;
     }
-    #transferRouteInputDisplay {
-      color: var(--secondary);
+    #step1-layout.compact-mode, #transfer-step1-layout.compact-mode {
+      height: auto; min-height: 0; max-height: none; padding: 0; margin-bottom: 4px; border: none; background: transparent;
     }
-
-    /* ========= 5. 固定高度輸入與鍵盤區（絕對唔跳位！） ========= */
-    #step1-layout,
-    #transfer-step1-layout {
-      display: flex;
-      align-items: stretch;
-      gap: 10px;
-      height: 286px;          /* ★ 強制鎖死高度，打字前後 100% 唔會跳動 */
-      min-height: 286px;
-      max-height: 286px;
-      margin-bottom: 8px;
-      background: #f8fafc;
-      border: 1px solid var(--border);
-      border-radius: 12px;
-      padding: 8px;
-      overflow: hidden;
+    #route-search-area, #transfer-route-search-area {
+      flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; overflow: hidden;
     }
-
-    /* 當已經揀咗路線（鍵盤隱藏只剩 X 掣）時，自動收細高度 */
-    #step1-layout.compact-mode,
-    #transfer-step1-layout.compact-mode {
-      height: auto;
-      min-height: 0;
-      max-height: none;
-      padding: 0;
-      margin-bottom: 4px;
-      border: none;
-      background: transparent;
-    }
-
-    #route-search-area,
-    #transfer-route-search-area {
-      flex: 1;
-      min-width: 0;
-      display: flex;
-      flex-direction: column;
-      height: 100%;
-      overflow: hidden;
-    }
-
-    #routeList,
-    #transferRouteList {
-      flex: 1;
-      height: 100%;
-      overflow-y: auto;
-      background: #ffffff;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 4px;
+    #routeList, #transferRouteList {
+      flex: 1; height: 100%; overflow-y: auto; background: #fff;
+      border: 1px solid var(--border); border-radius: 8px; padding: 4px;
     }
     #step1-layout.compact-mode #route-search-area,
-    #transfer-step1-layout.compact-mode #transfer-route-search-area {
-      display: none;
-    }
+    #transfer-step1-layout.compact-mode #transfer-route-search-area { display: none; }
 
-    #vk-container,
-    #transferVkContainer {
-      width: 215px;
-      flex-shrink: 0;
-      display: flex;
-      flex-direction: column;
-      justify-content: space-between;
-      height: 100%;
-      overflow: hidden;
+    #vk-container, #transferVkContainer {
+      width: 190px; flex-shrink: 0; display: flex; flex-direction: column;
+      justify-content: flex-start; height: 100%; overflow: hidden;
     }
     #step1-layout.compact-mode #vk-container,
     #transfer-step1-layout.compact-mode #transferVkContainer {
-      width: auto;
-      height: auto;
-      flex-direction: row;
-      justify-content: flex-end;
+      width: auto; height: auto; flex-direction: row; justify-content: flex-end;
     }
 
-    @media (max-width: 400px) {
-      #vk-container,
-      #transferVkContainer {
-        width: 188px;
-      }
-    }
-
-    /* 鍵盤內部固定 Grid 排版 */
-    .vk-top-grid {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 4px;
-      margin-bottom: 4px;
-      flex-shrink: 0;
-    }
+    .vk-top-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 4px; flex-shrink: 0; }
     .vk-numpad-grid {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      grid-template-rows: repeat(4, 34px);
-      gap: 4px;
-      margin-bottom: 4px;
-      flex-shrink: 0;
+      display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(4, 34px);
+      gap: 4px; margin-bottom: 6px; flex-shrink: 0;
     }
-    .vk-letters-grid {
-      display: grid;
-      grid-template-columns: repeat(6, 1fr);
-      grid-template-rows: repeat(3, 28px);
-      gap: 3px;
-      flex-shrink: 0;
+    .vk-letters-wrap {
+      flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-wrap: wrap;
+      align-content: flex-start; gap: 4px; padding-top: 4px; border-top: 1px dashed #cbd5e1;
     }
-
     .vk-key {
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border-radius: 7px;
-      border: 1px solid #cbd5e1;
-      background: #ffffff;
-      cursor: pointer;
-      user-select: none;
-      font-size: 15px;
-      font-weight: 700;
-      color: var(--text-main);
-      box-shadow: 0 1px 0 #cbd5e1;
-      margin: 0;
-      padding: 0;
-      height: 100%;
-      transition: background 0.1s;
+      display: flex; align-items: center; justify-content: center; border-radius: 7px;
+      border: 1px solid #cbd5e1; background: #fff; cursor: pointer; user-select: none;
+      font-size: 15px; font-weight: 700; color: var(--text-main); box-shadow: 0 1px 0 #cbd5e1;
+      margin: 0; padding: 0; height: 100%;
     }
     .vk-key.letter-key {
-      font-size: 12px;
-      font-weight: 700;
-      background: #f1f5f9;
+      width: calc(25% - 3px); height: 29px; font-size: 13px;
+      background: #eff6ff; color: var(--primary-dark); border-color: #93c5fd;
     }
-    .vk-key.disabled {
-      opacity: 0.18;
-      cursor: default;
-      box-shadow: none;
-      background: #e2e8f0;
-      pointer-events: none;
-    }
-    .vk-key:hover:not(.disabled) {
-      background: var(--primary-light);
-      border-color: var(--primary);
-    }
-    .vk-key:active:not(.disabled) {
-      transform: translateY(1px);
-    }
-    .vk-key.special {
-      height: 30px;
-      padding: 0 10px;
-      background: #fffbeb;
-      border-color: #fde68a;
-      font-size: 13px;
-    }
+    .vk-key.disabled { opacity: 0.2; cursor: default; box-shadow: none; background: #e2e8f0; pointer-events: none; }
+    .vk-key.special { height: 30px; padding: 0 10px; background: #fffbeb; border-color: #fde68a; font-size: 12.5px; }
 
-    /* 路線項目 */
-    .route-item {
-      padding: 8px 8px;
-      cursor: pointer;
-      border-bottom: 1px solid #f1f5f9;
-      font-size: 13px;
-      font-weight: 500;
-      border-radius: 6px;
-    }
-    .route-item:hover {
-      background: var(--primary-light);
-    }
+    .route-item { padding: 7px 8px; cursor: pointer; border-bottom: 1px solid #f1f5f9; font-size: 13px; font-weight: 500; border-radius: 6px; }
+    .route-item:hover { background: var(--primary-light); }
 
-    /* 通用按鈕與方向掣 */
     button {
-      padding: 7px 12px;
-      margin: 2px 4px 2px 0;
-      font-size: 13px;
-      font-weight: 600;
-      border-radius: 8px;
-      border: 1px solid #cbd5e1;
-      background: #ffffff;
-      color: var(--text-main);
-      cursor: pointer;
-      transition: all 0.15s ease;
+      padding: 7px 12px; margin: 2px 4px 2px 0; font-size: 13px; font-weight: 600;
+      border-radius: 8px; border: 1px solid #cbd5e1; background: #fff; color: var(--text-main); cursor: pointer;
     }
-    button:hover:not(:disabled) {
-      border-color: var(--primary);
-      color: var(--primary);
-    }
-    button:disabled {
-      opacity: 0.38;
-      cursor: default;
+    button:disabled { opacity: 0.38; cursor: default; }
+    .direction-buttons { display: flex; gap: 6px; margin-top: 4px; }
+    .direction-buttons button { flex: 1; margin: 0; padding: 8px 10px; background: #f8fafc; }
+
+    #headwayInfo, #transferHeadwayInfo {
+      margin-top: 6px; font-size: 12px; color: var(--text-muted);
+      display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 4px;
     }
 
-    .direction-buttons {
-      display: flex;
-      gap: 6px;
-      margin-top: 4px;
+    /* ☀️ 日光防曬坐位建議 & 📍 步行去車站資訊橫額 */
+    .info-pill-box {
+      margin-top: 6px; padding: 6px 10px; border-radius: 8px;
+      font-size: 12px; font-weight: 600;
     }
-    .direction-buttons button {
-      flex: 1;
-      margin: 0;
-      padding: 8px 10px;
-      font-size: 13px;
-      background: #f8fafc;
-    }
-
-    #headwayInfo,
-    #transferHeadwayInfo {
-      margin-top: 6px;
-      font-size: 12px;
-      color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      flex-wrap: wrap;
-      gap: 4px;
-    }
+    .info-pill-box:empty { display: none; }
+    .sun-advice-box { background: linear-gradient(90deg, #fffbeb, #fef3c7); color: #92400e; border-left: 3px solid #f59e0b; }
+    .walk-user-box { background: #f3e8ff; color: #6b21a8; border-left: 3px solid #9333ea; }
 
     #interchangeInfo {
-      margin-top: 6px;
-      font-size: 12px;
-      font-weight: 600;
-      color: var(--primary-dark);
-      background: #eff6ff;
-      padding: 6px 10px;
-      border-radius: 8px;
-      border-left: 3px solid var(--primary);
+      margin-top: 6px; font-size: 12px; font-weight: 600; color: var(--primary-dark);
+      background: #eff6ff; padding: 6px 10px; border-radius: 8px; border-left: 3px solid var(--primary);
     }
-    #interchangeInfo:empty {
-      display: none;
-    }
-    #interchangeControls {
-      margin-top: 4px;
-    }
+    #interchangeInfo:empty { display: none; }
+    #interchangeControls { margin-top: 4px; }
 
-    /* 車站列表 */
-    .stop-list {
-      margin-top: 6px;
-      border-top: 1px solid var(--border);
-    }
-    .stop-item {
-      padding: 8px 8px;
-      border-bottom: 1px solid #f1f5f9;
-      font-size: 13.5px;
-      cursor: pointer;
-      border-radius: 6px;
-    }
-    .stop-item:hover {
-      background: #f8fafc;
-    }
-    .stop-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 6px;
-    }
-    .stop-title {
-      display: flex;
-      align-items: center;
-      gap: 6px;
-      font-weight: 600;
-    }
-    .stop-item.selected {
-      background: var(--primary-light);
-      border-left: 4px solid var(--primary);
-      padding-left: 8px;
-    }
-    #transferStopList .stop-item.selected {
-      background: var(--secondary-light);
-      border-left: 4px solid var(--secondary);
-    }
+    .stop-list { margin-top: 6px; border-top: 1px solid var(--border); }
+    .stop-item { padding: 8px 8px; border-bottom: 1px solid #f1f5f9; font-size: 13.5px; cursor: pointer; border-radius: 6px; }
+    .stop-header { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+    .stop-title { display: flex; align-items: center; gap: 6px; font-weight: 600; }
+    .stop-item.selected { background: var(--primary-light); border-left: 4px solid var(--primary); padding-left: 8px; }
+    #transferStopList .stop-item.selected { background: var(--secondary-light); border-left: 4px solid var(--secondary); }
 
-    .eta-block {
-      margin-top: 6px;
-      padding: 4px 8px;
-      background: rgba(255, 255, 255, 0.85);
-      border-radius: 6px;
-    }
-    .eta-block:empty {
-      display: none;
-    }
-    .eta-row {
-      font-size: 12.5px;
-      padding: 4px 2px;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      border-bottom: 1px dashed #e2e8f0;
-    }
-    .eta-row:last-child {
-      border-bottom: none;
-    }
-    .eta-imminent {
-      color: #d32f2f !important;
-      font-weight: 700;
-    }
+    .eta-block { margin-top: 6px; padding: 4px 8px; background: rgba(255,255,255,0.85); border-radius: 6px; }
+    .eta-block:empty { display: none; }
+    .eta-row { font-size: 12.5px; padding: 4px 2px; display: flex; align-items: center; justify-content: space-between; border-bottom: 1px dashed #e2e8f0; }
+    .eta-row:last-child { border-bottom: none; }
+    .eta-imminent { color: #d32f2f !important; font-weight: 700; }
+    .eta-row.tracked { font-weight: 700; color: #0b3d91 !important; background: #dbeafe; padding: 4px 6px; border-radius: 4px; }
+    .eta-row.transfer-tracked { font-weight: 700; color: #b91c1c !important; background: #fee2e2; padding: 4px 6px; border-radius: 4px; }
 
-    .summary-wrapper {
-      display: inline-flex;
-      align-items: center;
-      gap: 5px;
-      flex-shrink: 0;
-    }
-    .stop-eta-summary {
-      font-size: 11.5px;
-      font-weight: 500;
-    }
-    .stop-boarding-info {
-      font-size: 11px;
-      font-weight: 700;
-      color: var(--primary-dark);
-      background: #dbeafe;
-      padding: 2px 6px;
-      border-radius: 4px;
-    }
-    .stop-boarding-info:empty {
-      display: none;
-    }
+    .summary-wrapper { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; }
+    .stop-eta-summary { font-size: 11.5px; font-weight: 500; }
+    .stop-boarding-info { font-size: 11px; font-weight: 700; color: var(--primary-dark); background: #dbeafe; padding: 2px 6px; border-radius: 4px; }
+    .stop-boarding-info:empty { display: none; }
+    .btn-small { padding: 2px 8px; font-size: 11px; margin-left: 4px; background: #eff6ff; color: var(--primary); border-color: #bfdbfe; border-radius: 999px; }
+    .btn-track { font-size: 10.5px; padding: 2px 7px; margin-left: 6px; border-radius: 999px; border: 1px solid #94a3b8; background: #f8fafc; }
+    .btn-track.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+    #btnResetTransfer { margin-top: 8px; font-size: 12px; padding: 5px 10px; display: none; background: #fff1f2; color: #be123c; border-color: #fecdd3; }
 
-    .btn-small {
-      padding: 2px 8px;
-      font-size: 11px;
-      margin-left: 4px;
-      background: #eff6ff;
-      color: var(--primary);
-      border-color: #bfdbfe;
-      border-radius: 999px;
-    }
-
-    .eta-row.tracked {
-      font-weight: 700;
-      color: #0b3d91 !important;
-      background: #dbeafe;
-      padding: 4px 6px;
-      border-radius: 4px;
-    }
-    .eta-row.transfer-tracked {
-      font-weight: 700;
-      color: #b91c1c !important;
-      background: #fee2e2;
-      padding: 4px 6px;
-      border-radius: 4px;
-    }
-
-    .btn-track {
-      font-size: 10.5px;
-      padding: 2px 7px;
-      margin-left: 6px;
-      border-radius: 999px;
-      border: 1px solid #94a3b8;
-      background: #f8fafc;
-    }
-    .btn-track.active {
-      background: var(--primary);
-      color: #fff;
-      border-color: var(--primary);
-    }
-
-    #btnResetTransfer {
-      margin-top: 8px;
-      font-size: 12px;
-      padding: 5px 10px;
-      display: none;
-      background: #fff1f2;
-      color: #be123c;
-      border-color: #fecdd3;
-    }
-
-    /* 地圖圓點數字標籤 */
     .stop-label {
-      background-color: #1565c0;
-      color: white;
-      border-radius: 50%;
-      width: 24px !important;
-      height: 24px !important;
-      line-height: 20px;
-      text-align: center;
-      font-size: 11px;
-      font-weight: 700;
-      border: 2px solid white;
-      box-shadow: 0 2px 5px rgba(0,0,0,0.45);
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      background-color: #1565c0; color: white; border-radius: 50%; width: 24px !important; height: 24px !important;
+      line-height: 20px; text-align: center; font-size: 11px; font-weight: 700; border: 2px solid white;
+      box-shadow: 0 2px 5px rgba(0,0,0,0.45); display: flex; align-items: center; justify-content: center;
     }
-    .stop-label.second-route {
-      background-color: #e53935;
-    }
-
+    .stop-label.second-route { background-color: #e53935; }
     .leaflet-control-fullscreen-btn {
-      background: #fff;
-      border-radius: 6px;
-      box-shadow: 0 2px 6px rgba(0,0,0,0.25);
-      width: 34px;
-      height: 34px;
-      cursor: pointer;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 18px;
+      background: #fff; border-radius: 6px; box-shadow: 0 2px 6px rgba(0,0,0,0.25);
+      width: 34px; height: 34px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 18px;
     }
-
-    #transferWalkInfo {
-      margin-top: 6px;
-      padding: 6px 10px;
-      background: #f0fdf4;
-      border-left: 3px solid var(--walk-green);
-      border-radius: 6px;
-      font-size: 12.5px;
-      color: #166534;
-    }
-    #transferWalkInfo:empty {
-      display: none;
-    }
+    #transferWalkInfo { margin-top: 6px; padding: 6px 10px; background: #f0fdf4; border-left: 3px solid var(--walk-green); border-radius: 6px; font-size: 12px; color: #166534; }
+    #transferWalkInfo:empty { display: none; }
 
     #toast-msg {
-      visibility: hidden;
-      width: auto;
-      max-width: 85%;
-      min-width: 200px;
-      background-color: rgba(15, 23, 42, 0.92);
-      color: #fff;
-      text-align: center;
-      border-radius: 999px;
-      padding: 10px 20px;
-      position: fixed;
-      z-index: 9999;
-      left: 50%;
-      top: 18px;
-      transform: translateX(-50%);
-      font-size: 13px;
-      font-weight: 600;
-      box-shadow: 0 6px 20px rgba(0,0,0,0.35);
-      white-space: nowrap;
+      visibility: hidden; width: auto; max-width: 85%; min-width: 200px; background-color: rgba(15, 23, 42, 0.92);
+      color: #fff; text-align: center; border-radius: 999px; padding: 10px 20px; position: fixed;
+      z-index: 9999; left: 50%; top: 18px; transform: translateX(-50%); font-size: 13px; font-weight: 600;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.35); white-space: nowrap;
     }
-    #toast-msg.show {
-      visibility: visible;
-      animation: toastIn 0.3s, toastOut 0.3s 2.7s;
-    }
+    #toast-msg.show { visibility: visible; animation: toastIn 0.3s, toastOut 0.3s 2.7s; }
     @keyframes toastIn { from {top: -10px; opacity: 0;} to {top: 18px; opacity: 1;} }
     @keyframes toastOut { from {top: 18px; opacity: 1;} to {top: -10px; opacity: 0;} }
   </style>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
-        crossorigin=""/>
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin=""/>
 </head>
 <body>
-
-  <!-- 1. 全螢幕地圖 -->
   <div id="map"></div>
 
-  <!-- 2. 底部上拉抽屜 (Bottom Sheet) -->
   <div id="bottom-sheet" class="sheet-collapsed">
-    <!-- 頂部拉柄與即時狀態欄 (支援向上拉/點擊展開) -->
     <div id="sheet-header">
       <div class="sheet-pill"></div>
       <div class="sheet-title-row">
         <div class="sheet-brand">
-          <span>🚌 路線與實時到站</span>
+          <span>🚌 路線與實時導航</span>
           <span class="status-hint" id="sheetStatusHint">向上拉輸入路線</span>
         </div>
         <div class="sheet-quick-btns">
@@ -748,16 +288,12 @@
       </div>
     </div>
 
-    <!-- 電話版專用：第一程 / 第二程 切換 Tabs (平板版會自動左右並排) -->
     <div id="mobile-leg-tabs">
       <button type="button" class="leg-tab-btn active-leg1" id="tabLeg1">🚌 第一程 (上車/轉車)</button>
       <button type="button" class="leg-tab-btn" id="tabLeg2">🔄 第二程 (轉車接駁)</button>
     </div>
 
-    <!-- 抽屜內容區：平板左右並排 / 電話單欄 -->
     <div id="sheet-body">
-
-      <!-- 左欄 / 主面板：Step 1 + Step 2 + Step 3 完美合一 -->
       <div id="primary-panel">
         <div class="unified-step-block" id="step1-section">
           <div class="route-header-bar">
@@ -766,7 +302,6 @@
               <span id="routeInputDisplay">(未輸入)</span>
             </div>
           </div>
-
           <div id="step1-layout">
             <div id="route-search-area">
               <div id="routeList">請先輸入至少一個字元。</div>
@@ -781,6 +316,8 @@
             <button id="dirOutbound" disabled>往 ? 方向</button>
           </div>
           <div id="headwayInfo"></div>
+          <div id="userWalkInfo" class="info-pill-box walk-user-box"></div>
+          <div id="sunAdviceInfo" class="info-pill-box sun-advice-box"></div>
           <div id="interchangeInfo"></div>
           <div id="interchangeControls"></div>
         </div>
@@ -790,7 +327,6 @@
         </div>
       </div>
 
-      <!-- 右欄 / 第二程面板：Step 4 轉車接駁 -->
       <div class="unified-step-block" id="transfer-search-section" style="display:none;">
         <div id="transfer-search-container">
           <div class="route-header-bar">
@@ -799,14 +335,12 @@
               <span id="transferRouteInputDisplay">(未輸入)</span>
             </div>
           </div>
-
           <div id="transfer-step1-layout">
             <div id="transfer-route-search-area">
               <div id="transferRouteList">請輸入路線，會以同名站作為預設轉車站。</div>
             </div>
             <div id="transferVkContainer"></div>
           </div>
-
           <div id="transfer-direction-block" style="margin-top:6px;">
             <strong style="font-size:12px;color:#64748b;">轉車方向：</strong>
             <div class="direction-buttons">
@@ -814,25 +348,22 @@
               <button id="transferDirOutbound" disabled>往 ? 方向</button>
             </div>
             <div id="transferHeadwayInfo"></div>
+            <div id="transferSunAdviceInfo" class="info-pill-box sun-advice-box"></div>
           </div>
-
           <div id="transfer-stop-block" style="margin-top:6px;">
             <div id="transferWalkInfo"></div>
             <div id="transferStopList" class="stop-list"></div>
           </div>
-
           <button id="btnResetTransfer">重新選擇轉車（Step 4）</button>
         </div>
       </div>
-
     </div>
   </div>
 
   <div id="toast-msg"></div>
 
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
-          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
-          crossorigin=""></script>
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
   <script src="script_bus.js"></script>
 </body>
 </html>

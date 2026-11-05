@@ -1002,138 +1002,6 @@ function renderVirtualKeyboard() {
   }
 }
 
-function renderTransferVirtualKeyboard() {
-  const container = document.getElementById("transferVkContainer");
-  if (!container) return;
-  container.innerHTML = "";
-
-  if (transferKeyboardHidden) {
-    const clear = document.createElement("div");
-    clear.className = "vk-key special";
-    clear.textContent = "X";
-    clear.style.backgroundColor = "#ffcccc"; // 淺紅色
-    clear.style.color = "#cc0000";
-    clear.onclick = () => {
-      transferCurrentInput = "";
-      transferCandidateRoutes = [];
-      const d1 = document.getElementById("transferRouteInputDisplay");
-      const d2 = document.getElementById("transferRouteList");
-      if (d1) d1.textContent = "(未輸入)";
-      if (d2) d2.textContent = "請輸入路線，會以同名站作為預設轉車站。";
-      transferKeyboardHidden = false;
-      renderTransferVirtualKeyboard();
-    };
-    container.appendChild(clear);
-    return;
-  }
-
-  const baseRoutes = transferCurrentInput ? transferCandidateRoutes : uniqueRoutes;
-  const usage = computeNextCharUsage(baseRoutes, transferCurrentInput);
-
-  // --- 1. 頂部控制鍵：刪除 & 清除(X) ---
-  const topRow = document.createElement("div");
-  topRow.className = "vk-row";
-  
-  const backspace = document.createElement("div");
-  backspace.className = "vk-key special";
-  backspace.textContent = "刪除";
-  backspace.onclick = () => {
-    if (transferCurrentInput.length > 0) {
-      transferCurrentInput = transferCurrentInput.slice(0, -1);
-      updateAfterTransferInputChange();
-    }
-  };
-  
-  const clear = document.createElement("div");
-  clear.className = "vk-key special";
-  clear.textContent = "X";
-  clear.style.backgroundColor = "#ffcccc"; // 淺紅色
-  clear.style.color = "#cc0000";
-  clear.onclick = () => {
-    transferCurrentInput = "";
-    transferCandidateRoutes = [];
-    const d1 = document.getElementById("transferRouteInputDisplay");
-    const d2 = document.getElementById("transferRouteList");
-    if (d1) d1.textContent = "(未輸入)";
-    if (d2) d2.textContent = "請輸入路線，會以同名站作為預設轉車站。";
-    renderTransferVirtualKeyboard();
-  };
-  
-  topRow.appendChild(backspace);
-  topRow.appendChild(clear);
-  container.appendChild(topRow);
-
-  // --- 2. 數字 Numpad 佈局 ---
-  const numpadLayout = [
-    [1, 2, 3],
-    [4, 5, 6],
-    [7, 8, 9],
-    [null, 0, null]
-  ];
-
-  numpadLayout.forEach(rowDigits => {
-    const digitRow = document.createElement("div");
-    digitRow.className = "vk-row";
-    
-    rowDigits.forEach(d => {
-      if (d === null) {
-        const spacer = document.createElement("div");
-        spacer.className = "vk-key";
-        spacer.style.visibility = "hidden"; 
-        digitRow.appendChild(spacer);
-        return;
-      }
-      
-      const ch = String(d);
-      const key = document.createElement("div");
-      key.className = "vk-key";
-      key.textContent = ch;
-      
-      if (!usage.digits[ch]) {
-        key.classList.add("disabled");
-      } else {
-        key.onclick = () => {
-          if (!key.classList.contains("disabled")) {
-            transferCurrentInput += ch;
-            updateAfterTransferInputChange();
-          }
-        };
-      }
-      digitRow.appendChild(key);
-    });
-    container.appendChild(digitRow);
-  });
-
-  // --- 3. 英文字母 ---
-  const labelLetters = document.createElement("div");
-  labelLetters.className = "vk-label";
-  labelLetters.textContent = "英文字母";
-  labelLetters.style.marginTop = "10px"; // 加少少空位隔開 Numpad
-  container.appendChild(labelLetters);
-
-  const letters = Object.keys(usage.letters).filter(ch => usage.letters[ch]);
-  if (letters.length === 0) {
-    const info = document.createElement("div");
-    info.style.fontSize = "12px";
-    info.style.color = "#999";
-    info.textContent = "暫時無可輸入英文字。";
-    container.appendChild(info);
-  } else {
-    const letterRow = document.createElement("div");
-    letterRow.className = "vk-row";
-    letters.forEach(ch => {
-      const key = document.createElement("div");
-      key.className = "vk-key";
-      key.textContent = ch;
-      key.onclick = () => {
-        transferCurrentInput += ch;
-        updateAfterTransferInputChange();
-      };
-      letterRow.appendChild(key);
-    });
-    container.appendChild(letterRow);
-  }
-}
 
 
 function updateAfterTransferInputChange() {
@@ -5503,9 +5371,7 @@ async function checkTransferStopEta(stopId, seq) {
 
 /* ========== 實際道路導航路線 (OSRM Road & Foot Routing) + 地圖繪製 ========== */
 
-const osrmGeometryCache = new Map();
-let mainRouteRenderToken = 0;
-let secondRouteRenderToken = 0;
+
 
 async function fetchActualRoadGeometry(latlngs, profile = "driving") {
   if (!latlngs || latlngs.length < 2) return latlngs;
@@ -6159,6 +6025,704 @@ function switchMobileLegTab(legNum) {
   }
 
   // 重新繪製一次新鍵盤
+  renderVirtualKeyboard();
+  renderTransferVirtualKeyboard();
+})();
+
+/* =========================================================================
+   ★ 新增及修改功能 Patch（直接貼喺原本 script_bus.js 最底部即可）
+   包含：
+   1. 修復 loadAllBusData / OpenStreetMap 瓦片 / 城巴 v2 API
+   2. 固定數字鍵盤高度 + 只顯示「可按英文字母」
+   3. 地圖點擊巴士站 Marker 即彈出抽屜並自動展開該站 ETA
+   4. 實時 GPS 綠點 + 自動畫步行導航線去上車站 & 計算步行時間
+   5. ☀️ 實時香港太陽方位計算 + 上車坐左邊定右邊防曬建議
+   ========================================================================= */
+
+var userLocationMarker = null;
+var userToStopRouteLayer = null;
+var osrmGeometryCache = new Map();
+var mainRouteRenderToken = 0;
+var secondRouteRenderToken = 0;
+
+// --- 1. 極速載入路線資料（砍走無用巨型 /route-stop 防 Failed to fetch） ---
+async function loadAllBusData() {
+  const [kmbRouteRes, kmbStopRes, ctbRouteRes] = await Promise.allSettled([
+    fetchJSON(`${KMB_BASE}/route/`, 3, 400),
+    fetchJSON(`${KMB_BASE}/stop/`, 3, 400),
+    fetchJSON(`${CTB_BASE}/route/ctb`, 3, 400)
+  ]);
+
+  const loadedRoutes = [];
+  const routeMap = new Map();
+  allStopsMap = new Map();
+  routesByStopId = {};
+
+  if (kmbRouteRes.status === "fulfilled" && kmbRouteRes.value) {
+    for (const r of (kmbRouteRes.value.data || [])) {
+      const key = `KMB-${r.route}-${r.service_type || "1"}`;
+      if (!routeMap.has(key)) {
+        const obj = { company: "KMB", route: r.route, bound: null, service_type: r.service_type || "1", orig_tc: r.orig_tc, dest_tc: r.dest_tc };
+        routeMap.set(key, obj);
+        loadedRoutes.push(obj);
+      }
+    }
+  }
+  if (kmbStopRes.status === "fulfilled" && kmbStopRes.value) {
+    (kmbStopRes.value.data || []).forEach(s => allStopsMap.set(s.stop, { ...s, company: "KMB" }));
+  }
+  if (ctbRouteRes.status === "fulfilled" && ctbRouteRes.value) {
+    for (const r of (ctbRouteRes.value.data || [])) {
+      const key = `CTB-${r.route}`;
+      if (!routeMap.has(key)) {
+        const obj = { company: "CTB", route: r.route, bound: null, service_type: "", orig_tc: r.orig_tc, dest_tc: r.dest_tc };
+        routeMap.set(key, obj);
+        loadedRoutes.push(obj);
+      }
+    }
+  }
+  return loadedRoutes;
+}
+
+// --- 2. 顯示用家 GPS 位置圓點 + 行去揀選巴士站嘅導航線與時間 ---
+function renderUserLocationSpot() {
+  if (!map || userLat == null || userLon == null) return;
+  if (userLocationMarker && map.hasLayer(userLocationMarker)) {
+    map.removeLayer(userLocationMarker);
+  }
+  const gpsIcon = L.divIcon({
+    className: "",
+    html: `<div class="user-gps-dot" title="你的位置"></div>`,
+    iconSize: [16, 16],
+    iconAnchor: [8, 8]
+  });
+  userLocationMarker = L.marker([userLat, userLon], { icon: gpsIcon, zIndexOffset: 2000 })
+    .addTo(map)
+    .bindPopup("📍 <b>你的目前位置</b>");
+}
+
+async function drawUserWalkRouteToStop(stopId) {
+  const walkBox = document.getElementById("userWalkInfo");
+  if (userToStopRouteLayer && map && map.hasLayer(userToStopRouteLayer)) {
+    map.removeLayer(userToStopRouteLayer);
+    userToStopRouteLayer = null;
+  }
+  if (!stopId || userLat == null || userLon == null) {
+    if (walkBox) walkBox.textContent = "";
+    return;
+  }
+
+  const stopInfo = allStopsMap.get(stopId);
+  const stopObj = routeStops.find(s => s.stop_id === stopId);
+  if (!stopInfo) return;
+
+  const sLat = parseFloat(stopInfo.lat), sLon = parseFloat(stopInfo.long);
+  if (!isFinite(sLat) || !isFinite(sLon)) return;
+
+  const straightDist = haversineDistanceMeters(userLat, userLon, sLat, sLon);
+  const stopName = stopObj ? stripBracketCode(stopObj.name_tc) : stripBracketCode(stopInfo.name_tc || "車站");
+
+  userToStopRouteLayer = L.polyline([[userLat, userLon], [sLat, sLon]], {
+    color: "#9333ea", weight: 5, dashArray: "6, 8", opacity: 0.9
+  }).addTo(map);
+
+  const estMin = Math.max(1, Math.round((straightDist * 1.25) / (4000 / 60)));
+  if (walkBox) {
+    walkBox.textContent = `🚶 由你位置行去「${stopName}」：約 ${estMin} 分鐘（直線 ${Math.round(straightDist)} 米）`;
+  }
+
+  if (straightDist > 15 && straightDist < 15000) {
+    try {
+      const coordsStr = `${userLon.toFixed(6)},${userLat.toFixed(6)};${sLon.toFixed(6)},${sLat.toFixed(6)}`;
+      const res = await fetch(`https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coordsStr}?overview=full&geometries=geojson`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.routes && data.routes[0]) {
+          const r = data.routes[0];
+          const coords = r.geometry.coordinates.map(c => [c[1], c[0]]);
+          if (userToStopRouteLayer && map.hasLayer(userToStopRouteLayer)) {
+            userToStopRouteLayer.setLatLngs(coords);
+          }
+          const roadDist = Math.round(r.distance || straightDist);
+          const walkMins = Math.max(1, Math.round(roadDist / (4000 / 60)));
+          if (walkBox) {
+            walkBox.textContent = `🚶 由你位置行去「${stopName}」：約 ${walkMins} 分鐘（實際步程 ${roadDist} 米）`;
+          }
+        }
+      }
+    } catch (e) {}
+  }
+}
+
+// --- 3. ☀️ 計算香港實時太陽方位 & 上車坐左邊定右邊建議 ---
+function computeBearingDegrees(lat1, lon1, lat2, lon2) {
+  const toRad = d => d * Math.PI / 180;
+  const toDeg = r => r * 180 / Math.PI;
+  const dLon = toRad(lon2 - lon1);
+  const y = Math.sin(dLon) * Math.cos(toRad(lat2));
+  const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
+  return (toDeg(Math.atan2(y, x)) + 360) % 360;
+}
+
+function getSolarPositionHK(date = new Date(), lat = 22.3193, lon = 114.1694) {
+  const rad = Math.PI / 180, deg = 180 / Math.PI;
+  const jd = date.getTime() / 86400000 + 2440587.5;
+  const n = jd - 2451545.0;
+  const L = (280.460 + 0.9856474 * n) % 360;
+  const g = ((357.528 + 0.9856003 * n) % 360) * rad;
+  const lambda = (L + 1.915 * Math.sin(g) + 0.020 * Math.sin(2 * g)) * rad;
+  const epsilon = (23.439 - 0.0000004 * n) * rad;
+
+  const dec = Math.asin(Math.sin(epsilon) * Math.sin(lambda));
+  const ra = (Math.atan2(Math.cos(epsilon) * Math.sin(lambda), Math.cos(lambda)) * deg + 360) % 360;
+  const gmst = (280.46061837 + 360.98564736629 * n) % 360;
+  const lst = (gmst + lon + 360) % 360;
+  const haRad = (((lst - ra + 540) % 360) - 180) * rad;
+  const latRad = lat * rad;
+
+  const sinAlt = Math.sin(latRad) * Math.sin(dec) + Math.cos(latRad) * Math.cos(dec) * Math.cos(haRad);
+  const altitudeDeg = Math.asin(Math.max(-1, Math.min(1, sinAlt))) * deg;
+  const yAz = -Math.sin(haRad);
+  const xAz = Math.tan(dec) * Math.cos(latRad) - Math.sin(latRad) * Math.cos(haRad);
+  const azimuthDeg = (Math.atan2(yAz, xAz) * deg + 360) % 360;
+  return { altitudeDeg, azimuthDeg };
+}
+
+function compassLabelFromDegree(deg) {
+  const dirs = ["正北", "東北", "正東", "東南", "正南", "西南", "正西", "西北"];
+  return dirs[Math.round((((deg % 360) + 360) % 360) / 45) % 8];
+}
+
+function computeSunSeatAdviceForStops(stopsList, startStopId, endStopId = null) {
+  if (!stopsList || stopsList.length < 2) return "";
+  let startIdx = 0;
+  if (startStopId) {
+    const found = stopsList.findIndex(s => s.stop_id === startStopId);
+    if (found >= 0) startIdx = found;
+  }
+  let endIdx = stopsList.length - 1;
+  if (endStopId) {
+    const foundEnd = stopsList.findIndex((s, idx) => idx > startIdx && s.stop_id === endStopId);
+    if (foundEnd > startIdx) endIdx = foundEnd;
+  } else {
+    endIdx = Math.min(stopsList.length - 1, startIdx + 5);
+  }
+  if (endIdx <= startIdx) { startIdx = 0; endIdx = stopsList.length - 1; }
+
+  const sInfo = allStopsMap.get(stopsList[startIdx].stop_id);
+  const eInfo = allStopsMap.get(stopsList[endIdx].stop_id);
+  if (!sInfo || !eInfo) return "";
+
+  const lat1 = parseFloat(sInfo.lat), lon1 = parseFloat(sInfo.long);
+  const lat2 = parseFloat(eInfo.lat), lon2 = parseFloat(eInfo.long);
+  if (!isFinite(lat1) || !isFinite(lon1) || !isFinite(lat2) || !isFinite(lon2)) return "";
+
+  const busBearing = computeBearingDegrees(lat1, lon1, lat2, lon2);
+  const busDirName = compassLabelFromDegree(busBearing);
+  const { altitudeDeg, azimuthDeg } = getSolarPositionHK(new Date(), lat1, lon1);
+  const sunDirName = compassLabelFromDegree(azimuthDeg);
+
+  if (altitudeDeg <= 2) {
+    return `🌙 現時夜間/無猛烈日光（車向${busDirName}）｜💺 坐左或右邊都唔曬`;
+  }
+  if (altitudeDeg >= 68) {
+    return `☀️ 正午太陽喺頂（仰角 ${Math.round(altitudeDeg)}°）｜💺 兩邊受光相若`;
+  }
+  const intensity = altitudeDeg >= 25 ? "陽光猛烈" : "斜陽直射";
+  const diff = ((azimuthDeg - busBearing + 540) % 360) - 180;
+  const absDiff = Math.abs(diff);
+
+  if (absDiff < 18) return `☀️ 太陽於${sunDirName}正對車頭（${intensity}）｜💺 建議坐後排遮陰位`;
+  if (absDiff > 162) return `☀️ 太陽於${sunDirName}照車尾（${intensity}）｜💺 左右兩邊都唔曬`;
+
+  return diff > 0
+    ? `☀️ 太陽喺${sunDirName}（${intensity}，車向${busDirName}）｜💺 建議坐【左邊】（右邊較曬）`
+    : `☀️ 太陽喺${sunDirName}（${intensity}，車向${busDirName}）｜💺 建議坐【右邊】（左邊較曬）`;
+}
+
+function updateMainSunAdviceUI() {
+  const el = document.getElementById("sunAdviceInfo");
+  if (el) el.textContent = computeSunSeatAdviceForStops(routeStops, originStopId, transferStopId);
+}
+
+function updateTransferSunAdviceUI() {
+  const el = document.getElementById("transferSunAdviceInfo");
+  if (el) el.textContent = computeSunSeatAdviceForStops(transferRouteStops, transferCurrentStopId, null);
+}
+
+// --- 4. 固定數字鍵盤高度 + 只顯示「可按嘅英文字母」 ---
+function renderVirtualKeyboard() {
+  const container = document.getElementById("vk-container");
+  const layout = document.getElementById("step1-layout");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (currentRoute && keyboardHidden) {
+    if (layout) layout.classList.add("compact-mode");
+    const clear = document.createElement("div");
+    clear.className = "vk-key special";
+    clear.textContent = "✕ 重設路線";
+    clear.style.backgroundColor = "#fee2e2";
+    clear.style.color = "#b91c1c";
+    clear.onclick = () => { resetAllState(); setBottomSheetState("half"); };
+    container.appendChild(clear);
+    return;
+  }
+  if (layout) layout.classList.remove("compact-mode");
+
+  const baseRoutes = currentInput ? candidateRoutes : uniqueRoutes;
+  const usage = computeNextCharUsage(baseRoutes, currentInput);
+
+  const topRow = document.createElement("div");
+  topRow.className = "vk-top-grid";
+
+  const backspace = document.createElement("div");
+  backspace.className = "vk-key special";
+  backspace.textContent = "⌫ 刪除";
+  backspace.onclick = () => {
+    if (!currentRoute && currentInput.length > 0) {
+      currentInput = currentInput.slice(0, -1);
+      updateAfterInputChange();
+    }
+  };
+
+  const clear = document.createElement("div");
+  clear.className = "vk-key special";
+  clear.textContent = "✕ 清除";
+  clear.style.backgroundColor = "#fee2e2";
+  clear.style.color = "#b91c1c";
+  clear.onclick = () => resetAllState();
+
+  topRow.appendChild(backspace);
+  topRow.appendChild(clear);
+  container.appendChild(topRow);
+
+  const numpadGrid = document.createElement("div");
+  numpadGrid.className = "vk-numpad-grid";
+  [1, 2, 3, 4, 5, 6, 7, 8, 9, null, 0, null].forEach(d => {
+    const key = document.createElement("div");
+    key.className = "vk-key";
+    if (d === null) {
+      key.style.visibility = "hidden";
+      numpadGrid.appendChild(key);
+      return;
+    }
+    const ch = String(d);
+    key.textContent = ch;
+    if (!usage.digits[ch]) {
+      key.classList.add("disabled");
+    } else {
+      key.onclick = () => { if (!currentRoute) { currentInput += ch; updateAfterInputChange(); } };
+    }
+    numpadGrid.appendChild(key);
+  });
+  container.appendChild(numpadGrid);
+
+  // 只顯示可撳嘅英文字母
+  const lettersWrap = document.createElement("div");
+  lettersWrap.className = "vk-letters-wrap";
+  Object.keys(usage.letters).filter(ch => usage.letters[ch]).forEach(ch => {
+    const key = document.createElement("div");
+    key.className = "vk-key letter-key";
+    key.textContent = ch;
+    key.onclick = () => { if (!currentRoute) { currentInput += ch; updateAfterInputChange(); } };
+    lettersWrap.appendChild(key);
+  });
+  container.appendChild(lettersWrap);
+}
+
+function renderTransferVirtualKeyboard() {
+  const container = document.getElementById("transferVkContainer");
+  const layout = document.getElementById("transfer-step1-layout");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (transferKeyboardHidden) {
+    if (layout) layout.classList.add("compact-mode");
+    const clear = document.createElement("div");
+    clear.className = "vk-key special";
+    clear.textContent = "✕ 改選轉車線";
+    clear.style.backgroundColor = "#fee2e2";
+    clear.style.color = "#b91c1c";
+    clear.onclick = () => resetTransferOnly();
+    container.appendChild(clear);
+    return;
+  }
+  if (layout) layout.classList.remove("compact-mode");
+
+  const baseRoutes = transferCurrentInput ? transferCandidateRoutes : uniqueRoutes;
+  const usage = computeNextCharUsage(baseRoutes, transferCurrentInput);
+
+  const topRow = document.createElement("div");
+  topRow.className = "vk-top-grid";
+
+  const backspace = document.createElement("div");
+  backspace.className = "vk-key special";
+  backspace.textContent = "⌫ 刪除";
+  backspace.onclick = () => {
+    if (transferCurrentInput.length > 0) {
+      transferCurrentInput = transferCurrentInput.slice(0, -1);
+      updateAfterTransferInputChange();
+    }
+  };
+
+  const clear = document.createElement("div");
+  clear.className = "vk-key special";
+  clear.textContent = "✕ 清除";
+  clear.style.backgroundColor = "#fee2e2";
+  clear.style.color = "#b91c1c";
+  clear.onclick = () => {
+    transferCurrentInput = "";
+    transferCandidateRoutes = [];
+    const d1 = document.getElementById("transferRouteInputDisplay");
+    const d2 = document.getElementById("transferRouteList");
+    if (d1) d1.textContent = "(未輸入)";
+    if (d2) d2.textContent = "請輸入路線，會以同名站作為預設轉車站。";
+    renderTransferVirtualKeyboard();
+  };
+
+  topRow.appendChild(backspace);
+  topRow.appendChild(clear);
+  container.appendChild(topRow);
+
+  const numpadGrid = document.createElement("div");
+  numpadGrid.className = "vk-numpad-grid";
+  [1, 2, 3, 4, 5, 6, 7, 8, 9, null, 0, null].forEach(d => {
+    const key = document.createElement("div");
+    key.className = "vk-key";
+    if (d === null) {
+      key.style.visibility = "hidden";
+      numpadGrid.appendChild(key);
+      return;
+    }
+    const ch = String(d);
+    key.textContent = ch;
+    if (!usage.digits[ch]) {
+      key.classList.add("disabled");
+    } else {
+      key.onclick = () => { transferCurrentInput += ch; updateAfterTransferInputChange(); };
+    }
+    numpadGrid.appendChild(key);
+  });
+  container.appendChild(numpadGrid);
+
+  const lettersWrap = document.createElement("div");
+  lettersWrap.className = "vk-letters-wrap";
+  Object.keys(usage.letters).filter(ch => usage.letters[ch]).forEach(ch => {
+    const key = document.createElement("div");
+    key.className = "vk-key letter-key";
+    key.textContent = ch;
+    key.onclick = () => { transferCurrentInput += ch; updateAfterTransferInputChange(); };
+    lettersWrap.appendChild(key);
+  });
+  container.appendChild(lettersWrap);
+}
+
+// --- 5. 點擊車站與地圖聯動（畫步行導航線 + 更新太陽坐位建議 + 篤地圖Marker彈出清單） ---
+function onStopClicked(stopId, seq) {
+  originStopId = stopId;
+  originSeq = seq;
+  if (mode === "normal") mode = "interchange_pick";
+
+  recomputeCumulativeTravelFromOrigin(stopId);
+  renderStopList();
+  updateMainSunAdviceUI();
+  drawUserWalkRouteToStop(stopId);
+  selectStop(stopId, seq);
+  saveAppState();
+}
+
+async function fetchActualRoadGeometry(latlngs, profile = "driving") {
+  if (!latlngs || latlngs.length < 2) return latlngs;
+  if (latlngs.length === 2 && haversineDistanceMeters(latlngs[0][0], latlngs[0][1], latlngs[1][0], latlngs[1][1]) < 15) {
+    return latlngs;
+  }
+  if (!osrmGeometryCache) osrmGeometryCache = new Map();
+  const cacheKey = `${profile}_${latlngs.map(p => `${p[0].toFixed(4)},${p[1].toFixed(4)}`).join(";")}`;
+  if (osrmGeometryCache.has(cacheKey)) return osrmGeometryCache.get(cacheKey);
+
+  const CHUNK_SIZE = 24;
+  const fullPath = [];
+  try {
+    for (let i = 0; i < latlngs.length - 1; i += CHUNK_SIZE - 1) {
+      const chunk = latlngs.slice(i, i + CHUNK_SIZE);
+      if (chunk.length < 2) break;
+      const coordsStr = chunk.map(pt => `${pt[1].toFixed(6)},${pt[0].toFixed(6)}`).join(";");
+      const baseUrl = profile === "foot"
+        ? `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coordsStr}?overview=full&geometries=geojson`
+        : `https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=full&geometries=geojson`;
+      const res = await fetch(baseUrl);
+      if (!res.ok) throw new Error("OSRM HTTP " + res.status);
+      const data = await res.json();
+      if (data && data.routes && data.routes[0] && data.routes[0].geometry) {
+        const segCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+        if (fullPath.length > 0) segCoords.shift();
+        fullPath.push(...segCoords);
+      } else {
+        if (fullPath.length > 0) chunk.shift();
+        fullPath.push(...chunk);
+      }
+    }
+    if (fullPath.length >= 2) {
+      osrmGeometryCache.set(cacheKey, fullPath);
+      return fullPath;
+    }
+  } catch (e) {}
+  return latlngs;
+}
+
+async function showRouteStopsOnMap(stops) {
+  const token = ++mainRouteRenderToken;
+  if (window.mainRouteLine && map.hasLayer(window.mainRouteLine)) map.removeLayer(window.mainRouteLine);
+  if (window.allStopMarkers) window.allStopMarkers.forEach(m => { if (map.hasLayer(m)) map.removeLayer(m); });
+  window.allStopMarkers = [];
+
+  updateMainSunAdviceUI();
+
+  const latlngs = [];
+  stops.forEach(s => {
+    const info = allStopsMap.get(s.stop_id);
+    if (!info) return;
+    const lat = parseFloat(info.lat), lon = parseFloat(info.long);
+    if (!isFinite(lat) || !isFinite(lon)) return;
+
+    const icon = L.divIcon({
+      className: "stop-label",
+      html: `<div>${s.seq}</div>`,
+      iconSize: [24, 24],
+      iconAnchor: [12, 12]
+    });
+
+    const marker = L.marker([lat, lon], { icon }).addTo(map);
+    marker.stopId = s.stop_id;
+    marker.seq = parseInt(s.seq);
+    marker.bindPopup(`<b>${s.seq}. ${info.name_tc || s.stop_id}</b>`);
+
+    // ★ 點擊地圖藍點：即彈出抽屜並自動展開該站 ETA
+    marker.on("click", () => {
+      if (currentSheetState === "collapsed") setBottomSheetState("half");
+      switchMobileLegTab(1);
+      if (mode !== "interchange_pair") {
+        onStopClicked(s.stop_id, s.seq);
+      } else {
+        loadEtaDetailForStop(s.stop_id, s.seq);
+      }
+      setTimeout(() => {
+        const targetEl = document.querySelector(`#stopList .stop-item[data-stop-id="${s.stop_id}"][data-seq="${s.seq}"]`);
+        if (targetEl) targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 220);
+    });
+
+    window.allStopMarkers.push(marker);
+    latlngs.push([lat, lon]);
+  });
+
+  window.mainRouteLine = L.polyline(latlngs, { color: "#1565c0", weight: 5, opacity: 0.85, lineJoin: "round" }).addTo(map);
+  if (latlngs.length > 0) map.fitBounds(window.mainRouteLine.getBounds(), { padding: [30, 30] });
+
+  if (latlngs.length >= 2) {
+    const roadCoords = await fetchActualRoadGeometry(latlngs, "driving");
+    if (token === mainRouteRenderToken && window.mainRouteLine && map.hasLayer(window.mainRouteLine)) {
+      window.mainRouteLine.setLatLngs(roadCoords);
+    }
+  }
+}
+
+async function selectSecondRoute(targetStopId) {
+  if (!map || !transferRouteStops || !transferRouteStops.length) return;
+  clearSecondRouteVisual();
+  const token = ++secondRouteRenderToken;
+  updateFirstRouteFocus(transferStopId);
+  updateTransferSunAdviceUI();
+
+  const latlngsForSecond = [];
+  let foundTransferPoint = false;
+
+  transferRouteStops.forEach(rs => {
+    if (rs.stop_id === targetStopId) foundTransferPoint = true;
+    if (foundTransferPoint) {
+      const info = allStopsMap.get(rs.stop_id);
+      if (!info) return;
+      const lat = parseFloat(info.lat), lon = parseFloat(info.long);
+      if (!isFinite(lat) || !isFinite(lon)) return;
+
+      const icon = L.divIcon({
+        className: "stop-label second-route",
+        html: `<div>${rs.seq}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      });
+
+      const marker = L.marker([lat, lon], { icon }).addTo(map);
+      marker.stopId = rs.stop_id;
+      marker.seq = rs.seq;
+      marker.bindPopup(`<b>${rs.seq}. ${rs.name_tc || rs.stop_id}</b>`);
+
+      // ★ 點擊地圖紅點：即彈出抽屜並展開第二程該站 ETA
+      marker.on("click", async () => {
+        if (currentSheetState === "collapsed") setBottomSheetState("half");
+        switchMobileLegTab(2);
+        if (!transferCurrentStopId) {
+          await selectTransferStop(rs.stop_id, rs.seq);
+        } else if (rs.stop_id !== transferCurrentStopId || rs.seq != window.transferCurrentSeq) {
+          await checkTransferStopEta(rs.stop_id, rs.seq);
+        }
+        setTimeout(() => {
+          const targetEl = document.querySelector(`#transferStopList .stop-item[data-stop-id="${rs.stop_id}"][data-seq="${rs.seq}"]`);
+          if (targetEl) targetEl.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 220);
+      });
+
+      secondRouteMarkers.push(marker);
+      latlngsForSecond.push([lat, lon]);
+    }
+  });
+
+  let redLine = null;
+  if (latlngsForSecond.length >= 2) {
+    redLine = L.polyline(latlngsForSecond, { color: "#e53935", weight: 5, opacity: 0.9, lineJoin: "round" }).addTo(map);
+    secondRouteMarkers.push(redLine);
+  }
+
+  const firstMarker = window.allStopMarkers.find(m => m.stopId === transferStopId);
+  const secondMarker = secondRouteMarkers.find(m => m.stopId === targetStopId);
+  if (firstMarker && secondMarker) {
+    const walkStart = [firstMarker.getLatLng().lat, firstMarker.getLatLng().lng];
+    const walkEnd = [secondMarker.getLatLng().lat, secondMarker.getLatLng().lng];
+    transferLine = L.polyline([walkStart, walkEnd], { color: "#2e7d32", weight: 5, dashArray: "6, 8" }).addTo(map);
+    fetchActualRoadGeometry([walkStart, walkEnd], "foot").then(footCoords => {
+      if (token === secondRouteRenderToken && transferLine && map.hasLayer(transferLine)) {
+        transferLine.setLatLngs(footCoords);
+      }
+    });
+  }
+
+  if (redLine && latlngsForSecond.length >= 2) {
+    const roadCoords = await fetchActualRoadGeometry(latlngsForSecond, "driving");
+    if (token === secondRouteRenderToken && map.hasLayer(redLine)) {
+      redLine.setLatLngs(roadCoords);
+    }
+  }
+}
+
+// --- 6. 抽屜手勢與底圖自動修復初始化 ---
+function setBottomSheetState(state) {
+  const sheet = document.getElementById("bottom-sheet");
+  const btn = document.getElementById("btnSheetToggle");
+  const hint = document.getElementById("sheetStatusHint");
+  if (!sheet) return;
+
+  currentSheetState = state;
+  sheet.classList.remove("sheet-collapsed", "sheet-half", "sheet-full");
+  sheet.classList.add(`sheet-${state}`);
+
+  if (btn) {
+    btn.textContent = state === "collapsed" ? "展開 ▲" : state === "half" ? "全開 ▲" : "收起 ▼";
+  }
+  if (hint) {
+    hint.textContent = currentRoute
+      ? (transferRoute ? `${currentRoute.route} ➔ ${transferRoute.route}` : `路線 ${currentRoute.route}`)
+      : (state === "collapsed" ? "向上拉輸入路線" : "請輸入路線");
+  }
+}
+
+function switchMobileLegTab(legNum) {
+  const sheet = document.getElementById("bottom-sheet");
+  const tab1 = document.getElementById("tabLeg1");
+  const tab2 = document.getElementById("tabLeg2");
+  if (!sheet || !tab1 || !tab2) return;
+
+  if (legNum === 2) {
+    sheet.classList.remove("mobile-show-leg1");
+    sheet.classList.add("mobile-show-leg2");
+    tab1.classList.remove("active-leg1");
+    tab2.classList.add("active-leg2");
+  } else {
+    sheet.classList.remove("mobile-show-leg2");
+    sheet.classList.add("mobile-show-leg1");
+    tab2.classList.remove("active-leg2");
+    tab1.classList.add("active-leg1");
+  }
+}
+
+(function upgradeMapAndUI() {
+  // 1) 即時替換失效嘅 c.tile.openstreetmap.org 底圖為香港政府官方繁體中文地圖
+  if (map) {
+    map.eachLayer(layer => {
+      if (layer._url && layer._url.includes("openstreetmap.org")) {
+        map.removeLayer(layer);
+      }
+    });
+    const hkGovBase = L.tileLayer("https://mapapi.geodata.gov.hk/gs/api/v1.0.0/xyz/basemap/WGS84/{z}/{x}/{y}.png", { maxZoom: 19 });
+    const hkGovLabel = L.tileLayer("https://mapapi.geodata.gov.hk/gs/api/v1.0.0/xyz/label/hk/tc/WGS84/{z}/{x}/{y}.png", { maxZoom: 19 });
+    hkGovBase.addTo(map);
+    hkGovLabel.addTo(map);
+  }
+
+  // 2) 請求 GPS 並標示你嘅目前位置綠點
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(pos => {
+      userLat = pos.coords.latitude;
+      userLon = pos.coords.longitude;
+      renderUserLocationSpot();
+      if (originStopId) drawUserWalkRouteToStop(originStopId);
+    });
+  }
+
+  // 3) 綁定抽屜拉動與轉車自動變闊監聽器
+  const sheet = document.getElementById("bottom-sheet");
+  const header = document.getElementById("sheet-header");
+  const btnToggle = document.getElementById("btnSheetToggle");
+  const tab1 = document.getElementById("tabLeg1");
+  const tab2 = document.getElementById("tabLeg2");
+
+  if (tab1) tab1.onclick = () => switchMobileLegTab(1);
+  if (tab2) tab2.onclick = () => switchMobileLegTab(2);
+  if (btnToggle) {
+    btnToggle.onclick = (e) => {
+      e.stopPropagation();
+      if (currentSheetState === "collapsed") setBottomSheetState("half");
+      else if (currentSheetState === "half") setBottomSheetState("full");
+      else setBottomSheetState("collapsed");
+    };
+  }
+
+  if (sheet && header) {
+    let startY = 0, deltaY = 0, isDragging = false;
+    const onStart = y => { startY = y; deltaY = 0; isDragging = true; sheet.classList.add("dragging"); };
+    const onMove = y => { if (isDragging) deltaY = y - startY; };
+    const onEnd = () => {
+      if (!isDragging) return;
+      isDragging = false;
+      sheet.classList.remove("dragging");
+      if (deltaY < -30) setBottomSheetState(currentSheetState === "collapsed" ? "half" : "full");
+      else if (deltaY > 30) setBottomSheetState(currentSheetState === "full" ? "half" : "collapsed");
+      else if (currentSheetState === "collapsed") setBottomSheetState("half");
+    };
+
+    header.addEventListener("touchstart", e => onStart(e.touches[0].clientY), { passive: true });
+    header.addEventListener("touchmove", e => onMove(e.touches[0].clientY), { passive: true });
+    header.addEventListener("touchend", onEnd);
+    header.addEventListener("mousedown", e => onStart(e.clientY));
+    window.addEventListener("mousemove", e => onMove(e.clientY));
+    window.addEventListener("mouseup", onEnd);
+  }
+
+  const tSec = document.getElementById("transfer-search-section");
+  if (tSec && sheet) {
+    const observer = new MutationObserver(() => {
+      const isTransferVisible = tSec.style.display !== "none";
+      if (isTransferVisible) {
+        sheet.classList.add("has-transfer"); // ★ 平板模式即刻由 390px 自動變闊做 780px 雙欄！
+        switchMobileLegTab(2);
+      } else {
+        sheet.classList.remove("has-transfer", "mobile-show-leg2");
+        sheet.classList.add("mobile-show-leg1");
+      }
+    });
+    observer.observe(tSec, { attributes: true, attributeFilter: ["style"] });
+  }
+
   renderVirtualKeyboard();
   renderTransferVirtualKeyboard();
 })();
