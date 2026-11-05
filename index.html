@@ -54,7 +54,22 @@
     }
     #bottom-sheet.sheet-collapsed { transform: translateY(calc(100% - 76px)); }
     /* ★ 第一下拉上去拉高啲 (只留 16% 距離底部) */
+    /* 平板維持高身；電話版第一下拉上去留返約 28% 位置俾地圖 */
     #bottom-sheet.sheet-half { transform: translateY(16%); }
+    @media (max-width: 767px) {
+      #bottom-sheet.sheet-half { transform: translateY(28%); }
+    }
+
+    /* 新增：下拉一下岩岩好顯示揀緊嗰個站嘅 ETA (由 JS 動態計精準高度) */
+    #bottom-sheet.sheet-peek {
+      transform: translateY(var(--peek-offset, calc(100% - 210px)));
+    }
+
+    /* 確保任何一個站（包括尾站）都可以 Scroll 到貼住抽屜頂部 */
+    #primary-panel, #transfer-search-section {
+      padding-bottom: 65vh !important;
+    }
+
     #bottom-sheet.sheet-full { transform: translateY(0%); }
     #bottom-sheet.dragging { transition: none !important; }
 

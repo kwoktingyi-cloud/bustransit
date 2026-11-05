@@ -6188,7 +6188,28 @@ async function drawUserWalkRouteToStop(stopId) {
   }
 }
 
-// --- 3. 🔔 長期常駐 Notification (requireInteraction: true，每 1 分鐘自動更新，開走自動關閉) ---
+// =========================================================================
+// ★ 替換 Patch 入面嘅「步驟 3 (Android 通知列)」同「步驟 7 (三段式下拉 Peek)」
+// =========================================================================
+
+// 自動註冊 sw.js，令 Android Chrome 支援手機通知列 Notification
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("./sw.js").catch(err => {
+    console.warn("ServiceWorker 註冊失敗 (請確保同目錄有 sw.js):", err.message);
+  });
+}
+
+// 計算中英文混合字串視覺闊度，用全形空白對齊左右兩邊
+function formatAlignedRow(leftText, rightText, targetWidth = 28) {
+  if (!rightText) return leftText;
+  let leftLen = 0;
+  for (const ch of leftText) {
+    leftLen += ch.charCodeAt(0) > 255 ? 2 : 1;
+  }
+  const padCount = Math.max(2, Math.floor((targetWidth - leftLen) / 2));
+  return leftText + "\u3000".repeat(padCount) + rightText;
+}
+
 function stopPersistentTrackingNotification() {
   if (busNotificationTimer) {
     clearInterval(busNotificationTimer);
@@ -6198,8 +6219,13 @@ function stopPersistentTrackingNotification() {
     try { activeBusNotification.close(); } catch (e) {}
     activeBusNotification = null;
   }
-  const banner = document.getElementById("live-track-banner");
-  if (banner) banner.classList.remove("active");
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.getRegistration().then(reg => {
+      if (reg && reg.getNotifications) {
+        reg.getNotifications({ tag: "bus-eta-tracker" }).then(list => list.forEach(n => n.close()));
+      }
+    }).catch(() => {});
+  }
 }
 
 async function updatePersistentTrackingNotification() {
@@ -6211,22 +6237,19 @@ async function updatePersistentTrackingNotification() {
   const now = new Date();
   const diffMin = Math.round((selectedEtaTime - now) / 60000);
 
-  // ★ 當架車已經開走咗 (< 0 分鐘)，自動關閉 Notification 並停止更新
+  // ★ 當架車開走咗 (< 0 分鐘)，自動關閉手機通知列 Notification 並停止更新
   if (diffMin < 0) {
-    showToast("🚌 追蹤嘅班次已開出，通知已關閉");
     stopPersistentTrackingNotification();
     return;
   }
 
-  // 攞方向名稱同上車站名
   const dirTerm = currentDirection === "inbound"
     ? (inboundTerminalName !== "?" ? inboundTerminalName : stripBracketCode(currentRoute.dest_tc))
     : (outboundTerminalName !== "?" ? outboundTerminalName : stripBracketCode(currentRoute.orig_tc));
 
   const stopObj = routeStops.find(s => s.stop_id === originStopId);
-  const stopName = stopObj ? stripBracketCode(stopObj.name_tc) : "上車站";
+  const stopName = stopObj ? stripBracketCode(stopObj.name_tc) : "";
 
-  // 如果有 GPS，順便重算一次最新距離與 5km/h 步行分鐘
   if (userLat != null && userLon != null && currentWalkDistMeters == null) {
     const info = allStopsMap.get(originStopId);
     if (info && info.lat && info.long) {
@@ -6236,57 +6259,53 @@ async function updatePersistentTrackingNotification() {
     }
   }
 
-  const busEtaLabel = diffMin === 0 ? "即將到達 (0分鐘)" : `仲有 ${diffMin} 分鐘`;
-  const walkDistLabel = currentWalkDistMeters != null ? `距離 ${currentWalkDistMeters} 米` : "距離未定位";
-  const walkTimeLabel = currentWalkMinutes != null ? `步行約 ${currentWalkMinutes} 分鐘` : "開啟GPS計步程";
+  const hh = String(selectedEtaTime.getHours()).padStart(2, "0");
+  const mm = String(selectedEtaTime.getMinutes()).padStart(2, "0");
 
-  // 1) 更新畫面頂部左右分欄常駐通知卡
-  const banner = document.getElementById("live-track-banner");
-  if (banner) {
-    banner.classList.add("active");
-    document.getElementById("ltbRoute").textContent = `🚌 ${currentRoute.route} (往${dirTerm})`;
-    document.getElementById("ltbStop").textContent = `📍 上車站：${stopName}`;
-    document.getElementById("ltbEta").textContent = `⏳ 到站：${busEtaLabel}`;
-    document.getElementById("ltbWalkDist").textContent = `📏 ${walkDistLabel}`;
-    document.getElementById("ltbWalkTime").textContent = `🚶 ${walkTimeLabel}`;
-  }
+  // ★ 嚴格跟足你要求嘅 3 行極簡無 Icon 排版：
+  // 第 1 行 (Title)：89S (往水泉澳總站)                       距離421米
+  // 第 2 行 (Body 1)：烏溪沙路                                           3分鐘
+  // 第 3 行 (Body 2)：10 分鐘 (20:48)
+  const rightDist = currentWalkDistMeters != null ? `距離${currentWalkDistMeters}米` : "";
+  const rightWalkMin = currentWalkMinutes != null ? `${currentWalkMinutes}分鐘` : "";
+  const etaLine = diffMin <= 0 ? `即將到達 (${hh}:${mm})` : `${diffMin} 分鐘 (${hh}:${mm})`;
 
-  // 2) 發出 / 更新手機或瀏覽器系統級長期顯示 Notification (requireInteraction: true)
-  if ("Notification" in window && Notification.permission === "granted") {
-    const title = `🚌 ${currentRoute.route} (往${dirTerm}) ｜ 📍 ${stopName}`;
-    // 左右排版文字：左邊到站倒數 ▏右邊米數同步行倒數
-    const body = `⏳ 車到：${busEtaLabel}  ▏ 🚶 步程：${walkDistLabel} (${walkTimeLabel})`;
-    const options = {
-      body: body,
-      tag: "bus-eta-tracker",       // 固定 tag，每分鐘原地更新同一個 Notification
-      renotify: false,
-      requireInteraction: true,     // ★ 長期顯示，唔會自動消失
-      silent: true
-    };
+  const line1Title = formatAlignedRow(`${currentRoute.route} (往${dirTerm})`, rightDist, 26);
+  const line2Stop  = formatAlignedRow(stopName, rightWalkMin, 30);
+  const bodyText   = `${line2Stop}\n${etaLine}`;
 
-    try {
-      if (navigator.serviceWorker && navigator.serviceWorker.ready) {
-        const reg = await navigator.serviceWorker.getRegistration();
-        if (reg && reg.showNotification) {
-          await reg.showNotification(title, options);
-          return;
-        }
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+  const options = {
+    body: bodyText,
+    tag: "bus-eta-tracker",
+    renotify: false,
+    requireInteraction: true, // ★ Android / 桌面長期常駐通知
+    silent: true
+  };
+
+  try {
+    if ("serviceWorker" in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg && reg.showNotification) {
+        await reg.showNotification(line1Title, options);
+        return;
       }
-      activeBusNotification = new Notification(title, options);
-    } catch (e) {
-      console.warn("System Notification fallback to Live Banner:", e.message);
     }
+    activeBusNotification = new Notification(line1Title, options);
+  } catch (e) {
+    console.warn("請確保已建立 sw.js 並用 HTTPS 或 localhost 開啟以支援 Android 通知列:", e.message);
   }
 }
 
 async function startPersistentTrackingNotification() {
-  if ("Notification" in window && Notification.permission === "default") {
+  if ("Notification" in window && Notification.permission !== "granted") {
     try { await Notification.requestPermission(); } catch (e) {}
   }
   await updatePersistentTrackingNotification();
 
   if (busNotificationTimer) clearInterval(busNotificationTimer);
-  // ★ 每 1 分鐘 (60,000ms) 自動更新一次倒數
+  // 每 1 分鐘自動更新一次
   busNotificationTimer = setInterval(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(pos => {
@@ -6308,19 +6327,17 @@ async function startPersistentTrackingNotification() {
   }, 60000);
 }
 
-// 覆蓋 setTrackingEta：當用家撳「追蹤」掣時自動啟動長期 Notification
+// 覆蓋 setTrackingEta：一撳「追蹤」即刻出 Android 通知列
 const _origSetTrackingEta = setTrackingEta;
 setTrackingEta = function(etaObj, rowElement) {
   _origSetTrackingEta(etaObj, rowElement);
-  // 只有用家親手撳「追蹤」掣 (rowElement 存在) 先彈出長期 Notification
   if (rowElement) {
-    showToast("🔔 已開啟每分鐘實時到站與步程通知");
     startPersistentTrackingNotification();
   } else if (busNotificationTimer) {
-    // 如果已經開緊通知，背景自動刷新時同步更新埋個時間
     updatePersistentTrackingNotification();
   }
 };
+
 
 // --- 4. ☀️ 計算香港實時太陽方位 & 上車坐左邊定右邊建議 ---
 function computeBearingDegrees(lat1, lon1, lat2, lon2) {
@@ -6769,24 +6786,83 @@ async function selectSecondRoute(targetStopId) {
   }
 }
 
-// --- 7. 抽屜手勢與底圖自動修復初始化 ---
+// =========================================================================
+// ★ 抽屜四段狀態：full (全開) -> half (半開) -> peek (岩岩好睇到站時間) -> collapsed (收晒)
+// =========================================================================
+
+function getActiveTargetStopElement() {
+  // 1) 如果揀咗 Step 4 第二程轉車站，優先對準第二程轉車站
+  if (transferCurrentStopId) {
+    let el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${transferCurrentStopId}"][data-seq="${window.transferCurrentSeq}"]`);
+    if (!el) el = document.querySelector(`#transferStopList .stop-item.selected`);
+    if (el) return { el, panel: document.getElementById("transfer-search-section"), leg: 2 };
+  }
+  // 2) 如果喺第一程揀咗「轉車」（進入轉車模式），對準第一程個轉車站
+  if (mode === "interchange_pair" && transferStopId) {
+    let el = document.querySelector(`#stopList .stop-item[data-stop-id="${transferStopId}"][data-seq="${transferSeq}"]`);
+    if (!el) el = document.querySelector(`#stopList .stop-item[data-stop-id="${transferStopId}"]`);
+    if (el) return { el, panel: document.getElementById("primary-panel"), leg: 1 };
+  }
+  // 3) 否則對準目前撳緊嘅上車站
+  if (currentStopId || originStopId) {
+    const sid = currentStopId || originStopId;
+    let el = document.querySelector(`#stopList .stop-item.selected`);
+    if (!el) el = document.querySelector(`#stopList .stop-item[data-stop-id="${sid}"]`);
+    if (el) return { el, panel: document.getElementById("primary-panel"), leg: 1 };
+  }
+  return null;
+}
+
 function setBottomSheetState(state) {
   const sheet = document.getElementById("bottom-sheet");
+  const header = document.getElementById("sheet-header");
+  const tabs = document.getElementById("mobile-leg-tabs");
   const btn = document.getElementById("btnSheetToggle");
   const hint = document.getElementById("sheetStatusHint");
   if (!sheet) return;
 
   currentSheetState = state;
-  sheet.classList.remove("sheet-collapsed", "sheet-half", "sheet-full");
+  sheet.classList.remove("sheet-collapsed", "sheet-peek", "sheet-half", "sheet-full");
   sheet.classList.add(`sheet-${state}`);
 
-  if (btn) {
-    btn.textContent = state === "collapsed" ? "展開 ▲" : state === "half" ? "全開 ▲" : "收起 ▼";
+  // ★ 當進入 "peek"（下拉一下只睇該站到站時間）：
+  // 自動將揀緊嗰個站 Scroll 到面板最頂，並計出岩岩好包住該站 ETA 嘅高度！
+  if (state === "peek") {
+    const target = getActiveTargetStopElement();
+    if (target && target.el && target.panel) {
+      if (window.innerWidth < 768) switchMobileLegTab(target.leg);
+      setTimeout(() => {
+        // 將該站頂部對齊滾動容器頂部
+        const panelRect = target.panel.getBoundingClientRect();
+        const elRect = target.el.getBoundingClientRect();
+        target.panel.scrollTop += (elRect.top - panelRect.top) - 6;
+
+        // 動態計算「拉柄欄 + (電話Tab) + 該站連ETA高度」，岩岩好露出嗰個站！
+        const headerH = header ? header.offsetHeight : 64;
+        const tabsH = (tabs && window.getComputedStyle(tabs).display !== "none") ? tabs.offsetHeight : 0;
+        const stopH = Math.min(260, Math.max(120, target.el.offsetHeight + 16));
+        const visiblePx = headerH + tabsH + stopH;
+        sheet.style.setProperty("--peek-offset", `calc(100% - ${visiblePx}px)`);
+      }, 30);
+    } else {
+      // 如果未揀任何站，直接收埋
+      currentSheetState = "collapsed";
+      sheet.classList.remove("sheet-peek");
+      sheet.classList.add("sheet-collapsed");
+    }
   }
+
+  if (btn) {
+    if (currentSheetState === "collapsed") btn.textContent = "展開 ▲";
+    else if (currentSheetState === "peek") btn.textContent = "半開 ▲";
+    else if (currentSheetState === "half") btn.textContent = "全開 ▲";
+    else btn.textContent = "收起 ▼";
+  }
+
   if (hint) {
     hint.textContent = currentRoute
       ? (transferRoute ? `${currentRoute.route} ➔ ${transferRoute.route}` : `路線 ${currentRoute.route}`)
-      : (state === "collapsed" ? "向上拉輸入路線" : "請輸入路線");
+      : (currentSheetState === "collapsed" ? "向上拉輸入路線" : "請輸入路線");
   }
 }
 
@@ -6831,11 +6907,6 @@ function switchMobileLegTab(legNum) {
     });
   }
 
-  const ltbCloseBtn = document.getElementById("ltbCloseBtn");
-  if (ltbCloseBtn) {
-    ltbCloseBtn.onclick = () => stopPersistentTrackingNotification();
-  }
-
   const sheet = document.getElementById("bottom-sheet");
   const header = document.getElementById("sheet-header");
   const btnToggle = document.getElementById("btnSheetToggle");
@@ -6844,12 +6915,34 @@ function switchMobileLegTab(legNum) {
 
   if (tab1) tab1.onclick = () => switchMobileLegTab(1);
   if (tab2) tab2.onclick = () => switchMobileLegTab(2);
+
+  const hasSelectedStop = () => Boolean(getActiveTargetStopElement());
+
+  // 向下拉一級邏輯：full -> half -> peek (如有揀站) -> collapsed
+  const stepDownSheet = () => {
+    if (currentSheetState === "full") {
+      setBottomSheetState(hasSelectedStop() ? "peek" : "half");
+    } else if (currentSheetState === "half") {
+      setBottomSheetState(hasSelectedStop() ? "peek" : "collapsed");
+    } else {
+      setBottomSheetState("collapsed");
+    }
+  };
+
+  // 向上拉一級邏輯：collapsed -> half -> full；peek -> half
+  const stepUpSheet = () => {
+    if (currentSheetState === "collapsed" || currentSheetState === "peek") {
+      setBottomSheetState("half");
+    } else {
+      setBottomSheetState("full");
+    }
+  };
+
   if (btnToggle) {
     btnToggle.onclick = (e) => {
       e.stopPropagation();
-      if (currentSheetState === "collapsed") setBottomSheetState("half");
-      else if (currentSheetState === "half") setBottomSheetState("full");
-      else setBottomSheetState("collapsed");
+      if (currentSheetState === "full") stepDownSheet();
+      else stepUpSheet();
     };
   }
 
@@ -6861,8 +6954,8 @@ function switchMobileLegTab(legNum) {
       if (!isDragging) return;
       isDragging = false;
       sheet.classList.remove("dragging");
-      if (deltaY < -30) setBottomSheetState(currentSheetState === "collapsed" ? "half" : "full");
-      else if (deltaY > 30) setBottomSheetState(currentSheetState === "full" ? "half" : "collapsed");
+      if (deltaY < -30) stepUpSheet();
+      else if (deltaY > 30) stepDownSheet();
       else if (currentSheetState === "collapsed") setBottomSheetState("half");
     };
 
@@ -6879,7 +6972,7 @@ function switchMobileLegTab(legNum) {
     const observer = new MutationObserver(() => {
       const isTransferVisible = tSec.style.display !== "none";
       if (isTransferVisible) {
-        sheet.classList.add("has-transfer"); // 平板模式由 450px 自動擴展成 900px 雙欄
+        sheet.classList.add("has-transfer");
         switchMobileLegTab(2);
       } else {
         sheet.classList.remove("has-transfer", "mobile-show-leg2");
