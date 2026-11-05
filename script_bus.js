@@ -6030,13 +6030,13 @@ function switchMobileLegTab(legNum) {
 })();
 
 /* =========================================================================
-   ★ 新增及修改功能 Patch（直接貼喺原本 script_bus.js 最底部即可）
-   包含：
-   1. 修復 loadAllBusData / OpenStreetMap 瓦片 / 城巴 v2 API
-   2. 固定數字鍵盤高度 + 只顯示「可按英文字母」
-   3. 地圖點擊巴士站 Marker 即彈出抽屜並自動展開該站 ETA
-   4. 實時 GPS 綠點 + 自動畫步行導航線去上車站 & 計算步行時間
-   5. ☀️ 實時香港太陽方位計算 + 上車坐左邊定右邊防曬建議
+   ★ 終極功能 Patch v2（替換 script_bus.js 最底部嗰段 Patch）
+   新增：
+   - 步行速度全面改為 5km/h (5000 / 60 米/分鐘)
+   - 撳「追蹤」即彈出長期常駐 Notification (requireInteraction: true)
+     左邊：路線(方向)、上車站、到站倒數分鐘
+     右邊：剩餘步行米數、步行倒數分鐘
+     每 1 分鐘自動更新，直至班車開走自動關閉！
    ========================================================================= */
 
 var userLocationMarker = null;
@@ -6045,7 +6045,36 @@ var osrmGeometryCache = new Map();
 var mainRouteRenderToken = 0;
 var secondRouteRenderToken = 0;
 
-// --- 1. 極速載入路線資料（砍走無用巨型 /route-stop 防 Failed to fetch） ---
+// 儲存最新步程距離與分鐘（供 Notification 實時讀取）
+var currentWalkDistMeters = null;
+var currentWalkMinutes = null;
+var busNotificationTimer = null;
+var activeBusNotification = null;
+
+// --- 0. 步行速度統一改為 5km/h (5000 / 60 米/分鐘) ---
+function walkingMinutesBetweenStops(stopIdA, stopIdB) {
+  if (!stopIdA || !stopIdB) return null;
+  if (stopIdA === stopIdB) return 0;
+  const infoA = allStopsMap.get(stopIdA);
+  const infoB = allStopsMap.get(stopIdB);
+  if (!infoA || !infoB) return null;
+  const lat1 = parseFloat(infoA.lat), lon1 = parseFloat(infoA.long);
+  const lat2 = parseFloat(infoB.lat), lon2 = parseFloat(infoB.long);
+  if (!isFinite(lat1) || !isFinite(lon1) || !isFinite(lat2) || !isFinite(lon2)) return null;
+  const distMeters = haversineDistanceMeters(lat1, lon1, lat2, lon2);
+  if (!isFinite(distMeters) || distMeters <= 0) return 0;
+  return distMeters / (5000 / 60); // ★ 5km/h
+}
+
+function walkingTimeTextBetweenStops(stopIdA, stopIdB) {
+  const mins = walkingMinutesBetweenStops(stopIdA, stopIdB);
+  if (mins === null) return null;
+  if (mins < 1) return "步行 <1 分鐘";
+  if (mins > 60) return "步行 >1 小時";
+  return `步行約 ${Math.round(mins)} 分鐘`;
+}
+
+// --- 1. 極速載入路線資料 ---
 async function loadAllBusData() {
   const [kmbRouteRes, kmbStopRes, ctbRouteRes] = await Promise.allSettled([
     fetchJSON(`${KMB_BASE}/route/`, 3, 400),
@@ -6084,7 +6113,7 @@ async function loadAllBusData() {
   return loadedRoutes;
 }
 
-// --- 2. 顯示用家 GPS 位置圓點 + 行去揀選巴士站嘅導航線與時間 ---
+// --- 2. 顯示用家 GPS 位置圓點 + 行去揀選巴士站嘅導航線與時間 (5km/h) ---
 function renderUserLocationSpot() {
   if (!map || userLat == null || userLon == null) return;
   if (userLocationMarker && map.hasLayer(userLocationMarker)) {
@@ -6108,6 +6137,8 @@ async function drawUserWalkRouteToStop(stopId) {
     userToStopRouteLayer = null;
   }
   if (!stopId || userLat == null || userLon == null) {
+    currentWalkDistMeters = null;
+    currentWalkMinutes = null;
     if (walkBox) walkBox.textContent = "";
     return;
   }
@@ -6126,9 +6157,12 @@ async function drawUserWalkRouteToStop(stopId) {
     color: "#9333ea", weight: 5, dashArray: "6, 8", opacity: 0.9
   }).addTo(map);
 
-  const estMin = Math.max(1, Math.round((straightDist * 1.25) / (4000 / 60)));
+  // ★ 5km/h 計算 (5000 / 60 米/分鐘)
+  currentWalkDistMeters = Math.round(straightDist * 1.2);
+  currentWalkMinutes = Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
+
   if (walkBox) {
-    walkBox.textContent = `🚶 由你位置行去「${stopName}」：約 ${estMin} 分鐘（直線 ${Math.round(straightDist)} 米）`;
+    walkBox.textContent = `🚶 由你位置行去「${stopName}」：約 ${currentWalkMinutes} 分鐘（約 ${currentWalkDistMeters} 米，按 5km/h 計）`;
   }
 
   if (straightDist > 15 && straightDist < 15000) {
@@ -6143,10 +6177,10 @@ async function drawUserWalkRouteToStop(stopId) {
           if (userToStopRouteLayer && map.hasLayer(userToStopRouteLayer)) {
             userToStopRouteLayer.setLatLngs(coords);
           }
-          const roadDist = Math.round(r.distance || straightDist);
-          const walkMins = Math.max(1, Math.round(roadDist / (4000 / 60)));
+          currentWalkDistMeters = Math.round(r.distance || straightDist);
+          currentWalkMinutes = Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
           if (walkBox) {
-            walkBox.textContent = `🚶 由你位置行去「${stopName}」：約 ${walkMins} 分鐘（實際步程 ${roadDist} 米）`;
+            walkBox.textContent = `🚶 由你位置行去「${stopName}」：約 ${currentWalkMinutes} 分鐘（實際步程 ${currentWalkDistMeters} 米）`;
           }
         }
       }
@@ -6154,10 +6188,143 @@ async function drawUserWalkRouteToStop(stopId) {
   }
 }
 
-// --- 3. ☀️ 計算香港實時太陽方位 & 上車坐左邊定右邊建議 ---
+// --- 3. 🔔 長期常駐 Notification (requireInteraction: true，每 1 分鐘自動更新，開走自動關閉) ---
+function stopPersistentTrackingNotification() {
+  if (busNotificationTimer) {
+    clearInterval(busNotificationTimer);
+    busNotificationTimer = null;
+  }
+  if (activeBusNotification && typeof activeBusNotification.close === "function") {
+    try { activeBusNotification.close(); } catch (e) {}
+    activeBusNotification = null;
+  }
+  const banner = document.getElementById("live-track-banner");
+  if (banner) banner.classList.remove("active");
+}
+
+async function updatePersistentTrackingNotification() {
+  if (!selectedEtaTime || !currentRoute || !originStopId) {
+    stopPersistentTrackingNotification();
+    return;
+  }
+
+  const now = new Date();
+  const diffMin = Math.round((selectedEtaTime - now) / 60000);
+
+  // ★ 當架車已經開走咗 (< 0 分鐘)，自動關閉 Notification 並停止更新
+  if (diffMin < 0) {
+    showToast("🚌 追蹤嘅班次已開出，通知已關閉");
+    stopPersistentTrackingNotification();
+    return;
+  }
+
+  // 攞方向名稱同上車站名
+  const dirTerm = currentDirection === "inbound"
+    ? (inboundTerminalName !== "?" ? inboundTerminalName : stripBracketCode(currentRoute.dest_tc))
+    : (outboundTerminalName !== "?" ? outboundTerminalName : stripBracketCode(currentRoute.orig_tc));
+
+  const stopObj = routeStops.find(s => s.stop_id === originStopId);
+  const stopName = stopObj ? stripBracketCode(stopObj.name_tc) : "上車站";
+
+  // 如果有 GPS，順便重算一次最新距離與 5km/h 步行分鐘
+  if (userLat != null && userLon != null && currentWalkDistMeters == null) {
+    const info = allStopsMap.get(originStopId);
+    if (info && info.lat && info.long) {
+      const d = haversineDistanceMeters(userLat, userLon, parseFloat(info.lat), parseFloat(info.long));
+      currentWalkDistMeters = Math.round(d);
+      currentWalkMinutes = Math.max(1, Math.round(d / (5000 / 60)));
+    }
+  }
+
+  const busEtaLabel = diffMin === 0 ? "即將到達 (0分鐘)" : `仲有 ${diffMin} 分鐘`;
+  const walkDistLabel = currentWalkDistMeters != null ? `距離 ${currentWalkDistMeters} 米` : "距離未定位";
+  const walkTimeLabel = currentWalkMinutes != null ? `步行約 ${currentWalkMinutes} 分鐘` : "開啟GPS計步程";
+
+  // 1) 更新畫面頂部左右分欄常駐通知卡
+  const banner = document.getElementById("live-track-banner");
+  if (banner) {
+    banner.classList.add("active");
+    document.getElementById("ltbRoute").textContent = `🚌 ${currentRoute.route} (往${dirTerm})`;
+    document.getElementById("ltbStop").textContent = `📍 上車站：${stopName}`;
+    document.getElementById("ltbEta").textContent = `⏳ 到站：${busEtaLabel}`;
+    document.getElementById("ltbWalkDist").textContent = `📏 ${walkDistLabel}`;
+    document.getElementById("ltbWalkTime").textContent = `🚶 ${walkTimeLabel}`;
+  }
+
+  // 2) 發出 / 更新手機或瀏覽器系統級長期顯示 Notification (requireInteraction: true)
+  if ("Notification" in window && Notification.permission === "granted") {
+    const title = `🚌 ${currentRoute.route} (往${dirTerm}) ｜ 📍 ${stopName}`;
+    // 左右排版文字：左邊到站倒數 ▏右邊米數同步行倒數
+    const body = `⏳ 車到：${busEtaLabel}  ▏ 🚶 步程：${walkDistLabel} (${walkTimeLabel})`;
+    const options = {
+      body: body,
+      tag: "bus-eta-tracker",       // 固定 tag，每分鐘原地更新同一個 Notification
+      renotify: false,
+      requireInteraction: true,     // ★ 長期顯示，唔會自動消失
+      silent: true
+    };
+
+    try {
+      if (navigator.serviceWorker && navigator.serviceWorker.ready) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        if (reg && reg.showNotification) {
+          await reg.showNotification(title, options);
+          return;
+        }
+      }
+      activeBusNotification = new Notification(title, options);
+    } catch (e) {
+      console.warn("System Notification fallback to Live Banner:", e.message);
+    }
+  }
+}
+
+async function startPersistentTrackingNotification() {
+  if ("Notification" in window && Notification.permission === "default") {
+    try { await Notification.requestPermission(); } catch (e) {}
+  }
+  await updatePersistentTrackingNotification();
+
+  if (busNotificationTimer) clearInterval(busNotificationTimer);
+  // ★ 每 1 分鐘 (60,000ms) 自動更新一次倒數
+  busNotificationTimer = setInterval(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(pos => {
+        userLat = pos.coords.latitude;
+        userLon = pos.coords.longitude;
+        renderUserLocationSpot();
+        if (originStopId) {
+          const info = allStopsMap.get(originStopId);
+          if (info && info.lat && info.long) {
+            currentWalkDistMeters = Math.round(haversineDistanceMeters(userLat, userLon, parseFloat(info.lat), parseFloat(info.long)));
+            currentWalkMinutes = Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
+          }
+        }
+        updatePersistentTrackingNotification();
+      }, () => updatePersistentTrackingNotification());
+    } else {
+      updatePersistentTrackingNotification();
+    }
+  }, 60000);
+}
+
+// 覆蓋 setTrackingEta：當用家撳「追蹤」掣時自動啟動長期 Notification
+const _origSetTrackingEta = setTrackingEta;
+setTrackingEta = function(etaObj, rowElement) {
+  _origSetTrackingEta(etaObj, rowElement);
+  // 只有用家親手撳「追蹤」掣 (rowElement 存在) 先彈出長期 Notification
+  if (rowElement) {
+    showToast("🔔 已開啟每分鐘實時到站與步程通知");
+    startPersistentTrackingNotification();
+  } else if (busNotificationTimer) {
+    // 如果已經開緊通知，背景自動刷新時同步更新埋個時間
+    updatePersistentTrackingNotification();
+  }
+};
+
+// --- 4. ☀️ 計算香港實時太陽方位 & 上車坐左邊定右邊建議 ---
 function computeBearingDegrees(lat1, lon1, lat2, lon2) {
-  const toRad = d => d * Math.PI / 180;
-  const toDeg = r => r * 180 / Math.PI;
+  const toRad = d => d * Math.PI / 180, toDeg = r => r * 180 / Math.PI;
   const dLon = toRad(lon2 - lon1);
   const y = Math.sin(dLon) * Math.cos(toRad(lat2));
   const x = Math.cos(toRad(lat1)) * Math.sin(toRad(lat2)) - Math.sin(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.cos(dLon);
@@ -6250,7 +6417,7 @@ function updateTransferSunAdviceUI() {
   if (el) el.textContent = computeSunSeatAdviceForStops(transferRouteStops, transferCurrentStopId, null);
 }
 
-// --- 4. 固定數字鍵盤高度 + 只顯示「可按嘅英文字母」 ---
+// --- 5. 固定數字鍵盤高度 + 只顯示「可按嘅英文字母」 ---
 function renderVirtualKeyboard() {
   const container = document.getElementById("vk-container");
   const layout = document.getElementById("step1-layout");
@@ -6264,7 +6431,7 @@ function renderVirtualKeyboard() {
     clear.textContent = "✕ 重設路線";
     clear.style.backgroundColor = "#fee2e2";
     clear.style.color = "#b91c1c";
-    clear.onclick = () => { resetAllState(); setBottomSheetState("half"); };
+    clear.onclick = () => { stopPersistentTrackingNotification(); resetAllState(); setBottomSheetState("half"); };
     container.appendChild(clear);
     return;
   }
@@ -6291,7 +6458,7 @@ function renderVirtualKeyboard() {
   clear.textContent = "✕ 清除";
   clear.style.backgroundColor = "#fee2e2";
   clear.style.color = "#b91c1c";
-  clear.onclick = () => resetAllState();
+  clear.onclick = () => { stopPersistentTrackingNotification(); resetAllState(); };
 
   topRow.appendChild(backspace);
   topRow.appendChild(clear);
@@ -6318,7 +6485,6 @@ function renderVirtualKeyboard() {
   });
   container.appendChild(numpadGrid);
 
-  // 只顯示可撳嘅英文字母
   const lettersWrap = document.createElement("div");
   lettersWrap.className = "vk-letters-wrap";
   Object.keys(usage.letters).filter(ch => usage.letters[ch]).forEach(ch => {
@@ -6418,7 +6584,7 @@ function renderTransferVirtualKeyboard() {
   container.appendChild(lettersWrap);
 }
 
-// --- 5. 點擊車站與地圖聯動（畫步行導航線 + 更新太陽坐位建議 + 篤地圖Marker彈出清單） ---
+// --- 6. 點擊車站與地圖聯動 ---
 function onStopClicked(stopId, seq) {
   originStopId = stopId;
   originSeq = seq;
@@ -6498,7 +6664,6 @@ async function showRouteStopsOnMap(stops) {
     marker.seq = parseInt(s.seq);
     marker.bindPopup(`<b>${s.seq}. ${info.name_tc || s.stop_id}</b>`);
 
-    // ★ 點擊地圖藍點：即彈出抽屜並自動展開該站 ETA
     marker.on("click", () => {
       if (currentSheetState === "collapsed") setBottomSheetState("half");
       switchMobileLegTab(1);
@@ -6558,7 +6723,6 @@ async function selectSecondRoute(targetStopId) {
       marker.seq = rs.seq;
       marker.bindPopup(`<b>${rs.seq}. ${rs.name_tc || rs.stop_id}</b>`);
 
-      // ★ 點擊地圖紅點：即彈出抽屜並展開第二程該站 ETA
       marker.on("click", async () => {
         if (currentSheetState === "collapsed") setBottomSheetState("half");
         switchMobileLegTab(2);
@@ -6605,7 +6769,7 @@ async function selectSecondRoute(targetStopId) {
   }
 }
 
-// --- 6. 抽屜手勢與底圖自動修復初始化 ---
+// --- 7. 抽屜手勢與底圖自動修復初始化 ---
 function setBottomSheetState(state) {
   const sheet = document.getElementById("bottom-sheet");
   const btn = document.getElementById("btnSheetToggle");
@@ -6646,7 +6810,6 @@ function switchMobileLegTab(legNum) {
 }
 
 (function upgradeMapAndUI() {
-  // 1) 即時替換失效嘅 c.tile.openstreetmap.org 底圖為香港政府官方繁體中文地圖
   if (map) {
     map.eachLayer(layer => {
       if (layer._url && layer._url.includes("openstreetmap.org")) {
@@ -6659,7 +6822,6 @@ function switchMobileLegTab(legNum) {
     hkGovLabel.addTo(map);
   }
 
-  // 2) 請求 GPS 並標示你嘅目前位置綠點
   if (navigator.geolocation) {
     navigator.geolocation.getCurrentPosition(pos => {
       userLat = pos.coords.latitude;
@@ -6669,7 +6831,11 @@ function switchMobileLegTab(legNum) {
     });
   }
 
-  // 3) 綁定抽屜拉動與轉車自動變闊監聽器
+  const ltbCloseBtn = document.getElementById("ltbCloseBtn");
+  if (ltbCloseBtn) {
+    ltbCloseBtn.onclick = () => stopPersistentTrackingNotification();
+  }
+
   const sheet = document.getElementById("bottom-sheet");
   const header = document.getElementById("sheet-header");
   const btnToggle = document.getElementById("btnSheetToggle");
@@ -6713,7 +6879,7 @@ function switchMobileLegTab(legNum) {
     const observer = new MutationObserver(() => {
       const isTransferVisible = tSec.style.display !== "none";
       if (isTransferVisible) {
-        sheet.classList.add("has-transfer"); // ★ 平板模式即刻由 390px 自動變闊做 780px 雙欄！
+        sheet.classList.add("has-transfer"); // 平板模式由 450px 自動擴展成 900px 雙欄
         switchMobileLegTab(2);
       } else {
         sheet.classList.remove("has-transfer", "mobile-show-leg2");

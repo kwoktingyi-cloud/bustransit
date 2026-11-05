@@ -37,10 +37,10 @@
       box-shadow: 0 0 0 6px rgba(0, 200, 83, 0.28), 0 2px 6px rgba(0,0,0,0.4);
     }
 
-    /* 2. 底部上拉抽屜 (電話版預設全闊) */
+    /* 2. 底部上拉抽屜 (第一下拉上去更高：86vh + translateY(16%)) */
     #bottom-sheet {
       position: fixed; left: 0; right: 0; bottom: 0;
-      height: 82vh; max-height: 86vh;
+      height: 86vh; max-height: 90vh;
       background: rgba(255, 255, 255, 0.98);
       backdrop-filter: blur(12px);
       border-radius: 20px 20px 0 0;
@@ -53,20 +53,21 @@
       border: 1px solid rgba(226, 232, 240, 0.9);
     }
     #bottom-sheet.sheet-collapsed { transform: translateY(calc(100% - 76px)); }
-    #bottom-sheet.sheet-half { transform: translateY(32%); }
+    /* ★ 第一下拉上去拉高啲 (只留 16% 距離底部) */
+    #bottom-sheet.sheet-half { transform: translateY(16%); }
     #bottom-sheet.sheet-full { transform: translateY(0%); }
     #bottom-sheet.dragging { transition: none !important; }
 
-    /* ★ 平板模式 (>= 768px)：平時電話 Size (390px) 泊右下角，有 Step 4 轉車先變闊 (780px) 左右並排 */
+    /* ★ 平板模式 (>= 768px)：平時 450px 泊右下角，轉車 Step 4 變 900px 雙欄並排 */
     @media (min-width: 768px) {
       #bottom-sheet {
         left: auto;
         right: 16px;
-        width: 500px;
+        width: 450px;
         max-width: calc(100vw - 32px);
       }
       #bottom-sheet.has-transfer {
-        width: 1000px;
+        width: 900px;
       }
       #sheet-body {
         flex-direction: row !important;
@@ -82,7 +83,7 @@
       }
     }
 
-    /* ★ 電話模式 (< 768px)：轉車時顯示頂部 Tab 切換 */
+    /* 電話模式 (< 768px) */
     @media (max-width: 767px) {
       #bottom-sheet.has-transfer #mobile-leg-tabs { display: flex; }
       #bottom-sheet.has-transfer.mobile-show-leg2 #primary-panel { display: none !important; }
@@ -137,10 +138,10 @@
     #routeInputDisplay { font-size: 16px; font-weight: 800; color: var(--primary); }
     #transferRouteInputDisplay { font-size: 16px; font-weight: 800; color: var(--secondary); }
 
-    /* 固定高度輸入與鍵盤區（數字鍵鎖死唔跳位，下面只顯示可撳字母） */
+    /* ★ 鍵盤方格拉高 20% (276px -> 332px) */
     #step1-layout, #transfer-step1-layout {
       display: flex; align-items: stretch; gap: 8px;
-      height: 276px; min-height: 276px; max-height: 276px;
+      height: 332px; min-height: 332px; max-height: 332px;
       margin-bottom: 8px; background: #f8fafc; border: 1px solid var(--border);
       border-radius: 12px; padding: 8px; overflow: hidden;
     }
@@ -158,7 +159,7 @@
     #transfer-step1-layout.compact-mode #transfer-route-search-area { display: none; }
 
     #vk-container, #transferVkContainer {
-      width: 190px; flex-shrink: 0; display: flex; flex-direction: column;
+      width: 200px; flex-shrink: 0; display: flex; flex-direction: column;
       justify-content: flex-start; height: 100%; overflow: hidden;
     }
     #step1-layout.compact-mode #vk-container,
@@ -166,27 +167,28 @@
       width: auto; height: auto; flex-direction: row; justify-content: flex-end;
     }
 
-    .vk-top-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 4px; flex-shrink: 0; }
+    .vk-top-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin-bottom: 5px; flex-shrink: 0; }
+    /* ★ 數字鍵隨方格加高 20% (34px -> 41px) */
     .vk-numpad-grid {
-      display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(4, 34px);
-      gap: 4px; margin-bottom: 6px; flex-shrink: 0;
+      display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(4, 41px);
+      gap: 5px; margin-bottom: 6px; flex-shrink: 0;
     }
     .vk-letters-wrap {
       flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-wrap: wrap;
-      align-content: flex-start; gap: 4px; padding-top: 4px; border-top: 1px dashed #cbd5e1;
+      align-content: flex-start; gap: 4px; padding-top: 5px; border-top: 1px dashed #cbd5e1;
     }
     .vk-key {
-      display: flex; align-items: center; justify-content: center; border-radius: 7px;
+      display: flex; align-items: center; justify-content: center; border-radius: 8px;
       border: 1px solid #cbd5e1; background: #fff; cursor: pointer; user-select: none;
-      font-size: 15px; font-weight: 700; color: var(--text-main); box-shadow: 0 1px 0 #cbd5e1;
+      font-size: 16px; font-weight: 700; color: var(--text-main); box-shadow: 0 1px 0 #cbd5e1;
       margin: 0; padding: 0; height: 100%;
     }
     .vk-key.letter-key {
-      width: calc(25% - 3px); height: 29px; font-size: 13px;
+      width: calc(25% - 3px); height: 34px; font-size: 13.5px;
       background: #eff6ff; color: var(--primary-dark); border-color: #93c5fd;
     }
     .vk-key.disabled { opacity: 0.2; cursor: default; box-shadow: none; background: #e2e8f0; pointer-events: none; }
-    .vk-key.special { height: 30px; padding: 0 10px; background: #fffbeb; border-color: #fde68a; font-size: 12.5px; }
+    .vk-key.special { height: 35px; padding: 0 10px; background: #fffbeb; border-color: #fde68a; font-size: 13px; }
 
     .route-item { padding: 7px 8px; cursor: pointer; border-bottom: 1px solid #f1f5f9; font-size: 13px; font-weight: 500; border-radius: 6px; }
     .route-item:hover { background: var(--primary-light); }
@@ -213,11 +215,8 @@
     .sun-advice-box { background: linear-gradient(90deg, #fffbeb, #fef3c7); color: #92400e; border-left: 3px solid #f59e0b; }
     .walk-user-box { background: #f3e8ff; color: #6b21a8; border-left: 3px solid #9333ea; }
 
-    #interchangeInfo {
-      margin-top: 6px; font-size: 12px; font-weight: 600; color: var(--primary-dark);
-      background: #eff6ff; padding: 6px 10px; border-radius: 8px; border-left: 3px solid var(--primary);
-    }
-    #interchangeInfo:empty { display: none; }
+    /* ★ 徹底隱藏「轉車模式：上車站...」嗰句 */
+    #interchangeInfo { display: none !important; }
     #interchangeControls { margin-top: 4px; }
 
     .stop-list { margin-top: 6px; border-top: 1px solid var(--border); }
@@ -257,6 +256,30 @@
     #transferWalkInfo { margin-top: 6px; padding: 6px 10px; background: #f0fdf4; border-left: 3px solid var(--walk-green); border-radius: 6px; font-size: 12px; color: #166534; }
     #transferWalkInfo:empty { display: none; }
 
+    /* ★ 頂部長期追蹤常駐通知卡 (配合系統 Notification 雙重顯示，左邊車到倒數、右邊步程倒數) */
+    #live-track-banner {
+      display: none;
+      position: fixed; top: 10px; left: 50%; transform: translateX(-50%);
+      width: calc(100vw - 20px); max-width: 500px;
+      background: rgba(15, 23, 42, 0.95); color: #fff;
+      border-radius: 14px; padding: 10px 14px;
+      z-index: 9500; box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+      backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.15);
+      align-items: stretch; justify-content: space-between; gap: 10px;
+    }
+    #live-track-banner.active { display: flex; }
+    .ltb-left { flex: 1.2; border-right: 1px solid rgba(255,255,255,0.2); padding-right: 10px; display: flex; flex-direction: column; justify-content: center; }
+    .ltb-right { flex: 1; padding-left: 2px; display: flex; flex-direction: column; justify-content: center; }
+    .ltb-route { font-size: 13px; font-weight: 800; color: #60a5fa; }
+    .ltb-stop { font-size: 12px; color: #e2e8f0; margin-top: 2px; }
+    .ltb-eta { font-size: 15px; font-weight: 800; color: #fde047; margin-top: 3px; }
+    .ltb-walk-dist { font-size: 12px; color: #c084fc; font-weight: 700; }
+    .ltb-walk-time { font-size: 14px; font-weight: 800; color: #4ade80; margin-top: 3px; }
+    .ltb-close {
+      background: transparent; border: none; color: #94a3b8; font-size: 16px;
+      padding: 0 4px; margin: 0; cursor: pointer; align-self: flex-start;
+    }
+
     #toast-msg {
       visibility: hidden; width: auto; max-width: 85%; min-width: 200px; background-color: rgba(15, 23, 42, 0.92);
       color: #fff; text-align: center; border-radius: 999px; padding: 10px 20px; position: fixed;
@@ -273,6 +296,20 @@
 </head>
 <body>
   <div id="map"></div>
+
+  <!-- 常駐追蹤通知橫額（左邊車到倒數｜右邊步程倒數） -->
+  <div id="live-track-banner">
+    <div class="ltb-left">
+      <div class="ltb-route" id="ltbRoute">--</div>
+      <div class="ltb-stop" id="ltbStop">--</div>
+      <div class="ltb-eta" id="ltbEta">--</div>
+    </div>
+    <div class="ltb-right">
+      <div class="ltb-walk-dist" id="ltbWalkDist">--</div>
+      <div class="ltb-walk-time" id="ltbWalkTime">--</div>
+    </div>
+    <button class="ltb-close" id="ltbCloseBtn" title="停止追蹤通知">✕</button>
+  </div>
 
   <div id="bottom-sheet" class="sheet-collapsed">
     <div id="sheet-header">
