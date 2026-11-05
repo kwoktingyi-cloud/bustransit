@@ -6189,7 +6189,7 @@ async function drawUserWalkRouteToStop(stopId) {
 }
 
 // =========================================================================
-// ★ 升級版「步驟 3」：Android 專業排版 Notification + 動態倒數 Icon
+// ★ 1. 升級版 Android 通知列 + 256x256 動態進度環車牌 Logo
 // =========================================================================
 
 if ("serviceWorker" in navigator) {
@@ -6201,39 +6201,102 @@ if ("serviceWorker" in navigator) {
   });
 }
 
-// 將普通數字轉為 Unicode Sans-Serif 粗體數字 (例如 10 -> 𝟭𝟬)，令到站時間更搶眼
-function toBoldDigits(str) {
-  return String(str).replace(/[0-9]/g, d => String.fromCodePoint(0x1D7EC + parseInt(d)));
+// 繪製圓角矩形 Helper (兼容所有 Android WebView / Chrome)
+function drawRoundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
 }
 
-// 動態用 Canvas 畫一張「倒數分鐘」高清正方形 Icon 俾 Android 通知列顯示
-function createCountdownBadgeIcon(minutesLeft, routeCode) {
+// ★ 升級版右邊動態 Logo：車牌頂欄 + 圓形倒數進度環 + 特大分鐘 + 底部到站時間膠囊
+function createCountdownBadgeIcon(minutesLeft, routeCode, hhmmStr) {
   try {
+    const size = 256;
     const canvas = document.createElement("canvas");
-    canvas.width = 192;
-    canvas.height = 192;
+    canvas.width = size;
+    canvas.height = size;
     const ctx = canvas.getContext("2d");
 
-    // 圓角背景（即將到達用紅底，平時用深藍底）
-    ctx.fillStyle = minutesLeft <= 1 ? "#d32f2f" : "#1565c0";
-    ctx.beginPath();
-    ctx.roundRect(8, 8, 176, 176, 36);
+    const isUrgent = minutesLeft <= 2;
+
+    // 1. 圓角漸層底卡
+    const grad = ctx.createLinearGradient(0, 0, 0, size);
+    if (isUrgent) {
+      grad.addColorStop(0, "#ef4444");
+      grad.addColorStop(1, "#991b1b");
+    } else {
+      grad.addColorStop(0, "#1d4ed8");
+      grad.addColorStop(1, "#0f172a");
+    }
+    drawRoundRect(ctx, 8, 8, size - 16, size - 16, 48);
+    ctx.fillStyle = grad;
     ctx.fill();
 
-    // 頂部顯示路線號
-    ctx.fillStyle = "rgba(255,255,255,0.85)";
-    ctx.font = "bold 34px sans-serif";
-    ctx.textAlign = "center";
-    ctx.fillText(routeCode || "BUS", 96, 52);
+    // 外框微光邊線
+    ctx.lineWidth = 4;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.22)";
+    ctx.stroke();
 
-    // 中間超大字顯示倒數分鐘
+    // 2. 頂部巴士路線膠囊 (例如 89S)
+    drawRoundRect(ctx, 36, 22, size - 72, 46, 23);
+    ctx.fillStyle = "rgba(255, 255, 255, 0.18)";
+    ctx.fill();
+
     ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 76px sans-serif";
-    ctx.fillText(minutesLeft <= 0 ? "0" : String(minutesLeft), 96, 128);
+    ctx.font = "bold 32px -apple-system, Roboto, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "middle";
+    ctx.fillText(routeCode || "BUS", size / 2, 46);
 
-    // 底部顯示「分鐘」
-    ctx.font = "bold 28px sans-serif";
-    ctx.fillText(minutesLeft <= 0 ? "即將到" : "分鐘", 96, 166);
+    // 3. 中央背景進度圓環 (以 20 分鐘為一圈比例)
+    const cx = size / 2;
+    const cy = 136;
+    const radius = 54;
+
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, Math.PI * 2);
+    ctx.lineWidth = 10;
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.14)";
+    ctx.stroke();
+
+    const progress = Math.max(0.05, Math.min(1, (20 - Math.max(0, minutesLeft)) / 20));
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
+    ctx.lineWidth = 10;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = isUrgent ? "#fde047" : "#38bdf8";
+    ctx.stroke();
+
+    // 4. 中央特大倒數數字 + 「分」字
+    ctx.fillStyle = "#ffffff";
+    if (minutesLeft <= 0) {
+      ctx.font = "bold 40px -apple-system, Roboto, sans-serif";
+      ctx.fillText("即將", cx, cy - 8);
+      ctx.font = "bold 24px -apple-system, Roboto, sans-serif";
+      ctx.fillStyle = "#fde047";
+      ctx.fillText("到站", cx, cy + 24);
+    } else {
+      ctx.font = "bold 64px -apple-system, Roboto, sans-serif";
+      ctx.fillText(String(minutesLeft), cx, cy - 6);
+      ctx.font = "bold 22px -apple-system, Roboto, sans-serif";
+      ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
+      ctx.fillText("分鐘", cx, cy + 32);
+    }
+
+    // 5. 底部預計到站時間標籤 (例如 20:48)
+    if (hhmmStr) {
+      drawRoundRect(ctx, 54, 204, size - 108, 34, 17);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.35)";
+      ctx.fill();
+
+      ctx.fillStyle = "#fde047";
+      ctx.font = "bold 23px monospace, sans-serif";
+      ctx.fillText(hhmmStr, size / 2, 222);
+    }
 
     return canvas.toDataURL("image/png");
   } catch (e) {
@@ -6268,7 +6331,6 @@ async function updatePersistentTrackingNotification() {
   const now = new Date();
   const diffMin = Math.round((selectedEtaTime - now) / 60000);
 
-  // 架車開走咗 (< 0 分鐘) 即刻自動關閉通知
   if (diffMin < 0) {
     stopPersistentTrackingNotification();
     return;
@@ -6292,39 +6354,37 @@ async function updatePersistentTrackingNotification() {
 
   const hh = String(selectedEtaTime.getHours()).padStart(2, "0");
   const mm = String(selectedEtaTime.getMinutes()).padStart(2, "0");
+  const hhmmStr = `${hh}:${mm}`;
 
-  // ★ 乾淨 4 行直排格式 + Unicode 粗體到站時間：
-  // 89S (往水泉澳總站)
-  // 烏溪沙路
-  // 𝟭𝟬 分鐘 (20:48)
-  // 距離421米 (3分鐘)
+  // ★ Even G2 + Android 雙棲最佳排版：
+  // 唔用複雜 Emoji，確保 G2 綠色 Micro-LED 字體 100% 清晰無方格
   const titleText = `${currentRoute.route} (往${dirTerm})`;
-  const etaLine = diffMin <= 0
-    ? `即將到達 (${hh}:${mm})`
-    : `${toBoldDigits(diffMin)} 分鐘 (${hh}:${mm})`;
+  const stopLine  = `${stopName}`;
+  const etaLine   = diffMin <= 0
+    ? `即將到達 (${hhmmStr})`
+    : `${diffMin} 分鐘 (${hhmmStr})`;
 
-  const walkLine = (currentWalkDistMeters != null && currentWalkMinutes != null)
-    ? `距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`
-    : "";
-
-  const bodyLines = [stopName, etaLine];
-  if (walkLine) bodyLines.push(walkLine);
+  const bodyLines = [stopLine, etaLine];
+  if (currentWalkDistMeters != null && currentWalkMinutes != null) {
+    bodyLines.push(`距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`);
+  }
 
   if (!("Notification" in window) || Notification.permission !== "granted") return;
 
-  const badgeIconUrl = createCountdownBadgeIcon(diffMin, currentRoute.route);
+  // 手機通知列繼續顯示右邊靚靚動態倒數 Logo
+  const badgeIconUrl = createCountdownBadgeIcon(diffMin, currentRoute.route, hhmmStr);
 
   const options = {
     body: bodyLines.join("\n"),
-    icon: badgeIconUrl,           // ★ 右側顯示動態「倒數分鐘」高清圖示
+    icon: badgeIconUrl,
     tag: "bus-eta-tracker",
-    renotify: false,
-    requireInteraction: true,     // ★ 常駐通知列
-    silent: true,
+    renotify: true,               // ★ 改為 true！令 Even G2 每分鐘都會收到更新並自動喺鏡片亮起
+    requireInteraction: true,     // ★ 手機通知列保持常駐
     actions: [
       { action: "stop", title: "停止追蹤" }
     ]
   };
+
 
   try {
     if ("serviceWorker" in navigator) {
@@ -6338,43 +6398,79 @@ async function updatePersistentTrackingNotification() {
   } catch (e) {}
 }
 
-async function startPersistentTrackingNotification() {
-  if ("Notification" in window && Notification.permission !== "granted") {
-    try { await Notification.requestPermission(); } catch (e) {}
-  }
-  await updatePersistentTrackingNotification();
 
-  if (busNotificationTimer) clearInterval(busNotificationTimer);
-  busNotificationTimer = setInterval(() => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(pos => {
-        userLat = pos.coords.latitude;
-        userLon = pos.coords.longitude;
-        renderUserLocationSpot();
-        if (originStopId) {
-          const info = allStopsMap.get(originStopId);
-          if (info && info.lat && info.long) {
-            currentWalkDistMeters = Math.round(haversineDistanceMeters(userLat, userLon, parseFloat(info.lat), parseFloat(info.long)));
-            currentWalkMinutes = Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
-          }
-        }
-        updatePersistentTrackingNotification();
-      }, () => updatePersistentTrackingNotification());
-    } else {
-      updatePersistentTrackingNotification();
-    }
-  }, 60000);
+// =========================================================================
+// ★ 2. 平板 Mode 左右兩欄「轉車站」自動水平對齊 (半開 / 全開 / 下拉都對齊)
+// =========================================================================
+
+function alignTabletTransferStops(scrollIntoHalfView = false) {
+  const stopListEl = document.getElementById("stopList");
+  const transferStopBlock = document.getElementById("transfer-stop-block");
+  if (!stopListEl || !transferStopBlock) return;
+
+  // 先清走舊嘅補償間距
+  stopListEl.style.marginTop = "6px";
+  transferStopBlock.style.marginTop = "6px";
+
+  // 只喺平板 Mode (>= 768px) 且已經揀咗第一程轉車站 & 第二程轉車站時對齊
+  if (window.innerWidth < 768 || mode !== "interchange_pair" || !transferStopId || !transferCurrentStopId) {
+    return;
+  }
+
+  const primaryPanel = document.getElementById("primary-panel");
+  const transferPanel = document.getElementById("transfer-search-section");
+  if (!primaryPanel || !transferPanel) return;
+
+  let leftTransferEl = document.querySelector(`#stopList .stop-item[data-stop-id="${transferStopId}"][data-seq="${transferSeq}"]`);
+  if (!leftTransferEl) leftTransferEl = document.querySelector(`#stopList .stop-item[data-stop-id="${transferStopId}"]`);
+
+  let rightTransferEl = document.querySelector(`#transferStopList .stop-item[data-stop-id="${transferCurrentStopId}"][data-seq="${window.transferCurrentSeq}"]`);
+  if (!rightTransferEl) rightTransferEl = document.querySelector(`#transferStopList .stop-item.selected`);
+
+  if (!leftTransferEl || !rightTransferEl) return;
+
+  // 計算左右兩個轉車站距離各自 Panel 內容頂部嘅真實距離
+  const leftOffset = (leftTransferEl.getBoundingClientRect().top - primaryPanel.getBoundingClientRect().top) + primaryPanel.scrollTop;
+  const rightOffset = (rightTransferEl.getBoundingClientRect().top - transferPanel.getBoundingClientRect().top) + transferPanel.scrollTop;
+
+  const diff = leftOffset - rightOffset;
+
+  // 如果左邊轉車站位置低過右邊（因為左邊上面有上車站 ETA），自動推低右邊轉車站令兩邊水平對齊！
+  if (diff > 4) {
+    transferStopBlock.style.marginTop = `${6 + Math.round(diff)}px`;
+  } else if (diff < -4) {
+    stopListEl.style.marginTop = `${6 + Math.round(-diff)}px`;
+  }
+
+  // 如果處於半開 (half) 或下拉 (peek) 狀態，同步兩邊 Scroll 位置，確保兩個轉車站齊齊整整露喺畫面中間
+  if (scrollIntoHalfView || currentSheetState === "half" || currentSheetState === "peek") {
+    const targetScroll = Math.max(0, Math.max(leftOffset, rightOffset) - 70);
+    primaryPanel.scrollTo({ top: targetScroll, behavior: "smooth" });
+    transferPanel.scrollTo({ top: targetScroll, behavior: "smooth" });
+  }
 }
 
-const _origSetTrackingEta = setTrackingEta;
-setTrackingEta = function(etaObj, rowElement) {
-  _origSetTrackingEta(etaObj, rowElement);
-  if (rowElement) {
-    startPersistentTrackingNotification();
-  } else if (busNotificationTimer) {
-    updatePersistentTrackingNotification();
+// 掛鈎 selectTransferStop、loadEtaDetailForStop 同埋 setBottomSheetState，確保揀完轉車站或展開半開時自動對齊
+const _origSelectTransferStopForAlign = selectTransferStop;
+selectTransferStop = async function(stopId, seq) {
+  await _origSelectTransferStopForAlign(stopId, seq);
+  setTimeout(() => alignTabletTransferStops(true), 80);
+};
+
+const _origSetBottomSheetStateForAlign = setBottomSheetState;
+setBottomSheetState = function(state) {
+  _origSetBottomSheetStateForAlign(state);
+  if (window.innerWidth >= 768 && mode === "interchange_pair") {
+    setTimeout(() => alignTabletTransferStops(state === "half" || state === "peek"), 100);
   }
 };
+
+window.addEventListener("resize", () => {
+  if (window.innerWidth >= 768 && mode === "interchange_pair") {
+    alignTabletTransferStops(false);
+  }
+});
+
 
 
 // --- 4. ☀️ 計算香港實時太陽方位 & 上車坐左邊定右邊建議 ---
