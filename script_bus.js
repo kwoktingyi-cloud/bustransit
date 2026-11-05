@@ -6359,11 +6359,203 @@ async function clearOldBusNotifications() {
   }
 }
 
+
+var gpsWatchId = null;
+
 function stopPersistentTrackingNotification() {
   stopWorkerInterval();
   stopSilentAudioKeepAlive();
-  clearOldBusNotifications();
+
+  if (gpsWatchId !== null && navigator.geolocation) {
+    navigator.geolocation.clearWatch(gpsWatchId);
+    gpsWatchId = null;
+  }
+
+  if (activeBusNotification && typeof activeBusNotification.close === "function") {
+    try { activeBusNotification.close(); } catch (e) {}
+    activeBusNotification = null;
+  }
+  if ("serviceWorker" in navigator) {
+    navigator.serviceWorker.getRegistration().then(reg => {
+      if (reg && reg.getNotifications) {
+        reg.getNotifications({ tag: "bus-eta-tracker" }).then(list => list.forEach(n => n.close()));
+      }
+    }).catch(() => {});
+  }
 }
+
+// ★ 真・實時更新：每分鐘同時更新「九巴/城巴最新ETA」+「OSRM 實際剩餘步程米數與時間」
+async function updatePersistentTrackingNotification() {
+  if (!selectedEtaTime || !currentRoute || !originStopId) {
+    stopPersistentTrackingNotification();
+    return;
+  }
+
+  // 1) 重新向九巴 / 城巴 API 查詢該站最新班次，修正塞車或早到嘅時間
+  try {
+    const company = currentRoute.company || "KMB";
+    const routeName = currentRoute.route;
+    const data = await BusAPI.getEta(company, originStopId, routeName, currentServiceType);
+    let list = (data.data || []).filter(item => {
+      if (!item.eta) return false;
+      const rmk = String(item.rmk_tc || "");
+      if (rmk.includes("時段") || rmk.includes("預定班次") || rmk === "離開") return false;
+      if (originSeq && parseInt(item.seq) !== parseInt(originSeq)) return false;
+      if (company === "KMB" && currentDirectionCode && item.dir !== currentDirectionCode) return false;
+      return true;
+    });
+
+    if (list.length > 0) {
+      const candidates = list.map((item, idx) => {
+        const d = formatDetailLine(item);
+        return d.etaTime ? { index: idx, time: d.etaTime, status: d.status } : null;
+      }).filter(Boolean);
+
+      // 搵返同你追蹤緊嗰班車最接近嘅實時班次（容許誤差內自動更新 selectedEtaTime）
+      const match = findClosestMatchingBus(selectedEtaTime, selectedEtaStatus || "departed", candidates);
+      if (match && match.type === "ok" && match.bus && match.bus.time) {
+        selectedEtaTime = match.bus.time;
+      }
+    }
+  } catch (e) {
+    console.warn("背景更新巴士 ETA 失敗，沿用上次時間:", e.message);
+  }
+
+  const now = new Date();
+  const diffMin = Math.round((selectedEtaTime - now) / 60000);
+
+  // 當架車已經開走咗 (< 0 分鐘)，自動關閉通知並停止追蹤
+  if (diffMin < 0) {
+    stopPersistentTrackingNotification();
+    return;
+  }
+
+  // 2) 根據你最新 GPS 位置，重新計算去上車站嘅實際步行米數與時間 (5km/h)
+  if (userLat != null && userLon != null && originStopId) {
+    const info = allStopsMap.get(originStopId);
+    if (info && info.lat && info.long) {
+      const sLat = parseFloat(info.lat);
+      const sLon = parseFloat(info.long);
+      const straightDist = haversineDistanceMeters(userLat, userLon, sLat, sLon);
+
+      // 先用直線距離保底
+      currentWalkDistMeters = Math.round(straightDist * 1.2);
+      currentWalkMinutes = currentWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
+
+      // 再拉取 OSRM 實際行人路剩餘米數，並同步更新地圖紫線同畫面提示
+      if (straightDist >= 15 && straightDist < 15000) {
+        try {
+          const coordsStr = `${userLon.toFixed(6)},${userLat.toFixed(6)};${sLon.toFixed(6)},${sLat.toFixed(6)}`;
+          const res = await fetch(`https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coordsStr}?overview=full&geometries=geojson`);
+          if (res.ok) {
+            const routeData = await res.json();
+            if (routeData && routeData.routes && routeData.routes[0]) {
+              const r = routeData.routes[0];
+              currentWalkDistMeters = Math.round(r.distance || straightDist);
+              currentWalkMinutes = currentWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
+
+              // 同步更新埋地圖條紫色步行線同文字框
+              const coords = r.geometry.coordinates.map(c => [c[1], c[0]]);
+              if (userToStopRouteLayer && map && map.hasLayer(userToStopRouteLayer)) {
+                userToStopRouteLayer.setLatLngs(coords);
+              }
+              const walkBox = document.getElementById("userWalkInfo");
+              const stopObj = routeStops.find(s => s.stop_id === originStopId);
+              const sName = stopObj ? stripBracketCode(stopObj.name_tc) : "車站";
+              if (walkBox) {
+                walkBox.textContent = `🚶 由你位置行去「${sName}」：約 ${currentWalkMinutes} 分鐘（實際步程 ${currentWalkDistMeters} 米）`;
+              }
+            }
+          }
+        } catch (e) {}
+      }
+    }
+  }
+
+  // 3) 組合最新 4 行通知內容 + 動態倒數 Logo
+  const dirTerm = currentDirection === "inbound"
+    ? (inboundTerminalName !== "?" ? inboundTerminalName : stripBracketCode(currentRoute.dest_tc))
+    : (outboundTerminalName !== "?" ? outboundTerminalName : stripBracketCode(currentRoute.orig_tc));
+
+  const stopObj = routeStops.find(s => s.stop_id === originStopId);
+  const stopName = stopObj ? stripBracketCode(stopObj.name_tc) : "";
+
+  const hh = String(selectedEtaTime.getHours()).padStart(2, "0");
+  const mm = String(selectedEtaTime.getMinutes()).padStart(2, "0");
+  const hhmmStr = `${hh}:${mm}`;
+
+  const titleText = `${currentRoute.route} (往${dirTerm})`;
+  const etaLine   = diffMin <= 0
+    ? `即將到達 (${hhmmStr})`
+    : `${diffMin} 分鐘 (${hhmmStr})`;
+
+  const bodyLines = [stopName, etaLine];
+  if (currentWalkDistMeters != null && currentWalkMinutes != null) {
+    const walkLine = currentWalkDistMeters < 20
+      ? `已到達車站附近 (${currentWalkDistMeters}米)`
+      : `距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`;
+    bodyLines.push(walkLine);
+  }
+
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+  const badgeIconUrl = createCountdownBadgeIcon(diffMin, currentRoute.route, hhmmStr);
+
+  const options = {
+    body: bodyLines.join("\n"),
+    icon: badgeIconUrl,
+    tag: "bus-eta-tracker",
+    renotify: true,
+    requireInteraction: true
+  };
+
+  try {
+    if ("serviceWorker" in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg && reg.showNotification) {
+        await reg.showNotification(titleText, options);
+        return;
+      }
+    }
+    activeBusNotification = new Notification(titleText, options);
+  } catch (e) {}
+}
+
+async function startPersistentTrackingNotification() {
+  if ("Notification" in window && Notification.permission !== "granted") {
+    try { await Notification.requestPermission(); } catch (e) {}
+  }
+
+  if ("Notification" in window && Notification.permission === "denied") {
+    showToast("⚠️ 通知已被封鎖，請撳網址列鎖頭允許通知");
+    return;
+  }
+
+  startSilentAudioKeepAlive();
+
+  // ★ 啟動 watchPosition 持續高精度定位（你一邊行，userLat/userLon 實時變，唔會讀舊 Cache）
+  if (navigator.geolocation) {
+    if (gpsWatchId !== null) navigator.geolocation.clearWatch(gpsWatchId);
+    gpsWatchId = navigator.geolocation.watchPosition(
+      pos => {
+        userLat = pos.coords.latitude;
+        userLon = pos.coords.longitude;
+        renderUserLocationSpot();
+      },
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+    );
+  }
+
+  await updatePersistentTrackingNotification();
+
+  // 每 60 秒自動重新拉取巴士 API + 行人路距離並更新通知
+  startWorkerInterval(() => {
+    updatePersistentTrackingNotification();
+  }, 60000);
+}
+
+
 
 // 確保 Service Worker 處於健康狀態（如果之前卡死咗會自動重新註冊並激活）
 async function getHealthySwRegistration() {
@@ -6383,125 +6575,7 @@ async function getHealthySwRegistration() {
   }
 }
 
-async function updatePersistentTrackingNotification() {
-  if (!selectedEtaTime || !currentRoute || !originStopId) {
-    stopPersistentTrackingNotification();
-    return;
-  }
 
-  const now = new Date();
-  const diffMin = Math.round((selectedEtaTime - now) / 60000);
-
-  if (diffMin < 0) {
-    stopPersistentTrackingNotification();
-    return;
-  }
-
-  const dirTerm = currentDirection === "inbound"
-    ? (inboundTerminalName !== "?" ? inboundTerminalName : stripBracketCode(currentRoute.dest_tc))
-    : (outboundTerminalName !== "?" ? outboundTerminalName : stripBracketCode(currentRoute.orig_tc));
-
-  const stopObj = routeStops.find(s => s.stop_id === originStopId);
-  const stopName = stopObj ? stripBracketCode(stopObj.name_tc) : "";
-
-  if (userLat != null && userLon != null && originStopId) {
-    const info = allStopsMap.get(originStopId);
-    if (info && info.lat && info.long) {
-      const d = haversineDistanceMeters(userLat, userLon, parseFloat(info.lat), parseFloat(info.long));
-      currentWalkDistMeters = Math.round(d);
-      currentWalkMinutes = Math.max(1, Math.round(d / (5000 / 60)));
-    }
-  }
-
-  const hh = String(selectedEtaTime.getHours()).padStart(2, "0");
-  const mm = String(selectedEtaTime.getMinutes()).padStart(2, "0");
-  const hhmmStr = `${hh}:${mm}`;
-
-  // 4 行乾淨直排：
-  // 89S (往水泉澳總站)
-  // 烏溪沙路
-  // 10 分鐘 (20:48)
-  // 距離421米 (3分鐘)
-  const titleText = `${currentRoute.route} (往${dirTerm})`;
-  const etaLine   = diffMin <= 0
-    ? `即將到達 (${hhmmStr})`
-    : `${diffMin} 分鐘 (${hhmmStr})`;
-
-  const bodyLines = [stopName, etaLine];
-  if (currentWalkDistMeters != null && currentWalkMinutes != null) {
-    bodyLines.push(`距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`);
-  }
-  const bodyText = bodyLines.join("\n");
-
-  if (!("Notification" in window)) {
-    showToast("⚠️ 此瀏覽器不支援通知功能");
-    return;
-  }
-  if (Notification.permission !== "granted") {
-    const perm = await Notification.requestPermission().catch(() => "denied");
-    if (perm !== "granted") {
-      showToast("⚠️ 請喺瀏覽器設定允許此網站發送通知");
-      return;
-    }
-  }
-
-  const badgeIconUrl = createCountdownBadgeIcon(diffMin, currentRoute.route, hhmmStr);
-
-  // ★ 先清走舊通知，再用新序號 tag 發送，徹底防止 Samsung One UI 吞通知！
-  await clearOldBusNotifications();
-  const dynamicTag = `bus-eta-${++notiUpdateCounter}`;
-
-  const options = {
-    body: bodyText,
-    icon: badgeIconUrl,
-    tag: dynamicTag,
-    requireInteraction: true
-  };
-
-  // 1) 優先用健康嘅 Service Worker 彈出 Android 系統通知列
-  const reg = await getHealthySwRegistration();
-  if (reg && reg.showNotification) {
-    try {
-      await reg.showNotification(titleText, options);
-      return;
-    } catch (swErr) {
-      // 萬一 Icon 被擋，即刻用純文字補發
-      try {
-        await reg.showNotification(titleText, { body: bodyText, tag: dynamicTag });
-        return;
-      } catch (swErr2) {}
-    }
-  }
-
-  // 2) 後備：桌面或一般瀏覽器 Notification
-  try {
-    activeBusNotification = new Notification(titleText, options);
-  } catch (err) {
-    showToast("⚠️ 無法彈出通知，請關閉此分頁再重開一次");
-  }
-}
-
-async function startPersistentTrackingNotification() {
-  startSilentAudioKeepAlive();
-  await updatePersistentTrackingNotification();
-
-  startWorkerInterval(() => {
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        pos => {
-          userLat = pos.coords.latitude;
-          userLon = pos.coords.longitude;
-          renderUserLocationSpot();
-          updatePersistentTrackingNotification();
-        },
-        () => updatePersistentTrackingNotification(),
-        { maximumAge: 30000, timeout: 5000 }
-      );
-    } else {
-      updatePersistentTrackingNotification();
-    }
-  }, 60000);
-}
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && bgTimerWorker && selectedEtaTime) {
