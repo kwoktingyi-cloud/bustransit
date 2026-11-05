@@ -5799,3 +5799,366 @@ function clearSecondRouteVisual() {
 
   resetFirstRouteFull();
 }
+
+
+/* =========================================================================
+   ★ UI 終極升級：全螢幕地圖上拉抽屜 (Bottom Sheet) + 固定高度不跳動鍵盤 + 轉車雙欄/Tab
+   ========================================================================= */
+
+// 香港巴士路線會出現嘅 18 個英文字母（固定 6x3 格位，永不跳動）
+const FIXED_BUS_LETTERS = [
+  "A", "B", "C", "D", "E", "F",
+  "H", "K", "M", "N", "P", "R",
+  "S", "T", "U", "W", "X", "Z"
+];
+
+// 1. 覆蓋 Step 1 虛擬鍵盤（固定 Grid 高度，唔再因為字母減少而跳位）
+function renderVirtualKeyboard() {
+  const container = document.getElementById("vk-container");
+  const layout = document.getElementById("step1-layout");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (currentRoute && keyboardHidden) {
+    if (layout) layout.classList.add("compact-mode");
+    const clear = document.createElement("div");
+    clear.className = "vk-key special";
+    clear.textContent = "✕ 重設路線";
+    clear.style.backgroundColor = "#fee2e2";
+    clear.style.color = "#b91c1c";
+    clear.style.borderColor = "#fecaca";
+    clear.onclick = () => {
+      resetAllState();
+      setBottomSheetState("half");
+    };
+    container.appendChild(clear);
+    return;
+  }
+
+  if (layout) layout.classList.remove("compact-mode");
+
+  const baseRoutes = currentInput ? candidateRoutes : uniqueRoutes;
+  const usage = computeNextCharUsage(baseRoutes, currentInput);
+
+  // (A) 頂部控制鍵：刪除 & 清除(X)
+  const topRow = document.createElement("div");
+  topRow.className = "vk-top-grid";
+
+  const backspace = document.createElement("div");
+  backspace.className = "vk-key special";
+  backspace.textContent = "⌫ 刪除";
+  backspace.onclick = () => {
+    if (currentRoute) return;
+    if (currentInput.length > 0) {
+      currentInput = currentInput.slice(0, -1);
+      updateAfterInputChange();
+    }
+  };
+
+  const clear = document.createElement("div");
+  clear.className = "vk-key special";
+  clear.textContent = "✕ 清除";
+  clear.style.backgroundColor = "#fee2e2";
+  clear.style.color = "#b91c1c";
+  clear.onclick = () => {
+    resetAllState();
+  };
+
+  topRow.appendChild(backspace);
+  topRow.appendChild(clear);
+  container.appendChild(topRow);
+
+  // (B) 固定 3x4 數字 Numpad
+  const numpadGrid = document.createElement("div");
+  numpadGrid.className = "vk-numpad-grid";
+  const digitsOrder = [1, 2, 3, 4, 5, 6, 7, 8, 9, null, 0, null];
+
+  digitsOrder.forEach(d => {
+    const key = document.createElement("div");
+    key.className = "vk-key";
+    if (d === null) {
+      key.style.visibility = "hidden";
+      numpadGrid.appendChild(key);
+      return;
+    }
+    const ch = String(d);
+    key.textContent = ch;
+    if (!usage.digits[ch]) {
+      key.classList.add("disabled");
+    } else {
+      key.onclick = () => {
+        if (!currentRoute) {
+          currentInput += ch;
+          updateAfterInputChange();
+        }
+      };
+    }
+    numpadGrid.appendChild(key);
+  });
+  container.appendChild(numpadGrid);
+
+  // (C) 固定 6x3 英文字母 Grid（永不改變高度）
+  const letterGrid = document.createElement("div");
+  letterGrid.className = "vk-letters-grid";
+
+  FIXED_BUS_LETTERS.forEach(ch => {
+    const key = document.createElement("div");
+    key.className = "vk-key letter-key";
+    key.textContent = ch;
+    if (!usage.letters[ch]) {
+      key.classList.add("disabled");
+    } else {
+      key.onclick = () => {
+        if (!currentRoute) {
+          currentInput += ch;
+          updateAfterInputChange();
+        }
+      };
+    }
+    letterGrid.appendChild(key);
+  });
+  container.appendChild(letterGrid);
+}
+
+// 2. 覆蓋 Step 4 轉車虛擬鍵盤（同樣固定 Grid 高度，永不跳動）
+function renderTransferVirtualKeyboard() {
+  const container = document.getElementById("transferVkContainer");
+  const layout = document.getElementById("transfer-step1-layout");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (transferKeyboardHidden) {
+    if (layout) layout.classList.add("compact-mode");
+    const clear = document.createElement("div");
+    clear.className = "vk-key special";
+    clear.textContent = "✕ 改選轉車線";
+    clear.style.backgroundColor = "#fee2e2";
+    clear.style.color = "#b91c1c";
+    clear.onclick = () => {
+      resetTransferOnly();
+    };
+    container.appendChild(clear);
+    return;
+  }
+
+  if (layout) layout.classList.remove("compact-mode");
+
+  const baseRoutes = transferCurrentInput ? transferCandidateRoutes : uniqueRoutes;
+  const usage = computeNextCharUsage(baseRoutes, transferCurrentInput);
+
+  // (A) 頂部控制鍵
+  const topRow = document.createElement("div");
+  topRow.className = "vk-top-grid";
+
+  const backspace = document.createElement("div");
+  backspace.className = "vk-key special";
+  backspace.textContent = "⌫ 刪除";
+  backspace.onclick = () => {
+    if (transferCurrentInput.length > 0) {
+      transferCurrentInput = transferCurrentInput.slice(0, -1);
+      updateAfterTransferInputChange();
+    }
+  };
+
+  const clear = document.createElement("div");
+  clear.className = "vk-key special";
+  clear.textContent = "✕ 清除";
+  clear.style.backgroundColor = "#fee2e2";
+  clear.style.color = "#b91c1c";
+  clear.onclick = () => {
+    transferCurrentInput = "";
+    transferCandidateRoutes = [];
+    const d1 = document.getElementById("transferRouteInputDisplay");
+    const d2 = document.getElementById("transferRouteList");
+    if (d1) d1.textContent = "(未輸入)";
+    if (d2) d2.textContent = "請輸入路線，會以同名站作為預設轉車站。";
+    renderTransferVirtualKeyboard();
+  };
+
+  topRow.appendChild(backspace);
+  topRow.appendChild(clear);
+  container.appendChild(topRow);
+
+  // (B) 固定 3x4 數字 Numpad
+  const numpadGrid = document.createElement("div");
+  numpadGrid.className = "vk-numpad-grid";
+  const digitsOrder = [1, 2, 3, 4, 5, 6, 7, 8, 9, null, 0, null];
+
+  digitsOrder.forEach(d => {
+    const key = document.createElement("div");
+    key.className = "vk-key";
+    if (d === null) {
+      key.style.visibility = "hidden";
+      numpadGrid.appendChild(key);
+      return;
+    }
+    const ch = String(d);
+    key.textContent = ch;
+    if (!usage.digits[ch]) {
+      key.classList.add("disabled");
+    } else {
+      key.onclick = () => {
+        transferCurrentInput += ch;
+        updateAfterTransferInputChange();
+      };
+    }
+    numpadGrid.appendChild(key);
+  });
+  container.appendChild(numpadGrid);
+
+  // (C) 固定 6x3 英文字母 Grid
+  const letterGrid = document.createElement("div");
+  letterGrid.className = "vk-letters-grid";
+
+  FIXED_BUS_LETTERS.forEach(ch => {
+    const key = document.createElement("div");
+    key.className = "vk-key letter-key";
+    key.textContent = ch;
+    if (!usage.letters[ch]) {
+      key.classList.add("disabled");
+    } else {
+      key.onclick = () => {
+        transferCurrentInput += ch;
+        updateAfterTransferInputChange();
+      };
+    }
+    letterGrid.appendChild(key);
+  });
+  container.appendChild(letterGrid);
+}
+
+// 3. 底部上拉抽屜 (Bottom Sheet) 狀態控制與手勢拖拉
+let currentSheetState = "collapsed"; // "collapsed" | "half" | "full"
+
+function setBottomSheetState(state) {
+  const sheet = document.getElementById("bottom-sheet");
+  const btn = document.getElementById("btnSheetToggle");
+  const hint = document.getElementById("sheetStatusHint");
+  if (!sheet) return;
+
+  currentSheetState = state;
+  sheet.classList.remove("sheet-collapsed", "sheet-half", "sheet-full");
+  sheet.classList.add(`sheet-${state}`);
+
+  if (btn) {
+    if (state === "collapsed") btn.textContent = "展開 ▲";
+    else if (state === "half") btn.textContent = "全開 ▲";
+    else btn.textContent = "收起 ▼";
+  }
+
+  if (hint) {
+    if (currentRoute) {
+      hint.textContent = transferRoute
+        ? `${currentRoute.route} ➔ ${transferRoute.route}`
+        : `路線 ${currentRoute.route}`;
+    } else {
+      hint.textContent = state === "collapsed" ? "向上拉輸入路線" : "請選擇路線與方向";
+    }
+  }
+}
+
+function switchMobileLegTab(legNum) {
+  const sheet = document.getElementById("bottom-sheet");
+  const tab1 = document.getElementById("tabLeg1");
+  const tab2 = document.getElementById("tabLeg2");
+  if (!sheet || !tab1 || !tab2) return;
+
+  if (legNum === 2) {
+    sheet.classList.remove("mobile-show-leg1");
+    sheet.classList.add("mobile-show-leg2");
+    tab1.classList.remove("active-leg1");
+    tab2.classList.add("active-leg2");
+  } else {
+    sheet.classList.remove("mobile-show-leg2");
+    sheet.classList.add("mobile-show-leg1");
+    tab2.classList.remove("active-leg2");
+    tab1.classList.add("active-leg1");
+  }
+}
+
+(function initBottomSheetInteractions() {
+  const sheet = document.getElementById("bottom-sheet");
+  const header = document.getElementById("sheet-header");
+  const btnToggle = document.getElementById("btnSheetToggle");
+  const tab1 = document.getElementById("tabLeg1");
+  const tab2 = document.getElementById("tabLeg2");
+  if (!sheet || !header) return;
+
+  if (tab1) tab1.onclick = () => switchMobileLegTab(1);
+  if (tab2) tab2.onclick = () => switchMobileLegTab(2);
+
+  if (btnToggle) {
+    btnToggle.onclick = (e) => {
+      e.stopPropagation();
+      if (currentSheetState === "collapsed") setBottomSheetState("half");
+      else if (currentSheetState === "half") setBottomSheetState("full");
+      else setBottomSheetState("collapsed");
+    };
+  }
+
+  // 支援手指 Touch & 滑鼠上下拉動抽屜
+  let startY = 0;
+  let deltaY = 0;
+  let isDragging = false;
+
+  const onDragStart = (clientY) => {
+    startY = clientY;
+    deltaY = 0;
+    isDragging = true;
+    sheet.classList.add("dragging");
+  };
+
+  const onDragMove = (clientY) => {
+    if (!isDragging) return;
+    deltaY = clientY - startY;
+  };
+
+  const onDragEnd = () => {
+    if (!isDragging) return;
+    isDragging = false;
+    sheet.classList.remove("dragging");
+
+    if (deltaY < -35) {
+      // 向上拉
+      if (currentSheetState === "collapsed") setBottomSheetState("half");
+      else setBottomSheetState("full");
+    } else if (deltaY > 35) {
+      // 向下拉
+      if (currentSheetState === "full") setBottomSheetState("half");
+      else setBottomSheetState("collapsed");
+    } else {
+      // 輕點頂部欄
+      if (currentSheetState === "collapsed") setBottomSheetState("half");
+    }
+  };
+
+  header.addEventListener("touchstart", (e) => onDragStart(e.touches[0].clientY), { passive: true });
+  header.addEventListener("touchmove", (e) => onDragMove(e.touches[0].clientY), { passive: true });
+  header.addEventListener("touchend", onDragEnd);
+
+  header.addEventListener("mousedown", (e) => onDragStart(e.clientY));
+  window.addEventListener("mousemove", (e) => onDragMove(e.clientY));
+  window.addEventListener("mouseup", onDragEnd);
+
+  // 監聽轉車區塊顯示狀態，自動啟用平板雙欄 / 電話分頁 Tab
+  const tSec = document.getElementById("transfer-search-section");
+  if (tSec) {
+    const observer = new MutationObserver(() => {
+      const isTransferVisible = tSec.style.display !== "none";
+      if (isTransferVisible) {
+        sheet.classList.add("has-transfer");
+        switchMobileLegTab(2); // 揀完轉車站自動切換去第二程 Tab（電話版）
+        if (currentSheetState === "collapsed") setBottomSheetState("half");
+      } else {
+        sheet.classList.remove("has-transfer", "mobile-show-leg2");
+        sheet.classList.add("mobile-show-leg1");
+      }
+      setBottomSheetState(currentSheetState);
+    });
+    observer.observe(tSec, { attributes: true, attributeFilter: ["style"] });
+  }
+
+  // 重新繪製一次新鍵盤
+  renderVirtualKeyboard();
+  renderTransferVirtualKeyboard();
+})();
