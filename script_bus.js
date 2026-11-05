@@ -6425,7 +6425,46 @@ async function updatePersistentTrackingNotification() {
   }
 }
 
+// ★ 補回漏咗嘅啟動器與每分鐘計時器！
+async function startPersistentTrackingNotification() {
+  if ("Notification" in window && Notification.permission !== "granted") {
+    try { await Notification.requestPermission(); } catch (e) {}
+  }
+  await updatePersistentTrackingNotification();
 
+  if (busNotificationTimer) clearInterval(busNotificationTimer);
+  busNotificationTimer = setInterval(() => {
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(pos => {
+        userLat = pos.coords.latitude;
+        userLon = pos.coords.longitude;
+        renderUserLocationSpot();
+        if (originStopId) {
+          const info = allStopsMap.get(originStopId);
+          if (info && info.lat && info.long) {
+            currentWalkDistMeters = Math.round(haversineDistanceMeters(userLat, userLon, parseFloat(info.lat), parseFloat(info.long)));
+            currentWalkMinutes = Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
+          }
+        }
+        updatePersistentTrackingNotification();
+      }, () => updatePersistentTrackingNotification());
+    } else {
+      updatePersistentTrackingNotification();
+    }
+  }, 60000);
+}
+
+// ★ 補回撳「追蹤」掣時觸發通知嘅 Hook！
+const _origSetTrackingEta = setTrackingEta;
+setTrackingEta = function(etaObj, rowElement) {
+  _origSetTrackingEta(etaObj, rowElement);
+  if (rowElement) {
+    showToast("🔔 已啟動到站通知");
+    startPersistentTrackingNotification();
+  } else if (busNotificationTimer) {
+    updatePersistentTrackingNotification();
+  }
+};
 // =========================================================================
 // ★ 2. 平板 Mode 左右兩欄「轉車站」自動水平對齊 (半開 / 全開 / 下拉都對齊)
 // =========================================================================
