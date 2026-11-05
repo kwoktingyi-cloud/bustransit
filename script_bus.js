@@ -152,77 +152,124 @@ function showToast(message) {
 function initMap() {
   if (map) return;
 
-  // 先用預設中心
+  // 1. 初始化地圖，預設中心設於香港
   map = L.map('map').setView([22.32, 114.17], 12);
 
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19,
-    attribution: '&copy; OpenStreetMap contributors'
-  }).addTo(map);
+  // 2. 定義三個高穩定性圖層（解決 c.tile.openstreetmap.org ERR_NAME_NOT_RESOLVED 問題）
+  // (A) 香港政府地政總署 CSDI 官方背景圖 + 繁體中文標籤（香港網絡極速、免 Key）
+  const hkGovBase = L.tileLayer(
+    'https://mapapi.geodata.gov.hk/gs/api/v1.0.0/xyz/basemap/WGS84/{z}/{x}/{y}.png',
+    { maxZoom: 19, attribution: '&copy; 香港地政總署' }
+  );
+  const hkGovLabel = L.tileLayer(
+    'https://mapapi.geodata.gov.hk/gs/api/v1.0.0/xyz/label/hk/tc/WGS84/{z}/{x}/{y}.png',
+    { maxZoom: 19 }
+  );
+  const hkGovLayer = L.layerGroup([hkGovBase, hkGovLabel]);
+
+  // (B) CartoDB Voyager 現代清晰底圖（全球 CDN，極少被封鎖，襯托藍/紅巴士線超靚）
+  const cartoLayer = L.tileLayer(
+    'https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}{r}.png',
+    {
+      subdomains: 'abcd',
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap &copy; CARTO'
+    }
+  );
+
+  // (C) 新版 OpenStreetMap 官方網址（移除已棄用嘅 {s}. 子域名）
+  const osmLayer = L.tileLayer(
+    'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+    {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }
+  );
+
+  // 預設先加香港官方中文地圖；如果載入瓦片失敗自動跳去 CartoDB
+  hkGovLayer.addTo(map);
+  let fallbackTriggered = false;
+  hkGovBase.on('tileerror', () => {
+    if (!fallbackTriggered) {
+      fallbackTriggered = true;
+      console.warn('香港官方地圖連線受阻，自動切換至後備地圖圖層');
+      if (map.hasLayer(hkGovLayer)) map.removeLayer(hkGovLayer);
+      cartoLayer.addTo(map);
+    }
+  });
+
+  // 右上角加入圖層切換器，方便隨時轉口味
+  L.control.layers(
+    {
+      '🇭🇰 香港官方中文地圖': hkGovLayer,
+      '🗺️ 現代簡潔地圖 (Carto)': cartoLayer,
+      '🌍 OpenStreetMap': osmLayer
+    },
+    null,
+    { position: 'topright', collapsed: true }
+  ).addTo(map);
 
   stopsLayer = L.layerGroup().addTo(map);
+
+  // 3. 全螢幕控制掣
   const FullscreenControl = L.Control.extend({
-  options: {
-    position: 'bottomright'
-  },
-  onAdd: function () {
-    const container = L.DomUtil.create('div', 'leaflet-bar');
-    const btn = L.DomUtil.create('div', 'leaflet-control-fullscreen-btn', container);
-    btn.title = '全螢幕 / 還原';
+    options: { position: 'bottomright' },
+    onAdd: function () {
+      const container = L.DomUtil.create('div', 'leaflet-bar');
+      const btn = L.DomUtil.create('div', 'leaflet-control-fullscreen-btn', container);
+      btn.title = '全螢幕 / 還原';
+      btn.textContent = '⤢';
 
-    // 用符號表示：未全螢幕時顯示「⤢」，全螢幕時顯示「⤡」
-    btn.textContent = '⤢';
+      L.DomEvent.disableClickPropagation(container);
+      L.DomEvent.on(btn, 'click', (e) => {
+        e.preventDefault();
+        toggleMapFullscreen();
+      });
 
-    L.DomEvent.disableClickPropagation(container);
-    L.DomEvent.on(btn, 'click', (e) => {
-      e.preventDefault();
-      toggleMapFullscreen();
-    });
+      const updateIcon = () => {
+        const mapDiv = document.getElementById('map');
+        const isFullscreen =
+          document.fullscreenElement === mapDiv ||
+          document.webkitFullscreenElement === mapDiv ||
+          document.mozFullScreenElement === mapDiv ||
+          document.msFullscreenElement === mapDiv;
+        btn.textContent = isFullscreen ? '⤡' : '⤢';
+      };
 
-    // 監聽 fullscreen 狀態改變圖示
-    const updateIcon = () => {
-      const mapDiv = document.getElementById('map');
-      const isFullscreen =
-        document.fullscreenElement === mapDiv ||
-        document.webkitFullscreenElement === mapDiv ||
-        document.mozFullScreenElement === mapDiv ||
-        document.msFullscreenElement === mapDiv;
-      btn.textContent = isFullscreen ? '⤡' : '⤢';
-    };
+      document.addEventListener('fullscreenchange', updateIcon);
+      document.addEventListener('webkitfullscreenchange', updateIcon);
+      document.addEventListener('mozfullscreenchange', updateIcon);
+      document.addEventListener('MSFullscreenChange', updateIcon);
 
-    document.addEventListener('fullscreenchange', updateIcon);
-    document.addEventListener('webkitfullscreenchange', updateIcon);
-    document.addEventListener('mozfullscreenchange', updateIcon);
-    document.addEventListener('MSFullscreenChange', updateIcon);
+      return container;
+    }
+  });
 
-    return container;
+  map.addControl(new FullscreenControl());
+
+  // 4. 取得用家 GPS 位置
+  if (navigator.geolocation) {
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        userLat = pos.coords.latitude;
+        userLon = pos.coords.longitude;
+
+        map.setView([userLat, userLon], 15);
+
+        L.circleMarker([userLat, userLon], {
+          radius: 7,
+          color: '#ffffff',
+          weight: 2,
+          fillColor: '#2e7d32',
+          fillOpacity: 0.95
+        }).addTo(map).bindPopup('📍 你的位置');
+      },
+      (err) => {
+        console.warn('Geolocation error:', err.message);
+      },
+      { enableHighAccuracy: true, timeout: 8000 }
+    );
   }
-});
-
-map.addControl(new FullscreenControl());
-
-  // 之後再試用家 GPS
-if (navigator.geolocation) {
-  navigator.geolocation.getCurrentPosition(
-    (pos) => {
-      userLat = pos.coords.latitude;
-      userLon = pos.coords.longitude;
-
-      map.setView([userLat, userLon], 15);
-
-      L.circleMarker([userLat, userLon], {
-        radius: 6,
-        color: '#2e7d32',
-        fillColor: '#66bb6a',
-        fillOpacity: 0.9
-      }).addTo(map).bindPopup('你的位置');
-    },
-    (err) => {
-      console.warn('Geolocation error:', err.message);
-    },
-    { enableHighAccuracy: true, timeout: 8000 }
-  );
-}
 }
 
 const stopIcon = L.icon({
@@ -274,84 +321,87 @@ async function fetchJSON(url, retries = 5, delayMs = 200) {
 //   dest_tc: "..."
 // }
 
+/* =========================================================================
+   ★ 修復 init() Failed to fetch：移除無用巨型請求 /route-stop + 改用 allSettled 容錯
+   ========================================================================= */
+
 async function loadAllBusData() {
-  // ★ 終極大減產：CTB 淨係可以攞 route！
+  // 改用 Promise.allSettled，並移除無使用且極易斷線嘅 /route-stop 巨型總表請求
   const [
-    kmbRouteRes, kmbStopRes, kmbRouteStopRes,
+    kmbRouteRes,
+    kmbStopRes,
     ctbRouteRes
-  ] = await Promise.all([
-    fetchJSON(`${KMB_BASE}/route/`),
-    fetchJSON(`${KMB_BASE}/stop/`),
-    fetchJSON(`${KMB_BASE}/route-stop`),
-    fetchJSON(`${CTB_BASE}/route/ctb`) // 城巴全村唯一嘅希望
+  ] = await Promise.allSettled([
+    fetchJSON(`${KMB_BASE}/route/`, 3, 400),
+    fetchJSON(`${KMB_BASE}/stop/`, 3, 400),
+    fetchJSON(`${CTB_BASE}/route/ctb`, 3, 400)
   ]);
 
   const allRoutes = [];
   const routeMap = new Map();
-  
+
   allStopsMap = new Map();
   routesByStopId = {};
 
-  // ==========================================
-  // 處理 九巴 (KMB) 數據 (維持不變)
-  // ==========================================
-  const kmbRoutesRaw = kmbRouteRes.data || [];
-  for (const r of kmbRoutesRaw) {
-    const key = `KMB-${r.route}-${r.service_type || "1"}`;
-    if (!routeMap.has(key)) {
-      const obj = {
-        company: "KMB",
-        route: r.route,
-        bound: null, 
-        service_type: r.service_type || "1",
-        orig_tc: r.orig_tc,
-        dest_tc: r.dest_tc
-      };
-      routeMap.set(key, obj);
-      allRoutes.push(obj);
+  // 1. 處理 九巴 (KMB) 路線數據
+  if (kmbRouteRes.status === "fulfilled" && kmbRouteRes.value) {
+    const kmbRoutesRaw = kmbRouteRes.value.data || [];
+    for (const r of kmbRoutesRaw) {
+      const key = `KMB-${r.route}-${r.service_type || "1"}`;
+      if (!routeMap.has(key)) {
+        const obj = {
+          company: "KMB",
+          route: r.route,
+          bound: null,
+          service_type: r.service_type || "1",
+          orig_tc: r.orig_tc,
+          dest_tc: r.dest_tc
+        };
+        routeMap.set(key, obj);
+        allRoutes.push(obj);
+      }
     }
+  } else {
+    console.warn("九巴路線載入失敗:", kmbRouteRes.reason);
   }
 
-  const kmbStops = kmbStopRes.data || [];
-  kmbStops.forEach(s => {
-    allStopsMap.set(s.stop, { ...s, company: "KMB" });
-  });
-
-  const kmbRsAll = kmbRouteStopRes.data || [];
-  kmbRsAll.forEach(rs => {
-    if (!routesByStopId[rs.stop]) routesByStopId[rs.stop] = [];
-    routesByStopId[rs.stop].push({
-      company: "KMB",
-      route: rs.route,
-      bound: rs.bound, 
-      service_type: rs.service_type,
-      seq: rs.seq
+  // 2. 處理 九巴 (KMB) 車站座標及名稱數據
+  if (kmbStopRes.status === "fulfilled" && kmbStopRes.value) {
+    const kmbStops = kmbStopRes.value.data || [];
+    kmbStops.forEach(s => {
+      allStopsMap.set(s.stop, { ...s, company: "KMB" });
     });
-  });
-
-  // ==========================================
-  // 處理 城巴 (CTB) 數據 (極度精簡)
-  // ==========================================
-  const ctbRoutesRaw = ctbRouteRes.data || [];
-  for (const r of ctbRoutesRaw) {
-    const key = `CTB-${r.route}`;
-    if (!routeMap.has(key)) {
-      const obj = {
-        company: "CTB",
-        route: r.route,
-        bound: null, 
-        service_type: "", 
-        orig_tc: r.orig_tc,
-        dest_tc: r.dest_tc
-      };
-      routeMap.set(key, obj);
-      allRoutes.push(obj);
-    }
+  } else {
+    console.warn("九巴車站總表載入失敗 (之後會自動逐站補飛):", kmbStopRes.reason);
   }
-  
-  // ⛔️ 城巴 Stop 同 Route-Stop 喺 Init 階段無得攞！
 
-  return allRoutes; 
+  // 3. 處理 城巴 (CTB) 路線數據
+  if (ctbRouteRes.status === "fulfilled" && ctbRouteRes.value) {
+    const ctbRoutesRaw = ctbRouteRes.value.data || [];
+    for (const r of ctbRoutesRaw) {
+      const key = `CTB-${r.route}`;
+      if (!routeMap.has(key)) {
+        const obj = {
+          company: "CTB",
+          route: r.route,
+          bound: null,
+          service_type: "",
+          orig_tc: r.orig_tc,
+          dest_tc: r.dest_tc
+        };
+        routeMap.set(key, obj);
+        allRoutes.push(obj);
+      }
+    }
+  } else {
+    console.warn("城巴路線載入失敗:", ctbRouteRes.reason);
+  }
+
+  if (allRoutes.length === 0) {
+    throw new Error("無法連線至巴士伺服器，請檢查網絡連線或稍後再試。");
+  }
+
+  return allRoutes;
 }
 
 /* ========== 距離 / 速度 / 時間 ========== */
@@ -1392,12 +1442,12 @@ saveAppState();
     // 5. 終極絕招 (如果上面仲有嘢清唔走)：
     // 掃描地圖上所有物件，如果唔係底圖 (TileLayer) 就剷走佢
     map.eachLayer(function (layer) {
-      // _url 係底圖 (例如 OpenStreetMap) 嘅專屬屬性
-      // 同埋排除 stopsLayer，費事下次加 Marker 唔見咗
-      if (!layer._url && layer !== stopsLayer) {
+      // 保留所有 TileLayer (_url) 同埋 LayerGroup (_layers)，只清除 Polyline 同 Marker
+      if (!layer._url && !layer._layers && layer !== stopsLayer) {
         map.removeLayer(layer);
       }
     });
+
 
     // 6. 視角重置返去香港中心
     map.setView([22.32, 114.17], 12); 
@@ -1677,8 +1727,8 @@ async function loadRouteStopsForCurrentDirection() {
     // ==========================================
     // ★ 新增：如果有 GPS，自動選取最近車站
     // ==========================================
-    // 假設你儲存 GPS 嘅變數叫 userLat 同 userLng (請按你實際嘅全域變數名修改)
-    if (typeof userLat !== 'undefined' && typeof userLng !== 'undefined' && userLat && userLng) {
+    // 假設你儲存 GPS 嘅變數叫 userLat 同 userLon (請按你實際嘅全域變數名修改)
+    if (typeof userLat !== 'undefined' && typeof userLon !== 'undefined' && userLat && userLon) {
       let nearestStop = null;
       let minDistance = Infinity;
 
@@ -1686,7 +1736,7 @@ async function loadRouteStopsForCurrentDirection() {
         if (stop.lat && stop.long) {
           // 用畢氏定理計距離平方 (市區短距離對比夠做，唔使出動 Haversine 公式)
           const dLat = stop.lat - userLat;
-          const dLng = stop.long - userLng;
+          const dLng = stop.long - userLon;
           const dist = (dLat * dLat) + (dLng * dLng);
 
           if (dist < minDistance) {
@@ -2108,7 +2158,7 @@ async function selectStop(stopId, seq) {
       const seen = new Set();
       combinedEtaList = combinedEtaList.filter(item => {
         const etaStr = String(item.eta || "").trim().toUpperCase();
-        const rmwStr = String(item.rmw_tc || "").trim();
+        const rmwStr = String(item.rmk_tc || "").trim();
 
         // 1. 踢走所有無效嘅 ETA (空字串、N/A、null)
         if (etaStr === "" || etaStr === "N/A" || etaStr === "NULL" || etaStr === "UNDEFINED") {
@@ -2452,7 +2502,7 @@ async function guessBoardingBusAtTransferStop() {
     const seen = new Set();
     combinedEtaList = combinedEtaList.filter(item => {
       const etaStr = String(item.eta || "").trim().toUpperCase();
-      const rmwStr = String(item.rmw_tc || "").trim();
+      const rmwStr = String(item.rmk_tc || "").trim();
 
       if (etaStr === "" || etaStr === "N/A" || etaStr === "NULL" || etaStr === "UNDEFINED") return false;
       if (rmwStr.includes("時段") || rmwStr.includes("預定班次") || rmwStr === "離開") return false;
@@ -2633,7 +2683,7 @@ async function loadEtaDetailForStop(stopId, seq) {
     const seen = new Set();
     combinedEtaList = combinedEtaList.filter(item => {
       const etaStr = String(item.eta || "").trim().toUpperCase();
-      const rmwStr = String(item.rmw_tc || "").trim();
+      const rmwStr = String(item.rmk_tc || "").trim();
 
       if (etaStr === "" || etaStr === "N/A" || etaStr === "NULL" || etaStr === "UNDEFINED") return false;
       if (rmwStr.includes("時段") || rmwStr.includes("預定班次") || rmwStr === "離開") return false;
@@ -2958,7 +3008,7 @@ try {
     
     combinedEtaList.forEach(item => {
       const etaStr = String(item.eta || "").trim().toUpperCase();
-      const rmwStr = String(item.rmw_tc || "").trim();
+      const rmwStr = String(item.rmk_tc || "").trim();
       
       if (etaStr === "" || etaStr === "N/A" || etaStr === "NULL") return;
       if (rmwStr.includes("時段") || rmwStr.includes("預定班次") || rmwStr === "離開") return;
@@ -4547,3 +4597,1205 @@ window.onload = async function() {
         localStorage.removeItem(STORAGE_KEY);
     }
 };
+
+/* =========================================================================
+   ★ 終極升級包：修復城巴 Summary、Step 4 過海聯營線雙邊對齊、OSRM 實際道路導航
+   （直接貼喺 script_bus.js 最底部即可自動覆蓋舊有同名 Function）
+   ========================================================================= */
+
+// 修正預設追蹤支援城巴
+async function ensureDefaultTrackingAtOrigin() {
+  if (!originStopId || !currentRoute || !currentDirectionCode) return;
+  if (selectedEtaTime) return;
+
+  try {
+    const company = currentRoute.company || "KMB";
+    const data = await BusAPI.getEta(company, originStopId, currentRoute.route, currentServiceType);
+    let list = data.data || [];
+    list = list.filter(item => (!currentDirectionCode || item.dir === currentDirectionCode) && item.eta && !String(item.rmk_tc || "").includes("時段"));
+
+    if (!list.length) return;
+    const first = list[0];
+    const detail = formatDetailLine(first);
+    if (!detail.etaTime) return;
+
+    const etaObj = {
+      id: `${originStopId}-0`,
+      etaTime: detail.etaTime,
+      status: detail.status
+    };
+    setTrackingEta(etaObj, null);
+  } catch (e) {
+    console.error("ensureDefaultTrackingAtOrigin error", e);
+  }
+}
+
+// 修正單向所有站 Summary 支援城巴
+async function loadEtaSummaryForAllStopsNormal() {
+  if (!currentRoute) return;
+  const company = currentRoute.company || "KMB";
+
+  const promises = routeStops.map(s =>
+    BusAPI.getEta(company, s.stop_id, currentRoute.route, currentServiceType)
+      .then(data => ({
+        stop_id: s.stop_id,
+        list: (data.data || []).filter(item => item.eta && !String(item.rmk_tc || "").includes("時段"))
+      }))
+      .catch(() => ({ stop_id: s.stop_id, list: [] }))
+  );
+
+  try {
+    const results = await Promise.all(promises);
+    etaTimesByStop = {};
+
+    results.forEach(({ stop_id, list }) => {
+      if (currentDirectionCode) {
+        list = list.filter(item => item.dir === currentDirectionCode);
+      }
+      const stopEl = document.querySelector(`.stop-item[data-stop-id="${stop_id}"]`);
+      if (!stopEl) return;
+      const summarySpan = stopEl.querySelector(".stop-eta-summary");
+      if (!summarySpan) return;
+
+      if (!list.length) {
+        summarySpan.textContent = "";
+        summarySpan.style.color = "#000000";
+        summarySpan.style.fontWeight = "normal";
+        etaTimesByStop[stop_id] = [];
+        return;
+      }
+
+      const times = [];
+      list.forEach(item => {
+        if (item.eta) times.push(new Date(item.eta));
+      });
+      times.sort((a, b) => a - b);
+      etaTimesByStop[stop_id] = times;
+
+      const first = list[0];
+      const { minutes, label } = minutesAndLabel(first.eta);
+
+      summarySpan.textContent = label;
+      summarySpan.style.fontWeight = minutes <= 0 ? "bold" : "normal";
+      summarySpan.style.color = minutes <= 0 ? "#d32f2f" : grayColorByMinutes(minutes);
+    });
+  } catch (e) {
+    console.error("loadEtaSummaryForAllStopsNormal error", e);
+  }
+}
+
+async function loadEtaSummaryForAllStops() {
+  if (!originStopId) {
+    await loadEtaSummaryForAllStopsNormal();
+    return;
+  }
+
+  if (!currentRoute || !cumulativeTravelFromOrigin) {
+    routeStops.forEach(s => {
+      const stopEl = document.querySelector(`.stop-item[data-stop-id="${s.stop_id}"]`);
+      if (!stopEl) return;
+      const summarySpan = stopEl.querySelector(".stop-eta-summary");
+      if (!summarySpan) return;
+      summarySpan.textContent = "";
+      summarySpan.style.color = "#000000";
+      summarySpan.style.fontWeight = "normal";
+    });
+    return;
+  }
+
+  let originEta = null;
+  try {
+    const company = currentRoute.company || "KMB";
+    const data = await BusAPI.getEta(company, originStopId, currentRoute.route, currentServiceType);
+    let list = (data.data || []).filter(item => item.eta && !String(item.rmk_tc || "").includes("時段"));
+    if (currentDirectionCode) {
+      list = list.filter(item => item.dir === currentDirectionCode);
+    }
+    if (list.length > 0 && list[0].eta) {
+      originEta = new Date(list[0].eta);
+    }
+  } catch (e) {
+    console.error("load origin ETA failed", e);
+  }
+
+  const baseDepart = selectedEtaTime || originEta;
+
+  routeStops.forEach(s => {
+    const stopEl = document.querySelector(`.stop-item[data-stop-id="${s.stop_id}"]`);
+    if (!stopEl) return;
+    const summarySpan = stopEl.querySelector(".stop-eta-summary");
+    if (!summarySpan) return;
+
+    const info = cumulativeTravelFromOrigin[s.stop_id];
+    if (!info || !baseDepart) {
+      summarySpan.textContent = "";
+      summarySpan.style.color = "#000000";
+      summarySpan.style.fontWeight = "normal";
+      return;
+    }
+
+    const travelMin = info.travelMinutes || 0;
+    const arrive = new Date(baseDepart.getTime() + travelMin * 60000);
+    const hh = String(arrive.getHours()).padStart(2, "0");
+    const mm = String(arrive.getMinutes()).padStart(2, "0");
+
+    summarySpan.textContent = `行駛 ${travelMin} 分鐘 (${hh}:${mm} 到達)`;
+    summarySpan.style.fontWeight = "normal";
+    summarySpan.style.color = "#555555";
+  });
+}
+
+/* ========== Step 4：轉車路線（支援聯營線雙邊對齊 + 統一 v2 API） ========== */
+
+function getTransferDestKey() {
+  if (!transferRoute) return "";
+  let destKey = (transferRoute.dest_tc || "").substring(0, 2);
+  if (transferRouteStops && transferRouteStops.length > 0) {
+    const lastStop = transferRouteStops[transferRouteStops.length - 1];
+    let cleanName = (lastStop.name_tc || "").replace(/^[\d\s.\-、]+/, "").replace(/\s+/g, "");
+    cleanName = stripBracketCode(cleanName);
+    if (cleanName.length >= 2) destKey = cleanName.substring(0, 2);
+  }
+  return destKey;
+}
+
+async function fetchCombinedTransferEtaForStop(stopId, seq) {
+  if (!transferRoute) return [];
+  const company = transferRoute.company || "KMB";
+  const routeName = transferRoute.route;
+  const st = transferServiceType || "1";
+  const targetSeq = parseInt(seq);
+  const isJointRoute = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName) || ["S1", "R8"].includes(routeName);
+  const destKey = getTransferDestKey();
+
+  let combinedEtaList = [];
+
+  // 1. 主公司 ETA
+  try {
+    const mainData = await BusAPI.getEta(company, stopId, routeName, st);
+    let mainList = mainData.data || [];
+    if (!isNaN(targetSeq)) {
+      mainList = mainList.filter(item => parseInt(item.seq) === targetSeq);
+    }
+    if (transferDirectionCode) {
+      mainList = mainList.filter(item => item.dir === transferDirectionCode);
+    }
+    mainList.forEach(item => {
+      item._company = company;
+      combinedEtaList.push(item);
+    });
+  } catch (e) {
+    console.error("Transfer Main ETA failed", e);
+  }
+
+  // 2. 聯營線對家公司 ETA
+  if (isJointRoute && destKey) {
+    const oppCompany = company === "KMB" ? "CTB" : "KMB";
+    try {
+      const [oppIn, oppOut] = await Promise.all([
+        BusAPI.getRouteStops(oppCompany, routeName, "inbound", st).catch(() => ({ data: [] })),
+        BusAPI.getRouteStops(oppCompany, routeName, "outbound", st).catch(() => ({ data: [] }))
+      ]);
+
+      const oppStopIds = new Set();
+      if (!isNaN(targetSeq)) {
+        const s1 = (oppIn.data || []).find(s => parseInt(s.seq) === targetSeq);
+        if (s1) oppStopIds.add(s1.stop);
+        const s2 = (oppOut.data || []).find(s => parseInt(s.seq) === targetSeq);
+        if (s2) oppStopIds.add(s2.stop);
+      }
+
+      const etaPromises = Array.from(oppStopIds).map(sid =>
+        BusAPI.getEta(oppCompany, sid, routeName, st).catch(() => ({ data: [] }))
+      );
+      const etaResults = await Promise.all(etaPromises);
+
+      etaResults.forEach(res => {
+        (res.data || []).forEach(item => {
+          const itemDest = item.dest_tc || "";
+          if ((!isNaN(targetSeq) ? parseInt(item.seq) === targetSeq : true) && itemDest.includes(destKey)) {
+            item._company = oppCompany;
+            combinedEtaList.push(item);
+          }
+        });
+      });
+    } catch (e) {
+      console.error("Transfer Opponent ETA failed", e);
+    }
+  }
+
+  // 3. 過濾無效數據及「X巴時段」備註 + 去重 + 排序
+  const seen = new Set();
+  combinedEtaList = combinedEtaList.filter(item => {
+    const etaStr = String(item.eta || "").trim().toUpperCase();
+    const rmkStr = String(item.rmk_tc || "").trim();
+
+    if (etaStr === "" || etaStr === "N/A" || etaStr === "NULL" || etaStr === "UNDEFINED") return false;
+    if (rmkStr.includes("時段") || rmkStr.includes("預定班次") || rmkStr === "離開") return false;
+
+    const key = `${item._company}_${etaStr}_${item.dest_tc}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+
+  combinedEtaList.sort((a, b) => new Date(a.eta) - new Date(b.eta));
+  return combinedEtaList;
+}
+
+async function selectTransferRoute(route) {
+  if (transferEtaTimer) { clearInterval(transferEtaTimer); transferEtaTimer = null; }
+
+  transferRoute = route;
+  transferServiceType = route.service_type || "1";
+  transferDirection = null;
+  transferDirectionCode = null;
+  transferRouteStops = [];
+  transferCurrentStopId = null;
+  transferEtaTimesByStop = {};
+
+  const d1 = document.getElementById("transferRouteInputDisplay");
+  if (d1) d1.textContent = `${route.route}（${route.orig_tc} ↔ ${route.dest_tc}）`;
+
+  const d2 = document.getElementById("transferStopList");
+  if (d2) d2.innerHTML = "";
+
+  const d3 = document.getElementById("transferHeadwayInfo");
+  if (d3) d3.textContent = "";
+
+  const routeListContainer = document.getElementById("transferRouteList");
+  if (routeListContainer) routeListContainer.innerHTML = "";
+
+  const btnIn = document.getElementById("transferDirInbound");
+  const btnOut = document.getElementById("transferDirOutbound");
+  if (!btnIn || !btnOut) return;
+
+  btnIn.style.display = "";
+  btnOut.style.display = "";
+  btnIn.disabled = true;
+  btnOut.disabled = true;
+  btnIn.textContent = "載入方向中...";
+  btnOut.textContent = "載入方向中...";
+
+  transferKeyboardHidden = true;
+  if (typeof renderTransferVirtualKeyboard === "function") {
+    renderTransferVirtualKeyboard();
+  }
+
+  try {
+    const routeId = transferRoute.route;
+    const st = transferServiceType;
+    const company = transferRoute.company || "KMB";
+
+    const [inData, outData] = await Promise.allSettled([
+      BusAPI.getRouteStops(company, routeId, "inbound", st),
+      BusAPI.getRouteStops(company, routeId, "outbound", st)
+    ]);
+
+    let inName = "?";
+    let outName = "?";
+    let hasInbound = false;
+    let hasOutbound = false;
+
+    if (inData.status === "fulfilled" && inData.value.data) {
+      const list = inData.value.data.sort((a, b) => a.seq - b.seq);
+      if (list.length > 0) {
+        hasInbound = true;
+        const last = list[list.length - 1];
+        const stopInfo = await getStopDetail(company, last.stop);
+        inName = stopInfo && stopInfo.name_tc ? stripBracketCode(stopInfo.name_tc) : stripBracketCode(transferRoute.dest_tc);
+      }
+    }
+
+    if (outData.status === "fulfilled" && outData.value.data) {
+      const list = outData.value.data.sort((a, b) => a.seq - b.seq);
+      if (list.length > 0) {
+        hasOutbound = true;
+        const last = list[list.length - 1];
+        const stopInfo = await getStopDetail(company, last.stop);
+        outName = stopInfo && stopInfo.name_tc ? stripBracketCode(stopInfo.name_tc) : stripBracketCode(transferRoute.orig_tc);
+      }
+    }
+
+    if (hasInbound && hasOutbound) {
+      btnIn.textContent = `往 ${inName !== "?" ? inName : stripBracketCode(transferRoute.dest_tc)} 方向`;
+      btnIn.disabled = false;
+      btnOut.textContent = `往 ${outName !== "?" ? outName : stripBracketCode(transferRoute.orig_tc)} 方向`;
+      btnOut.disabled = false;
+    } else if (hasInbound) {
+      btnIn.textContent = `往 ${inName !== "?" ? inName : stripBracketCode(transferRoute.dest_tc)} 方向`;
+      btnIn.disabled = false;
+      btnOut.style.display = "none";
+      setTimeout(() => btnIn.click(), 50);
+    } else if (hasOutbound) {
+      btnOut.textContent = `往 ${outName !== "?" ? outName : stripBracketCode(transferRoute.orig_tc)} 方向`;
+      btnOut.disabled = false;
+      btnIn.style.display = "none";
+      setTimeout(() => btnOut.click(), 50);
+    } else {
+      btnIn.textContent = `無此方向`;
+      btnOut.textContent = `無此方向`;
+    }
+
+    const btnReset = document.getElementById("btnResetTransfer");
+    if (btnReset) btnReset.style.display = "inline-block";
+    saveAppState();
+
+  } catch (e) {
+    console.error("載入轉車方向失敗:", e);
+    btnIn.textContent = "往 ? 方向";
+    btnOut.textContent = "往 ? 方向";
+  }
+}
+
+async function loadTransferRouteStopsForCurrentDirection() {
+  if (!transferRoute || !transferDirection) return;
+  const routeId = transferRoute.route;
+  const serviceType = transferServiceType;
+  const company = transferRoute.company || "KMB";
+
+  const d1 = document.getElementById("transferStopList");
+  if (d1) d1.innerHTML = "載入路線站點中...";
+  transferCurrentStopId = null;
+  transferEtaTimesByStop = {};
+
+  try {
+    const rsData = await BusAPI.getRouteStops(company, routeId, transferDirection, serviceType);
+    const routeStopList = rsData.data || [];
+
+    const stopPromises = routeStopList.map(async (rs) => {
+      const stopInfo = await getStopDetail(company, rs.stop);
+      return {
+        stop_id: rs.stop,
+        seq: rs.seq,
+        name_tc: stopInfo && stopInfo.name_tc ? stopInfo.name_tc : (rs.name_tc || `(未知站名) ${rs.stop}`),
+        name_en: stopInfo && stopInfo.name_en ? stopInfo.name_en : (rs.name_en || ""),
+        lat: stopInfo ? stopInfo.lat : null,
+        long: stopInfo ? stopInfo.long : null
+      };
+    });
+
+    transferRouteStops = (await Promise.all(stopPromises)).sort((a, b) => a.seq - b.seq);
+
+    shrinkTransferLayoutAfterDirectionChosen();
+
+    renderTransferStopList();
+    await loadTransferEtaSummaryForAllStops();
+    await loadTransferHeadwayInfo();
+
+    if (transferEtaTimer) clearInterval(transferEtaTimer);
+    transferEtaTimer = setInterval(async () => {
+      if (!transferRoute || !transferDirection || !transferRouteStops.length) return;
+      await loadTransferEtaSummaryForAllStops();
+      await loadTransferHeadwayInfo();
+      if (transferCurrentStopId) {
+        await selectTransferStop(transferCurrentStopId, window.transferCurrentSeq);
+      }
+    }, 30000);
+
+    if (transferStopName) {
+      let targetStop = null;
+      const nameMatch = transferRouteStops.find(
+        s => normalizeStopName(s.name_tc) === transferStopName
+      );
+      if (nameMatch) {
+        targetStop = nameMatch;
+      } else if (transferStopId) {
+        const originInfo = allStopsMap.get(transferStopId);
+        if (originInfo) {
+          const oLat = parseFloat(originInfo.lat);
+          const oLon = parseFloat(originInfo.long);
+          if (isFinite(oLat) && isFinite(oLon)) {
+            let best = null;
+            let bestMinutes = Infinity;
+
+            transferRouteStops.forEach(s => {
+              const info = allStopsMap.get(s.stop_id);
+              if (!info) return;
+              const lat = parseFloat(info.lat);
+              const lon = parseFloat(info.long);
+              if (!isFinite(lat) || !isFinite(lon)) return;
+
+              const dist = haversineDistanceMeters(oLat, oLon, lat, lon);
+              const mins = dist / (4000 / 60);
+              if (mins < bestMinutes) {
+                bestMinutes = mins;
+                best = s;
+              }
+            });
+
+            if (best && bestMinutes <= 60) {
+              targetStop = best;
+            }
+          }
+        }
+      }
+
+      if (targetStop) {
+        await selectTransferStop(targetStop.stop_id, targetStop.seq);
+      }
+      saveAppState();
+    }
+  } catch (e) {
+    console.error(e);
+    const d1b = document.getElementById("transferStopList");
+    if (d1b) d1b.textContent = "載入路線站點失敗：" + e.message;
+    transferHeadNotOk();
+  }
+}
+
+async function loadTransferEtaSummaryForAllStops() {
+  if (!transferRoute) return;
+  const company = transferRoute.company || "KMB";
+
+  const promises = transferRouteStops.map(s =>
+    BusAPI.getEta(company, s.stop_id, transferRoute.route, transferServiceType)
+      .then(data => ({
+        stop_id: s.stop_id,
+        seq: s.seq,
+        list: (data.data || []).filter(item => item.eta && !String(item.rmk_tc || "").includes("時段"))
+      }))
+      .catch(() => ({ stop_id: s.stop_id, seq: s.seq, list: [] }))
+  );
+
+  try {
+    const results = await Promise.all(promises);
+    transferEtaTimesByStop = {};
+
+    results.forEach(({ stop_id, seq, list }) => {
+      if (transferDirectionCode) {
+        list = list.filter(item => item.dir === transferDirectionCode);
+      }
+      if (seq != null) {
+        list = list.filter(item => parseInt(item.seq) === parseInt(seq));
+      }
+      let stopEl = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stop_id}"][data-seq="${seq}"]`);
+      if (!stopEl) stopEl = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stop_id}"]`);
+      if (!stopEl) return;
+      const summarySpan = stopEl.querySelector(".stop-eta-summary");
+      if (!summarySpan) return;
+
+      if (!list.length) {
+        summarySpan.textContent = "";
+        summarySpan.style.color = "#000000";
+        summarySpan.style.fontWeight = "normal";
+        transferEtaTimesByStop[stop_id] = [];
+        return;
+      }
+
+      const times = [];
+      list.forEach(item => {
+        if (item.eta) times.push(new Date(item.eta));
+      });
+      times.sort((a, b) => a - b);
+      transferEtaTimesByStop[stop_id] = times;
+
+      const first = list[0];
+      const { minutes, label } = minutesAndLabel(first.eta);
+
+      summarySpan.textContent = label;
+      summarySpan.style.fontWeight = minutes <= 0 ? "bold" : "normal";
+      summarySpan.style.color = minutes <= 0 ? "#d32f2f" : grayColorByMinutes(minutes);
+    });
+  } catch (e) {
+    console.error("loadTransferEtaSummaryForAllStops error", e);
+  }
+}
+
+async function loadTransferHeadwayInfo() {
+  const infoDiv = document.getElementById("transferHeadwayInfo");
+  if (!infoDiv) return;
+
+  if (!transferRoute || !transferDirection || !transferRouteStops || !transferRouteStops.length) {
+    infoDiv.textContent = "";
+    return;
+  }
+
+  const createShowAllBtn = () => {
+    const btnShowAll = document.createElement("button");
+    btnShowAll.className = "btn-show-all-stops";
+    btnShowAll.textContent = "顯示全部站";
+    btnShowAll.onclick = () => {
+      transferCurrentStopId = null;
+      const items = document.querySelectorAll("#transferStopList .stop-item");
+      items.forEach(item => {
+        item.style.display = "";
+        item.classList.remove("selected", "eta-showing", "transfer-tracked");
+        const etaBlock = item.querySelector(".eta-block");
+        if (etaBlock) {
+          etaBlock.innerHTML = "";
+          etaBlock.textContent = "";
+        }
+        const sid = item.getAttribute("data-stop-id");
+        const sseq = item.getAttribute("data-seq");
+        item.onclick = async () => {
+          if (!transferCurrentStopId) {
+            await selectTransferStop(sid, sseq);
+          } else {
+            if (sid === transferCurrentStopId && sseq == window.transferCurrentSeq) return;
+            if (typeof checkTransferStopEta === "function") {
+              await checkTransferStopEta(sid, sseq);
+            }
+          }
+        };
+      });
+      const walkInfoDiv = document.getElementById("transferWalkInfo");
+      if (walkInfoDiv) walkInfoDiv.textContent = "";
+      showFullSecondRoute();
+      btnShowAll.remove();
+    };
+    return btnShowAll;
+  };
+
+  try {
+    const targetStopObj = transferRouteStops.find(s => s.stop_id === transferCurrentStopId) || transferRouteStops[0];
+    const targetStopId = targetStopObj.stop_id;
+    const targetSeq = targetStopObj.seq;
+
+    const combinedList = await fetchCombinedTransferEtaForStop(targetStopId, targetSeq);
+    const times = [];
+    const seen = new Set();
+
+    combinedList.forEach(item => {
+      const t = new Date(item.eta);
+      if (isNaN(t.getTime())) return;
+      const key = `${t.getFullYear()}-${t.getMonth()}-${t.getDate()}-${t.getHours()}-${t.getMinutes()}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      times.push(t);
+    });
+
+    times.sort((a, b) => a - b);
+
+    infoDiv.innerHTML = "";
+    const textSpan = document.createElement("span");
+
+    if (times.length < 2) {
+      textSpan.textContent = "班距資料不足。";
+    } else {
+      const diffs = [];
+      for (let i = 1; i < times.length; i++) {
+        const diffMin = Math.round((times[i] - times[i - 1]) / 60000);
+        if (diffMin >= 2 && diffMin <= 60) diffs.push(diffMin);
+      }
+      if (!diffs.length) {
+        textSpan.textContent = "班距資料不足。";
+      } else {
+        const sum = diffs.reduce((a, b) => a + b, 0);
+        const avg = Math.round(sum / diffs.length);
+        const stopNameLocal = targetStopObj ? targetStopObj.name_tc : "此站";
+        textSpan.textContent = `${stopNameLocal} 大約 ${avg} 分鐘一班車`;
+      }
+    }
+
+    infoDiv.appendChild(textSpan);
+    if (transferCurrentStopId) {
+      infoDiv.appendChild(createShowAllBtn());
+    }
+  } catch (e) {
+    console.error("loadTransferHeadwayInfo error", e);
+    transferHeadNotOk();
+  }
+}
+
+async function selectTransferStop(stopId, seq) {
+  transferCurrentStopId = stopId;
+
+  let actualSeq = seq;
+  if (!actualSeq) {
+    const match = transferRouteStops.find(s => s.stop_id === stopId);
+    if (match) actualSeq = match.seq;
+  }
+  window.transferCurrentSeq = actualSeq;
+
+  clearTransferStopSelectionUI();
+
+  let el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"][data-seq="${actualSeq}"]`);
+  if (!el) el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"]`);
+  if (!el) return;
+  el.classList.add("selected");
+
+  const etaBlock = el.querySelector(".eta-block");
+  etaBlock.textContent = "載入 ETA 中...";
+
+  const routeName = transferRoute ? transferRoute.route : "";
+  const isJointRoute = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName) || ["S1", "R8"].includes(routeName);
+
+  let etaList = [];
+  try {
+    etaList = await fetchCombinedTransferEtaForStop(stopId, actualSeq);
+
+    etaBlock.innerHTML = "";
+    if (!etaList.length) {
+      etaBlock.textContent = "暫時冇班次資料";
+    } else {
+      etaList.forEach(item => {
+        const { text, minutes, isScheduled } = formatDetailLine(item);
+        const row = document.createElement("div");
+        row.className = "eta-row";
+        if (minutes <= 0) {
+          row.classList.add("eta-imminent");
+        } else {
+          row.style.color = grayColorByMinutes(minutes);
+        }
+        const contentNode = document.createElement("span");
+        const badge = isJointRoute ? (item._company === "KMB" ? "[九巴] " : "[城巴] ") : "";
+        contentNode.textContent = badge + text;
+        if (isScheduled) contentNode.style.fontStyle = "italic";
+        row.appendChild(contentNode);
+        etaBlock.appendChild(row);
+      });
+    }
+  } catch (e) {
+    console.error(e);
+    etaBlock.textContent = "載入 ETA 失敗：" + e.message;
+  }
+
+  await loadTransferHeadwayInfo();
+
+  const walkInfoDiv = document.getElementById("transferWalkInfo");
+  let summaryText = "";
+
+  if (transferStopId && selectedEtaTime && cumulativeTravelFromOrigin) {
+    const originInfo = cumulativeTravelFromOrigin[transferStopId];
+    if (originInfo) {
+      const travelMin = originInfo.travelMinutes || 0;
+      const walkMinRaw = walkingMinutesBetweenStops(transferStopId, stopId);
+      const walkMin = walkMinRaw == null ? 0 : walkMinRaw;
+
+      let arriveAtC;
+      if (trackedTransferArriveTime) {
+        arriveAtC = new Date(trackedTransferArriveTime.getTime() + walkMin * 60000);
+      } else {
+        arriveAtC = new Date(
+          selectedEtaTime.getTime() + (travelMin + walkMin) * 60000
+        );
+      }
+
+      let bestBus = null;
+      let bestWaitMin = Infinity;
+
+      etaList.forEach(item => {
+        if (!item.eta) return;
+        const etaTime = new Date(item.eta);
+        const diffMs = etaTime - arriveAtC;
+        const diffMin = diffMs / 60000;
+        if (diffMin >= 0 && diffMin < bestWaitMin) {
+          bestWaitMin = diffMin;
+          bestBus = { etaTime, raw: item };
+          window.transferBestBus = bestBus;
+        }
+      });
+
+      let walkText;
+      if (walkMin < 1) walkText = "<1分鐘";
+      else if (walkMin > 60) walkText = ">1小時";
+      else walkText = `${Math.round(walkMin)}分鐘`;
+
+      const rows = el.querySelectorAll(".eta-row");
+      rows.forEach(row => row.classList.remove("transfer-tracked"));
+
+      if (!bestBus || !isFinite(bestWaitMin)) {
+        const hhmmArrive = formatTimeHHMM(arriveAtC);
+        summaryText = `🚶 步行：約 ${walkText} ｜ ⚠️ 未有可接駁班次（約 ${hhmmArrive} 到達轉車站）`;
+      } else {
+        let waitText;
+        if (bestWaitMin < 1) waitText = "<1分鐘";
+        else if (bestWaitMin > 60) waitText = ">1小時";
+        else waitText = `${Math.round(bestWaitMin)}分鐘`;
+
+        summaryText = `🚶 步行：約 ${walkText} ｜ ⏱️ 轉車等候：約 ${waitText}`;
+
+        const hhmm = formatTimeHHMM(bestBus.etaTime);
+        rows.forEach(row => {
+          const span = row.querySelector("span");
+          if (!span) return;
+          const text = span.textContent || "";
+          if (text.includes(hhmm)) {
+            row.classList.add("transfer-tracked");
+          }
+        });
+      }
+    }
+  }
+
+  if (walkInfoDiv) {
+    if (summaryText) {
+      walkInfoDiv.style.fontWeight = "600";
+      walkInfoDiv.textContent = summaryText;
+    } else {
+      walkInfoDiv.textContent = "";
+    }
+  }
+
+  const allItems = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
+  let selectedIndex = allItems.findIndex(node => node.dataset.stopId === stopId && node.dataset.seq == actualSeq);
+  if (selectedIndex === -1) {
+    selectedIndex = allItems.findIndex(node => node.dataset.stopId === stopId);
+  }
+
+  allItems.forEach((node, index) => {
+    if (index < selectedIndex) {
+      node.style.display = "none";
+    } else {
+      node.style.display = "";
+    }
+  });
+
+  selectSecondRoute(stopId);
+  saveAppState();
+}
+
+async function checkTransferStopEta(stopId, seq) {
+  let actualSeq = seq;
+  if (!actualSeq) {
+    const match = transferRouteStops.find(s => s.stop_id === stopId);
+    if (match) actualSeq = match.seq;
+  }
+
+  const allItems = Array.from(document.querySelectorAll("#transferStopList .stop-item"));
+  allItems.forEach(item => {
+    const thisStopId = item.dataset.stopId;
+    const thisSeq = item.dataset.seq;
+    const isTransferStation = (thisStopId === transferCurrentStopId && thisSeq == window.transferCurrentSeq);
+    const isCurrentStation = (thisStopId === stopId && thisSeq == actualSeq);
+
+    if (!isTransferStation && !isCurrentStation) {
+      item.classList.remove("eta-showing");
+      const block = item.querySelector(".eta-block");
+      if (block) block.innerHTML = "";
+      const sSpan = item.querySelector(".stop-eta-summary");
+      if (sSpan) sSpan.textContent = "";
+    }
+  });
+
+  let el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"][data-seq="${actualSeq}"]`);
+  if (!el) el = document.querySelector(`#transferStopList .stop-item[data-stop-id="${stopId}"]`);
+  if (!el) return;
+
+  const etaBlock = el.querySelector(".eta-block");
+  const summarySpan = el.querySelector(".stop-eta-summary");
+
+  if (el.classList.contains("eta-showing")) {
+    el.classList.remove("eta-showing");
+    etaBlock.innerHTML = "";
+    if (summarySpan) summarySpan.textContent = "";
+    return;
+  }
+
+  el.classList.add("eta-showing");
+  etaBlock.textContent = "載入 ETA 中...";
+  if (summarySpan) {
+    summarySpan.textContent = "計算中...";
+    summarySpan.style.color = "#999999";
+    summarySpan.style.fontWeight = "normal";
+  }
+
+  const routeName = transferRoute ? transferRoute.route : "";
+  const isJointRoute = /^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName) || ["S1", "R8"].includes(routeName);
+
+  try {
+    const list = await fetchCombinedTransferEtaForStop(stopId, actualSeq);
+
+    etaBlock.innerHTML = "";
+    if (!list.length) {
+      etaBlock.textContent = "暫時冇班次資料";
+    }
+
+    const actualEtas = [];
+    const rowElementsMap = new Map();
+
+    list.forEach((item, idx) => {
+      const d = formatDetailLine(item);
+      if (!d.etaTime) return;
+
+      const etaObj = {
+        index: idx,
+        time: d.etaTime,
+        status: d.status,
+        isScheduled: d.isScheduled
+      };
+      actualEtas.push(etaObj);
+
+      const row = document.createElement("div");
+      row.className = "eta-row";
+      if (d.minutes <= 0) {
+        row.classList.add("eta-imminent");
+      } else {
+        row.style.color = typeof grayColorByMinutes === "function" ? grayColorByMinutes(d.minutes) : "#333";
+      }
+
+      const contentNode = document.createElement("span");
+      const badge = isJointRoute ? (item._company === "KMB" ? "[九巴] " : "[城巴] ") : "";
+      contentNode.textContent = badge + d.text;
+      if (d.isScheduled) contentNode.style.fontStyle = "italic";
+
+      row.appendChild(contentNode);
+      etaBlock.appendChild(row);
+
+      rowElementsMap.set(d.etaTime.getTime(), row);
+    });
+
+    let isTracked = false;
+    let estimatedTravelMin = 0;
+    let estimatedArriveTime = null;
+
+    if (window.transferBestBus && window.transferBestBus.etaTime instanceof Date && transferCurrentStopId) {
+      const tStop = transferRouteStops.find(s => s.stop_id === transferCurrentStopId && s.seq == window.transferCurrentSeq)
+                 || transferRouteStops.find(s => s.stop_id === transferCurrentStopId);
+      const cStop = transferRouteStops.find(s => s.stop_id === stopId && s.seq == actualSeq)
+                 || transferRouteStops.find(s => s.stop_id === stopId);
+
+      if (tStop && cStop) {
+        const seqDiff = parseInt(cStop.seq) - parseInt(tStop.seq);
+        if (seqDiff > 0) estimatedTravelMin = seqDiff * 2;
+      }
+      estimatedArriveTime = new Date(window.transferBestBus.etaTime.getTime() + estimatedTravelMin * 60000);
+    }
+
+    if (estimatedArriveTime && actualEtas.length > 0) {
+      let targetStatus = "not_departed";
+      if (typeof formatDetailLine === "function" && window.transferBestBus) {
+        const detail = formatDetailLine(window.transferBestBus.raw);
+        if (detail && detail.status) targetStatus = detail.status;
+      }
+
+      const trackResult = findClosestMatchingBus(estimatedArriveTime, targetStatus, actualEtas);
+
+      if (trackResult && trackResult.type === "ok") {
+        const matchedTimeKey = trackResult.bus.time.getTime();
+        const targetRow = rowElementsMap.get(matchedTimeKey);
+
+        if (targetRow) {
+          targetRow.classList.add("transfer-tracked");
+        }
+
+        if (summarySpan) {
+          const arriveDate = trackResult.bus.time;
+          const hh = String(arriveDate.getHours()).padStart(2, "0");
+          const mm = String(arriveDate.getMinutes()).padStart(2, "0");
+
+          summarySpan.textContent = `搭緊: 預計 ${hh}:${mm} 到達`;
+          summarySpan.style.color = "#007bff";
+          summarySpan.style.fontWeight = "bold";
+        }
+        isTracked = true;
+      }
+    }
+
+    if (!isTracked && summarySpan) {
+      if (estimatedArriveTime !== null) {
+        const hh = String(estimatedArriveTime.getHours()).padStart(2, "0");
+        const mm = String(estimatedArriveTime.getMinutes()).padStart(2, "0");
+        summarySpan.textContent = `無法追蹤: 預計行駛 ${estimatedTravelMin} 分鐘 (${hh}:${mm} 到達)`;
+        summarySpan.style.fontWeight = "normal";
+        summarySpan.style.color = "#555555";
+      } else {
+        summarySpan.textContent = "";
+      }
+    }
+  } catch (e) {
+    console.error(e);
+    etaBlock.textContent = "載入 ETA 失敗：" + e.message;
+    if (summarySpan) summarySpan.textContent = "";
+  }
+}
+
+/* ========== 實際道路導航路線 (OSRM Road & Foot Routing) + 地圖繪製 ========== */
+
+const osrmGeometryCache = new Map();
+let mainRouteRenderToken = 0;
+let secondRouteRenderToken = 0;
+
+async function fetchActualRoadGeometry(latlngs, profile = "driving") {
+  if (!latlngs || latlngs.length < 2) return latlngs;
+
+  if (latlngs.length === 2) {
+    const d = haversineDistanceMeters(latlngs[0][0], latlngs[0][1], latlngs[1][0], latlngs[1][1]);
+    if (d < 15) return latlngs;
+  }
+
+  const cacheKey = `${profile}_${latlngs.map(p => `${p[0].toFixed(4)},${p[1].toFixed(4)}`).join(";")}`;
+  if (osrmGeometryCache.has(cacheKey)) {
+    return osrmGeometryCache.get(cacheKey);
+  }
+
+  const CHUNK_SIZE = 24;
+  const fullPath = [];
+
+  try {
+    for (let i = 0; i < latlngs.length - 1; i += CHUNK_SIZE - 1) {
+      const chunk = latlngs.slice(i, i + CHUNK_SIZE);
+      if (chunk.length < 2) break;
+
+      const coordsStr = chunk.map(pt => `${pt[1].toFixed(6)},${pt[0].toFixed(6)}`).join(";");
+      const baseUrl = profile === "foot"
+        ? `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coordsStr}?overview=full&geometries=geojson`
+        : `https://router.project-osrm.org/route/v1/driving/${coordsStr}?overview=full&geometries=geojson`;
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 5000);
+      const res = await fetch(baseUrl, { signal: controller.signal });
+      clearTimeout(timeoutId);
+
+      if (!res.ok) throw new Error("OSRM HTTP " + res.status);
+      const data = await res.json();
+
+      if (data && data.routes && data.routes[0] && data.routes[0].geometry && data.routes[0].geometry.coordinates) {
+        const segCoords = data.routes[0].geometry.coordinates.map(c => [c[1], c[0]]);
+        if (fullPath.length > 0) segCoords.shift();
+        fullPath.push(...segCoords);
+      } else {
+        if (fullPath.length > 0) chunk.shift();
+        fullPath.push(...chunk);
+      }
+    }
+
+    if (fullPath.length >= 2) {
+      osrmGeometryCache.set(cacheKey, fullPath);
+      return fullPath;
+    }
+  } catch (e) {
+    console.warn("OSRM 道路導航連線失敗，退回直線連接:", e.message);
+  }
+
+  return latlngs;
+}
+
+async function showRouteStopsOnMap(stops) {
+  const token = ++mainRouteRenderToken;
+
+  if (window.mainRouteLine) map.removeLayer(window.mainRouteLine);
+  if (window.allStopMarkers) {
+    window.allStopMarkers.forEach(m => map.removeLayer(m));
+  }
+  window.allStopMarkers = [];
+
+  const latlngs = [];
+  stops.forEach(s => {
+    const info = allStopsMap.get(s.stop_id);
+    if (info) {
+      const lat = parseFloat(info.lat);
+      const lon = parseFloat(info.long);
+      if (!isFinite(lat) || !isFinite(lon)) return;
+
+      const icon = L.divIcon({
+        className: "stop-label",
+        html: `<div>${s.seq}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      });
+
+      const marker = L.marker([lat, lon], { icon: icon }).addTo(map);
+      marker.stopId = s.stop_id;
+      marker.seq = parseInt(s.seq);
+
+      const name = info.name_tc || s.stop_id;
+      marker.bindPopup(`<b>${s.seq}. ${name}</b>`);
+
+      window.allStopMarkers.push(marker);
+      latlngs.push([lat, lon]);
+    }
+  });
+
+  window.mainRouteLine = L.polyline(latlngs, {
+    color: "#1565c0", weight: 5, opacity: 0.85, lineJoin: "round"
+  }).addTo(map);
+
+  if (latlngs.length > 0) {
+    map.fitBounds(window.mainRouteLine.getBounds(), { padding: [24, 24] });
+  }
+
+  if (latlngs.length >= 2) {
+    const roadCoords = await fetchActualRoadGeometry(latlngs, "driving");
+    if (token === mainRouteRenderToken && window.mainRouteLine && map.hasLayer(window.mainRouteLine)) {
+      window.mainRouteLine.setLatLngs(roadCoords);
+    }
+  }
+}
+
+async function updateFirstRouteFocus(targetStopId) {
+  if (!routeStops || routeStops.length === 0) return;
+
+  const token = ++mainRouteRenderToken;
+  const stopIndex = routeStops.findIndex(s => s.stop_id === targetStopId);
+  if (stopIndex === -1) return;
+
+  const targetSeq = parseInt(routeStops[stopIndex].seq);
+
+  window.allStopMarkers.forEach(m => {
+    if (m.seq > targetSeq) {
+      if (map.hasLayer(m)) map.removeLayer(m);
+    } else {
+      if (!map.hasLayer(m)) map.addLayer(m);
+    }
+  });
+
+  const partialLatLngs = routeStops.slice(0, stopIndex + 1).map(s => {
+    const info = allStopsMap.get(s.stop_id);
+    if (!info) return null;
+    return [parseFloat(info.lat), parseFloat(info.long)];
+  }).filter(Boolean);
+
+  if (window.mainRouteLine) {
+    window.mainRouteLine.setLatLngs(partialLatLngs);
+    if (partialLatLngs.length >= 2) {
+      const roadCoords = await fetchActualRoadGeometry(partialLatLngs, "driving");
+      if (token === mainRouteRenderToken && window.mainRouteLine) {
+        window.mainRouteLine.setLatLngs(roadCoords);
+      }
+    }
+  }
+}
+
+async function selectSecondRoute(targetStopId) {
+  if (!map || !transferRouteStops || !transferRouteStops.length) return;
+
+  clearSecondRouteVisual();
+  const token = ++secondRouteRenderToken;
+  updateFirstRouteFocus(transferStopId);
+
+  const latlngsForSecond = [];
+  let foundTransferPoint = false;
+
+  transferRouteStops.forEach(rs => {
+    if (rs.stop_id === targetStopId) foundTransferPoint = true;
+
+    if (foundTransferPoint) {
+      const info = allStopsMap.get(rs.stop_id);
+      if (!info) return;
+      const lat = parseFloat(info.lat);
+      const lon = parseFloat(info.long);
+      if (!isFinite(lat) || !isFinite(lon)) return;
+
+      const icon = L.divIcon({
+        className: "stop-label second-route",
+        html: `<div>${rs.seq}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+      });
+
+      const marker = L.marker([lat, lon], { icon }).addTo(map);
+      marker.stopId = rs.stop_id;
+      marker.bindPopup(`<b>${rs.seq}. ${rs.name_tc || rs.stop_id}</b>`);
+
+      secondRouteMarkers.push(marker);
+      latlngsForSecond.push([lat, lon]);
+    }
+  });
+
+  let redLine = null;
+  if (latlngsForSecond.length >= 2) {
+    redLine = L.polyline(latlngsForSecond, {
+      color: "#e53935", weight: 5, opacity: 0.9, lineJoin: "round"
+    }).addTo(map);
+    secondRouteMarkers.push(redLine);
+  }
+
+  const firstMarker = window.allStopMarkers.find(m => m.stopId === transferStopId);
+  const secondMarker = secondRouteMarkers.find(m => m.stopId === targetStopId);
+  if (firstMarker && secondMarker) {
+    const walkStart = [firstMarker.getLatLng().lat, firstMarker.getLatLng().lng];
+    const walkEnd = [secondMarker.getLatLng().lat, secondMarker.getLatLng().lng];
+    transferLine = L.polyline([walkStart, walkEnd], {
+      color: "#2e7d32", weight: 5, dashArray: "6, 8"
+    }).addTo(map);
+
+    fetchActualRoadGeometry([walkStart, walkEnd], "foot").then(footCoords => {
+      if (token === secondRouteRenderToken && transferLine && map.hasLayer(transferLine)) {
+        transferLine.setLatLngs(footCoords);
+      }
+    });
+  }
+
+  if (redLine && latlngsForSecond.length >= 2) {
+    const roadCoords = await fetchActualRoadGeometry(latlngsForSecond, "driving");
+    if (token === secondRouteRenderToken && map.hasLayer(redLine)) {
+      redLine.setLatLngs(roadCoords);
+    }
+  }
+}
+
+async function resetFirstRouteFull() {
+  if (!routeStops || routeStops.length === 0) return;
+  const token = ++mainRouteRenderToken;
+
+  if (window.allStopMarkers) {
+    window.allStopMarkers.forEach(m => {
+      if (!map.hasLayer(m)) map.addLayer(m);
+    });
+  }
+
+  const fullLatLngs = routeStops.map(s => {
+    const info = allStopsMap.get(s.stop_id);
+    if (!info) return null;
+    const lat = parseFloat(info.lat);
+    const lon = parseFloat(info.long);
+    if (!isFinite(lat) || !isFinite(lon)) return null;
+    return [lat, lon];
+  }).filter(ll => ll !== null);
+
+  if (window.mainRouteLine) {
+    window.mainRouteLine.setLatLngs(fullLatLngs);
+    if (fullLatLngs.length >= 2) {
+      const roadCoords = await fetchActualRoadGeometry(fullLatLngs, "driving");
+      if (token === mainRouteRenderToken && window.mainRouteLine) {
+        window.mainRouteLine.setLatLngs(roadCoords);
+      }
+    }
+  }
+}
+
+async function showFullSecondRoute() {
+  const token = ++secondRouteRenderToken;
+  resetFirstRouteFull();
+
+  if (transferLine && map.hasLayer(transferLine)) {
+    map.removeLayer(transferLine);
+    transferLine = null;
+  }
+
+  secondRouteMarkers.forEach(m => { if (map.hasLayer(m)) map.removeLayer(m); });
+  secondRouteMarkers = [];
+
+  const latlngsForFullRed = [];
+  transferRouteStops.forEach(rs => {
+    const info = allStopsMap.get(rs.stop_id);
+    if (!info) return;
+    const lat = parseFloat(info.lat);
+    const lon = parseFloat(info.long);
+    if (!isFinite(lat) || !isFinite(lon)) return;
+
+    const icon = L.divIcon({
+      className: "stop-label second-route",
+      html: `<div>${rs.seq}</div>`,
+      iconSize: [24, 24],
+      iconAnchor: [12, 12]
+    });
+    const marker = L.marker([lat, lon], { icon }).addTo(map);
+    marker.bindPopup(`<b>${rs.seq}. ${rs.name_tc || rs.stop_id}</b>`);
+    secondRouteMarkers.push(marker);
+    latlngsForFullRed.push([lat, lon]);
+  });
+
+  if (latlngsForFullRed.length >= 2) {
+    const redLine = L.polyline(latlngsForFullRed, { color: "#e53935", weight: 5, opacity: 0.9, lineJoin: "round" }).addTo(map);
+    secondRouteMarkers.push(redLine);
+    const roadCoords = await fetchActualRoadGeometry(latlngsForFullRed, "driving");
+    if (token === secondRouteRenderToken && map.hasLayer(redLine)) {
+      redLine.setLatLngs(roadCoords);
+    }
+  }
+}
+
+function clearSecondRouteVisual() {
+  secondRouteRenderToken++;
+  secondRouteMarkers.forEach(m => { if (map && map.hasLayer(m)) map.removeLayer(m); });
+  secondRouteMarkers = [];
+
+  if (transferLine && map && map.hasLayer(transferLine)) map.removeLayer(transferLine);
+  transferLine = null;
+  secondTransferStopId = null;
+
+  resetFirstRouteFull();
+}
