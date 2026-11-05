@@ -6187,12 +6187,16 @@ async function drawUserWalkRouteToStop(stopId) {
     } catch (e) {}
   }
 }
-// --- 3. 🔔 背景不休眠通知列 (靜音音訊保活 + Web Worker 計時 + 右側動態 Logo) ---
+
+
+
+// --- 3. 🔔 穩定版通知列 + 右側動態進度環車牌 Logo (永不假死，兼容三星瀏覽器 + Even G2) ---
 
 var keepAliveAudio = null;
 var bgTimerWorker = null;
+var notiUpdateCounter = 0;
 
-// 建立一段 1 秒長、完全無聲 (0 音量) 嘅 WAV Base64，用嚟防止 Android 鎖屏休眠網頁
+// 靜音音訊保活（防止鎖屏後網頁計時器休眠）
 function startSilentAudioKeepAlive() {
   try {
     if (!keepAliveAudio) {
@@ -6215,7 +6219,7 @@ function stopSilentAudioKeepAlive() {
   } catch (e) {}
 }
 
-// 用 Web Worker 建立唔會被瀏覽器背景降頻嘅 60 秒計時器
+// Web Worker 獨立 60 秒計時器
 function startWorkerInterval(callback, ms = 60000) {
   stopWorkerInterval();
   try {
@@ -6251,9 +6255,10 @@ function drawRoundRect(ctx, x, y, w, h, r) {
   ctx.closePath();
 }
 
+// ★ 用 128x128 尺寸畫進度環車牌 Logo（確保 Base64 極細，三星瀏覽器秒速顯示唔會爆限制）
 function createCountdownBadgeIcon(minutesLeft, routeCode, hhmmStr) {
   try {
-    const size = 192;
+    const size = 128;
     const canvas = document.createElement("canvas");
     canvas.width = size;
     canvas.height = size;
@@ -6269,61 +6274,65 @@ function createCountdownBadgeIcon(minutesLeft, routeCode, hhmmStr) {
       grad.addColorStop(0, "#1d4ed8");
       grad.addColorStop(1, "#0f172a");
     }
-    drawRoundRect(ctx, 6, 6, size - 12, size - 12, 36);
+    drawRoundRect(ctx, 4, 4, size - 8, size - 8, 24);
     ctx.fillStyle = grad;
     ctx.fill();
 
-    drawRoundRect(ctx, 24, 15, size - 48, 34, 17);
+    // 頂部路線號膠囊
+    drawRoundRect(ctx, 16, 10, size - 32, 22, 11);
     ctx.fillStyle = "rgba(255, 255, 255, 0.2)";
     ctx.fill();
 
     ctx.fillStyle = "#ffffff";
-    ctx.font = "bold 24px sans-serif";
+    ctx.font = "bold 16px sans-serif";
     ctx.textAlign = "center";
     ctx.textBaseline = "middle";
-    ctx.fillText(routeCode || "BUS", size / 2, 33);
+    ctx.fillText(routeCode || "BUS", size / 2, 21);
 
+    // 中央進度圓環
     const cx = size / 2;
-    const cy = 102;
-    const radius = 40;
+    const cy = 67;
+    const radius = 26;
 
     ctx.beginPath();
     ctx.arc(cx, cy, radius, 0, Math.PI * 2);
-    ctx.lineWidth = 7;
+    ctx.lineWidth = 5;
     ctx.strokeStyle = "rgba(255, 255, 255, 0.15)";
     ctx.stroke();
 
     const progress = Math.max(0.05, Math.min(1, (20 - Math.max(0, minutesLeft)) / 20));
     ctx.beginPath();
     ctx.arc(cx, cy, radius, -Math.PI / 2, -Math.PI / 2 + progress * Math.PI * 2);
-    ctx.lineWidth = 7;
+    ctx.lineWidth = 5;
     ctx.lineCap = "round";
     ctx.strokeStyle = isUrgent ? "#fde047" : "#38bdf8";
     ctx.stroke();
 
+    // 中央分鐘數字
     ctx.fillStyle = "#ffffff";
     if (minutesLeft <= 0) {
-      ctx.font = "bold 26px sans-serif";
-      ctx.fillText("即將", cx, cy - 6);
-      ctx.font = "bold 18px sans-serif";
+      ctx.font = "bold 17px sans-serif";
+      ctx.fillText("即將", cx, cy - 4);
+      ctx.font = "bold 11px sans-serif";
       ctx.fillStyle = "#fde047";
-      ctx.fillText("到站", cx, cy + 18);
+      ctx.fillText("到站", cx, cy + 11);
     } else {
-      ctx.font = "bold 46px sans-serif";
-      ctx.fillText(String(minutesLeft), cx, cy - 4);
-      ctx.font = "bold 16px sans-serif";
+      ctx.font = "bold 29px sans-serif";
+      ctx.fillText(String(minutesLeft), cx, cy - 3);
+      ctx.font = "bold 11px sans-serif";
       ctx.fillStyle = "rgba(255, 255, 255, 0.85)";
-      ctx.fillText("分鐘", cx, cy + 24);
+      ctx.fillText("分鐘", cx, cy + 15);
     }
 
+    // 底部預計到站時間 (例如 20:48)
     if (hhmmStr) {
-      drawRoundRect(ctx, 36, 152, size - 72, 26, 13);
+      drawRoundRect(ctx, 22, 101, size - 44, 18, 9);
       ctx.fillStyle = "rgba(0, 0, 0, 0.4)";
       ctx.fill();
 
       ctx.fillStyle = "#fde047";
-      ctx.font = "bold 17px monospace, sans-serif";
-      ctx.fillText(hhmmStr, size / 2, 166);
+      ctx.font = "bold 12px monospace, sans-serif";
+      ctx.fillText(hhmmStr, size / 2, 110);
     }
 
     return canvas.toDataURL("image/png");
@@ -6332,23 +6341,45 @@ function createCountdownBadgeIcon(minutesLeft, routeCode, hhmmStr) {
   }
 }
 
-function stopPersistentTrackingNotification() {
-  stopWorkerInterval();
-  stopSilentAudioKeepAlive();
-
+async function clearOldBusNotifications() {
   if (activeBusNotification && typeof activeBusNotification.close === "function") {
     try { activeBusNotification.close(); } catch (e) {}
     activeBusNotification = null;
   }
   if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.getRegistration().then(reg => {
-      if (reg && reg.active) {
-        reg.active.postMessage({ type: "STOP_SW_TRACK" });
-      }
+    try {
+      const reg = await navigator.serviceWorker.getRegistration();
       if (reg && reg.getNotifications) {
-        reg.getNotifications({ tag: "bus-eta-tracker" }).then(list => list.forEach(n => n.close()));
+        const list = await reg.getNotifications();
+        list.forEach(n => {
+          if (n.tag && n.tag.startsWith("bus-eta")) n.close();
+        });
       }
-    }).catch(() => {});
+    } catch (e) {}
+  }
+}
+
+function stopPersistentTrackingNotification() {
+  stopWorkerInterval();
+  stopSilentAudioKeepAlive();
+  clearOldBusNotifications();
+}
+
+// 確保 Service Worker 處於健康狀態（如果之前卡死咗會自動重新註冊並激活）
+async function getHealthySwRegistration() {
+  if (!("serviceWorker" in navigator)) return null;
+  try {
+    let reg = await navigator.serviceWorker.getRegistration("./sw.js");
+    if (!reg) {
+      reg = await navigator.serviceWorker.register("./sw.js");
+    }
+    if (reg.installing || reg.waiting) {
+      await new Promise(r => setTimeout(r, 200));
+    }
+    await reg.update().catch(() => {});
+    return reg;
+  } catch (e) {
+    return null;
   }
 }
 
@@ -6361,7 +6392,6 @@ async function updatePersistentTrackingNotification() {
   const now = new Date();
   const diffMin = Math.round((selectedEtaTime - now) / 60000);
 
-  // 架車開走咗 (< 0 分鐘) 即刻關閉通知並停止背景保活
   if (diffMin < 0) {
     stopPersistentTrackingNotification();
     return;
@@ -6387,74 +6417,74 @@ async function updatePersistentTrackingNotification() {
   const mm = String(selectedEtaTime.getMinutes()).padStart(2, "0");
   const hhmmStr = `${hh}:${mm}`;
 
+  // 4 行乾淨直排：
+  // 89S (往水泉澳總站)
+  // 烏溪沙路
+  // 10 分鐘 (20:48)
+  // 距離421米 (3分鐘)
   const titleText = `${currentRoute.route} (往${dirTerm})`;
   const etaLine   = diffMin <= 0
     ? `即將到達 (${hhmmStr})`
     : `${diffMin} 分鐘 (${hhmmStr})`;
 
-  const walkText = (currentWalkDistMeters != null && currentWalkMinutes != null)
-    ? `距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`
-    : "";
-
   const bodyLines = [stopName, etaLine];
-  if (walkText) bodyLines.push(walkText);
-
-  // 同步資料俾 Service Worker 做雙重後備
-  if ("serviceWorker" in navigator) {
-    navigator.serviceWorker.getRegistration().then(reg => {
-      if (reg && reg.active) {
-        reg.active.postMessage({
-          type: "START_SW_TRACK",
-          payload: {
-            titleText,
-            stopName,
-            hhmmStr,
-            walkText,
-            etaTimestamp: selectedEtaTime.getTime(),
-            lastMainUpdate: Date.now()
-          }
-        });
-      }
-    }).catch(() => {});
+  if (currentWalkDistMeters != null && currentWalkMinutes != null) {
+    bodyLines.push(`距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`);
   }
+  const bodyText = bodyLines.join("\n");
 
-  if (!("Notification" in window) || Notification.permission !== "granted") return;
+  if (!("Notification" in window)) {
+    showToast("⚠️ 此瀏覽器不支援通知功能");
+    return;
+  }
+  if (Notification.permission !== "granted") {
+    const perm = await Notification.requestPermission().catch(() => "denied");
+    if (perm !== "granted") {
+      showToast("⚠️ 請喺瀏覽器設定允許此網站發送通知");
+      return;
+    }
+  }
 
   const badgeIconUrl = createCountdownBadgeIcon(diffMin, currentRoute.route, hhmmStr);
 
+  // ★ 先清走舊通知，再用新序號 tag 發送，徹底防止 Samsung One UI 吞通知！
+  await clearOldBusNotifications();
+  const dynamicTag = `bus-eta-${++notiUpdateCounter}`;
+
   const options = {
-    body: bodyLines.join("\n"),
+    body: bodyText,
     icon: badgeIconUrl,
-    tag: "bus-eta-tracker",
-    renotify: true,
+    tag: dynamicTag,
     requireInteraction: true
   };
 
-  try {
-    if ("serviceWorker" in navigator) {
-      const reg = await navigator.serviceWorker.getRegistration();
-      if (reg && reg.showNotification) {
-        await reg.showNotification(titleText, options);
+  // 1) 優先用健康嘅 Service Worker 彈出 Android 系統通知列
+  const reg = await getHealthySwRegistration();
+  if (reg && reg.showNotification) {
+    try {
+      await reg.showNotification(titleText, options);
+      return;
+    } catch (swErr) {
+      // 萬一 Icon 被擋，即刻用純文字補發
+      try {
+        await reg.showNotification(titleText, { body: bodyText, tag: dynamicTag });
         return;
-      }
+      } catch (swErr2) {}
     }
-    if (activeBusNotification && typeof activeBusNotification.close === "function") {
-      activeBusNotification.close();
-    }
+  }
+
+  // 2) 後備：桌面或一般瀏覽器 Notification
+  try {
     activeBusNotification = new Notification(titleText, options);
-  } catch (e) {}
+  } catch (err) {
+    showToast("⚠️ 無法彈出通知，請關閉此分頁再重開一次");
+  }
 }
 
 async function startPersistentTrackingNotification() {
-  // ★ 1. 啟動無聲音訊循環，防止三星瀏覽器喺鎖屏/背景時凍結計時器
   startSilentAudioKeepAlive();
-
-  if ("Notification" in window && Notification.permission !== "granted") {
-    try { await Notification.requestPermission(); } catch (e) {}
-  }
   await updatePersistentTrackingNotification();
 
-  // ★ 2. 用 Web Worker 每 60 秒精準觸發更新
   startWorkerInterval(() => {
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
@@ -6473,7 +6503,6 @@ async function startPersistentTrackingNotification() {
   }, 60000);
 }
 
-// 當用家打開返畫面時，亦即時同步一次最新倒數
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && bgTimerWorker && selectedEtaTime) {
     updatePersistentTrackingNotification();
@@ -6484,10 +6513,8 @@ const _origSetTrackingEta = setTrackingEta;
 setTrackingEta = function(etaObj, rowElement) {
   _origSetTrackingEta(etaObj, rowElement);
   if (rowElement) {
-    showToast("🔔 已啟動背景持續到站通知");
+    showToast("🔔 已啟動實時到站通知");
     startPersistentTrackingNotification();
-  } else if (bgTimerWorker || busNotificationTimer) {
-    updatePersistentTrackingNotification();
   }
 };
 
@@ -7344,3 +7371,45 @@ function switchMobileLegTab(legNum) {
   renderVirtualKeyboard();
   renderTransferVirtualKeyboard();
 })();
+
+// ★ 修正「✕ 重設路線」徹底清除藍線、紅線、紫線及站點（防止異步重畫藍線）
+const _origResetAllState = resetAllState;
+resetAllState = function() {
+  // 1. 先清空 routeStops 同埋遞增 Token，令所有進行中嘅異步畫線請求即刻失效
+  routeStops = [];
+  transferRouteStops = [];
+  mainRouteRenderToken++;
+  secondRouteRenderToken++;
+
+  // 2. 執行原本嘅重設邏輯
+  _origResetAllState();
+
+  // 3. 強制清除地圖上嘅第一程藍線、所有藍點、轉車線及步行紫線
+  if (map) {
+    if (window.mainRouteLine && map.hasLayer(window.mainRouteLine)) {
+      map.removeLayer(window.mainRouteLine);
+    }
+    window.mainRouteLine = null;
+
+    if (window.allStopMarkers) {
+      window.allStopMarkers.forEach(m => {
+        if (map.hasLayer(m)) map.removeLayer(m);
+      });
+    }
+    window.allStopMarkers = [];
+
+    if (userToStopRouteLayer && map.hasLayer(userToStopRouteLayer)) {
+      map.removeLayer(userToStopRouteLayer);
+    }
+    userToStopRouteLayer = null;
+
+    // 補回香港地圖底圖（防止原版 resetAllState 誤刪無 _url 嘅文字圖層）及你嘅 GPS 綠點
+    let hasTile = false;
+    map.eachLayer(l => { if (l._url) hasTile = true; });
+    if (!hasTile) {
+      L.tileLayer("https://mapapi.geodata.gov.hk/gs/api/v1.0.0/xyz/basemap/WGS84/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
+      L.tileLayer("https://mapapi.geodata.gov.hk/gs/api/v1.0.0/xyz/label/hk/tc/WGS84/{z}/{x}/{y}.png", { maxZoom: 19 }).addTo(map);
+    }
+    renderUserLocationSpot();
+  }
+};
