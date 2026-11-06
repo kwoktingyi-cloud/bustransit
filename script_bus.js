@@ -971,139 +971,6 @@ function stopPersistentTrackingNotification() {
   }
 }
 
-async function updatePersistentTrackingNotification() {
-  if (!selectedEtaTime || !currentRoute || !originStopId) {
-    stopPersistentTrackingNotification();
-    return;
-  }
-
-  try {
-    const company = currentRoute.company || "KMB";
-    const routeName = currentRoute.route;
-    const data = await BusAPI.getEta(company, originStopId, routeName, currentServiceType);
-    const list = (data.data || []).filter(item => {
-      if (!item.eta) return false;
-      const rmk = String(item.rmk_tc || "");
-      if (rmk.includes("時段") || rmk.includes("預定班次") || rmk === "離開") return false;
-      if (originSeq && parseInt(item.seq) !== parseInt(originSeq)) return false;
-      if ((company === "KMB" || isGmbCompany(company)) && currentDirectionCode && item.dir !== currentDirectionCode) return false;
-      return true;
-    });
-
-    if (list.length > 0) {
-      const candidates = list.map((item, idx) => {
-        const d = formatDetailLine(item);
-        return d.etaTime ? { index: idx, time: d.etaTime, status: d.status } : null;
-      }).filter(Boolean);
-
-      const match = findClosestMatchingBus(selectedEtaTime, selectedEtaStatus || "departed", candidates);
-      if (match && match.type === "ok" && match.bus && match.bus.time) {
-        selectedEtaTime = match.bus.time;
-      }
-    }
-  } catch (e) {}
-
-  const diffMin = Math.round((selectedEtaTime - new Date()) / 60000);
-  if (diffMin < 0) {
-    stopPersistentTrackingNotification();
-    return;
-  }
-
-  if (userLat != null && userLon != null && originStopId) {
-    const info = allStopsMap.get(originStopId);
-    if (info && info.lat && info.long) {
-      const sLat = parseFloat(info.lat), sLon = parseFloat(info.long);
-      const straightDist = haversineDistanceMeters(userLat, userLon, sLat, sLon);
-      currentWalkDistMeters = Math.round(straightDist * 1.2);
-      currentWalkMinutes = currentWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
-
-      if (straightDist >= 15 && straightDist < 15000) {
-        try {
-          const coordsStr = `${userLon.toFixed(6)},${userLat.toFixed(6)};${sLon.toFixed(6)},${sLat.toFixed(6)}`;
-          const res = await fetch(`https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coordsStr}?overview=full&geometries=geojson`);
-          if (res.ok) {
-            const routeData = await res.json();
-            if (routeData && routeData.routes && routeData.routes[0]) {
-              const r = routeData.routes[0];
-              currentWalkDistMeters = Math.round(r.distance || straightDist);
-              currentWalkMinutes = currentWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
-              const coords = r.geometry.coordinates.map(c => [c[1], c[0]]);
-              if (userToStopRouteLayer && map && map.hasLayer(userToStopRouteLayer)) {
-                userToStopRouteLayer.setLatLngs(coords);
-              }
-            }
-          }
-        } catch (e) {}
-      }
-    }
-  }
-
-  const dirTerm = currentDirection === "inbound"
-    ? (inboundTerminalName !== "?" ? inboundTerminalName : stripBracketCode(currentRoute.dest_tc))
-    : (outboundTerminalName !== "?" ? outboundTerminalName : stripBracketCode(currentRoute.orig_tc));
-
-  const stopObj = routeStops.find(s => s.stop_id === originStopId);
-  const stopName = stopObj ? stripBracketCode(stopObj.name_tc) : "";
-  const hhmmStr = formatTimeHHMM(selectedEtaTime);
-
-  const titleText = `${currentRoute.route} (往${dirTerm})`;
-  const etaLine = diffMin <= 0 ? `即將到達 (${hhmmStr})` : `${diffMin} 分鐘 (${hhmmStr})`;
-  const bodyLines = [stopName, etaLine];
-
-  if (currentWalkDistMeters != null && currentWalkMinutes != null) {
-    bodyLines.push(currentWalkDistMeters < 20 ? `已到達車站附近 (${currentWalkDistMeters}米)` : `距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`);
-  }
-
-  if (!("Notification" in window) || Notification.permission !== "granted") return;
-
-  const badgeIconUrl = createCountdownBadgeIcon(diffMin, currentRoute.route, hhmmStr);
-  const options = {
-    body: bodyLines.join("\n"),
-    icon: badgeIconUrl,
-    tag: "bus-eta-tracker",
-    renotify: true,
-    requireInteraction: true
-  };
-
-  try {
-    if ("serviceWorker" in navigator) {
-      const reg = await navigator.serviceWorker.getRegistration();
-      if (reg && reg.showNotification) {
-        await reg.showNotification(titleText, options);
-        return;
-      }
-    }
-    activeBusNotification = new Notification(titleText, options);
-  } catch (e) {}
-}
-
-async function startPersistentTrackingNotification() {
-  if ("Notification" in window && Notification.permission !== "granted") {
-    try { await Notification.requestPermission(); } catch (e) {}
-  }
-  if ("Notification" in window && Notification.permission === "denied") {
-    showToast("⚠️ 通知已被封鎖，請撳網址列鎖頭允許通知");
-    return;
-  }
-
-  startSilentAudioKeepAlive();
-
-  if (navigator.geolocation) {
-    if (gpsWatchId !== null) navigator.geolocation.clearWatch(gpsWatchId);
-    gpsWatchId = navigator.geolocation.watchPosition(
-      pos => {
-        userLat = pos.coords.latitude;
-        userLon = pos.coords.longitude;
-        renderUserLocationSpot();
-      },
-      () => {},
-      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
-    );
-  }
-
-  await updatePersistentTrackingNotification();
-  startWorkerInterval(() => updatePersistentTrackingNotification(), 60000);
-}
 
 document.addEventListener("visibilitychange", () => {
   if (!document.hidden && bgTimerWorker && selectedEtaTime) {
@@ -1192,73 +1059,6 @@ function filterRoutesByInput() {
   candidateRoutes = uniqueRoutes.filter(r => r.route.toLowerCase().startsWith(kw));
 }
 
-function renderRouteList() {
-  const container = document.getElementById("routeList");
-  if (!container) return;
-  container.innerHTML = "";
-
-  if (currentRoute) return;
-  if (!currentInput) {
-    container.textContent = "請先輸入至少一個字元。";
-    return;
-  }
-  if (candidateRoutes.length === 0) {
-    container.textContent = "冇符合路線";
-    return;
-  }
-
-  const byRoute = new Map();
-  candidateRoutes.forEach(r => {
-    const code = String(r.route).toUpperCase();
-    const isJointBus = !isGmbCompany(r.company) && (/^(N)?[1369]\d{2}[A-Z]?$/.test(code) || ["S1", "R8"].includes(code));
-    const key = isJointBus ? `JOINT-${code}` : `${code}-${r.company}`;
-
-    if (!byRoute.has(key)) {
-      byRoute.set(key, {
-        route: code,
-        orig_tc: r.orig_tc,
-        dest_tc: r.dest_tc,
-        companies: new Set([r.company]),
-        samples: [r]
-      });
-    } else {
-      const obj = byRoute.get(key);
-      obj.companies.add(r.company);
-      obj.samples.push(r);
-    }
-  });
-
-  const sortedGroups = Array.from(byRoute.values()).sort((a, b) =>
-    a.route.localeCompare(b.route, undefined, { numeric: true })
-  );
-
-  const topGmbSamples = sortedGroups.slice(0, 15).map(g => g.samples[0]).filter(s => isGmbCompany(s.company));
-  prefetchVisibleGmbOrigins(topGmbSamples, () => {
-    if (!currentRoute && currentInput) renderRouteList();
-  });
-
-  sortedGroups.slice(0, 100).forEach(r => {
-    const div = document.createElement("div");
-    div.className = "route-item";
-
-    const sample0 = r.samples[0];
-    const cos = Array.from(r.companies);
-    const coLabel = getCompanyLabel(cos);
-    div.textContent = `${r.route}${coLabel}：${sample0.orig_tc} ↔ ${sample0.dest_tc}`;
-
-    div.onclick = async () => {
-      const samples = r.samples;
-      const chosen = samples.find(x => x.company === "KMB") || samples.find(x => x.company === "CTB") || samples[0];
-      if (isGmbCompany(chosen.company)) {
-        div.textContent = `${r.route}${coLabel}：載入小巴總站與站點中...`;
-        await ensureGmbRouteMeta(chosen);
-      }
-      selectRoute(chosen);
-    };
-
-    container.appendChild(div);
-  });
-}
 
 function updateAfterInputChange() {
   updateRouteInputDisplay();
@@ -1431,77 +1231,6 @@ function renderTransferVirtualKeyboard() {
     lettersWrap.appendChild(key);
   });
   container.appendChild(lettersWrap);
-}
-
-function updateAfterTransferInputChange() {
-  const display = document.getElementById("transferRouteInputDisplay");
-  if (display) display.textContent = transferCurrentInput || "(未輸入)";
-
-  const listDiv = document.getElementById("transferRouteList");
-  if (!listDiv) return;
-  listDiv.innerHTML = "";
-
-  if (!transferCurrentInput) {
-    listDiv.textContent = "請輸入路線，會以同名站作為預設轉車站。";
-    transferCandidateRoutes = [];
-    renderTransferVirtualKeyboard();
-    return;
-  }
-
-  const kw = transferCurrentInput.toLowerCase();
-  const rawCandidates = uniqueRoutes.filter(r => r.route.toLowerCase().startsWith(kw));
-
-  const byRoute = new Map();
-  rawCandidates.forEach(r => {
-    const code = String(r.route).toUpperCase();
-    const company = r.company || "KMB";
-    const isJointBus = !isGmbCompany(company) && (/^(N)?[1369]\d{2}[A-Z]?$/.test(code) || ["S1", "R8"].includes(code));
-    const key = isJointBus ? `JOINT-${code}` : `${code}-${company}`;
-
-    if (!byRoute.has(key)) {
-      byRoute.set(key, {
-        route: code,
-        orig_tc: r.orig_tc,
-        dest_tc: r.dest_tc,
-        companies: new Set([company]),
-        sampleObj: r
-      });
-    } else {
-      byRoute.get(key).companies.add(company);
-    }
-  });
-
-  const groupedRoutes = Array.from(byRoute.values()).sort((a, b) =>
-    a.route.localeCompare(b.route, undefined, { numeric: true })
-  );
-  transferCandidateRoutes = groupedRoutes.map(g => g.sampleObj);
-
-  const topGmbSamples = groupedRoutes.slice(0, 15).map(g => g.sampleObj).filter(s => isGmbCompany(s.company));
-  prefetchVisibleGmbOrigins(topGmbSamples, () => {
-    if (!transferRoute && transferCurrentInput) updateAfterTransferInputChange();
-  });
-
-  if (!groupedRoutes.length) {
-    listDiv.textContent = "冇符合路線";
-  } else {
-    groupedRoutes.slice(0, 100).forEach(group => {
-      const div = document.createElement("div");
-      div.className = "route-item";
-      const coLabel = getCompanyLabel(Array.from(group.companies));
-      const sObj = group.sampleObj;
-      div.textContent = `${group.route}${coLabel}：${sObj.orig_tc} ↔ ${sObj.dest_tc}`;
-      div.onclick = async () => {
-        if (isGmbCompany(sObj.company)) {
-          div.textContent = `${group.route}${coLabel}：載入小巴總站與站點中...`;
-          await ensureGmbRouteMeta(sObj);
-        }
-        selectTransferRoute(sObj);
-      };
-      listDiv.appendChild(div);
-    });
-  }
-
-  renderTransferVirtualKeyboard();
 }
 
 /* ========== 清除狀態 ========== */
@@ -4077,3 +3806,387 @@ window.onload = async function () {
     localStorage.removeItem(STORAGE_KEY);
   }
 };
+
+
+/* =========================================================================
+   ★ 升級：預設展開抽屜 + 紅/黃/紅黃各半/綠 兩行路線列表 + 實時更新通知距離
+   ========================================================================= */
+
+// 1. 根據公司組合回傳顏色 Class 同顯示名稱（唔用冒號）
+function getRouteCompanyMeta(cosArray) {
+  if (cosArray.length === 1) {
+    const c = cosArray[0];
+    if (c === "KMB") return { css: "co-kmb", label: "九巴" };
+    if (c === "CTB") return { css: "co-ctb", label: "城巴" };
+    if (isGmbCompany(c)) return { css: "co-gmb", label: getGmbRegionName(c) };
+    return { css: "co-kmb", label: c };
+  }
+  return { css: "co-joint", label: "九巴 / 城巴" };
+}
+
+// 建立「左邊顏色 Tag + 第一行(路線+種類) + 第二行(總站)」DOM 元素
+function createTwoLineRouteItemDOM(routeCode, cosArray, origText, destText) {
+  const div = document.createElement("div");
+  div.className = "route-item";
+
+  const meta = getRouteCompanyMeta(cosArray);
+
+  const colorBar = document.createElement("div");
+  colorBar.className = `route-color-bar ${meta.css}`;
+
+  const content = document.createElement("div");
+  content.className = "route-item-content";
+
+  const topRow = document.createElement("div");
+  topRow.className = "route-row-top";
+
+  const codeSpan = document.createElement("span");
+  codeSpan.className = "route-code-text";
+  codeSpan.textContent = routeCode;
+
+  const tagSpan = document.createElement("span");
+  tagSpan.className = `route-co-tag ${meta.css}`;
+  tagSpan.textContent = meta.label;
+
+  topRow.appendChild(codeSpan);
+  topRow.appendChild(tagSpan);
+
+  const bottomRow = document.createElement("div");
+  bottomRow.className = "route-row-bottom";
+  bottomRow.textContent = `${origText} ↔ ${destText}`;
+
+  content.appendChild(topRow);
+  content.appendChild(bottomRow);
+
+  div.appendChild(colorBar);
+  div.appendChild(content);
+
+  return { div, bottomRow };
+}
+
+// 2. Step 1 路線搜尋列表（兩行無冒號 + 左邊紅/黃/紅黃/綠 Tag）
+function renderRouteList() {
+  const container = document.getElementById("routeList");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (currentRoute) return;
+  if (!currentInput) {
+    container.textContent = "請先輸入至少一個字元。";
+    return;
+  }
+  if (candidateRoutes.length === 0) {
+    container.textContent = "冇符合路線";
+    return;
+  }
+
+  const byRoute = new Map();
+  candidateRoutes.forEach(r => {
+    const code = String(r.route).toUpperCase();
+    const isJointBus = !isGmbCompany(r.company) && (/^(N)?[1369]\d{2}[A-Z]?$/.test(code) || ["S1", "R8"].includes(code));
+    const key = isJointBus ? `JOINT-${code}` : `${code}-${r.company}`;
+
+    if (!byRoute.has(key)) {
+      byRoute.set(key, {
+        route: code,
+        orig_tc: r.orig_tc,
+        dest_tc: r.dest_tc,
+        companies: new Set([r.company]),
+        samples: [r]
+      });
+    } else {
+      const obj = byRoute.get(key);
+      obj.companies.add(r.company);
+      obj.samples.push(r);
+    }
+  });
+
+  const sortedGroups = Array.from(byRoute.values()).sort((a, b) =>
+    a.route.localeCompare(b.route, undefined, { numeric: true })
+  );
+
+  const topGmbSamples = sortedGroups.slice(0, 15).map(g => g.samples[0]).filter(s => isGmbCompany(s.company));
+  prefetchVisibleGmbOrigins(topGmbSamples, () => {
+    if (!currentRoute && currentInput) renderRouteList();
+  });
+
+  sortedGroups.slice(0, 100).forEach(r => {
+    const sample0 = r.samples[0];
+    const cos = Array.from(r.companies);
+    const { div, bottomRow } = createTwoLineRouteItemDOM(r.route, cos, sample0.orig_tc, sample0.dest_tc);
+
+    div.onclick = async () => {
+      const samples = r.samples;
+      const chosen = samples.find(x => x.company === "KMB") || samples.find(x => x.company === "CTB") || samples[0];
+      if (isGmbCompany(chosen.company)) {
+        bottomRow.textContent = "載入小巴總站與站點中...";
+        await ensureGmbRouteMeta(chosen);
+      }
+      selectRoute(chosen);
+    };
+
+    container.appendChild(div);
+  });
+}
+
+// 3. Step 4 轉車路線搜尋列表（同樣用兩行無冒號 + 左邊紅/黃/紅黃/綠 Tag）
+function updateAfterTransferInputChange() {
+  const display = document.getElementById("transferRouteInputDisplay");
+  if (display) display.textContent = transferCurrentInput || "(未輸入)";
+
+  const listDiv = document.getElementById("transferRouteList");
+  if (!listDiv) return;
+  listDiv.innerHTML = "";
+
+  if (!transferCurrentInput) {
+    listDiv.textContent = "請輸入路線，會以同名站作為預設轉車站。";
+    transferCandidateRoutes = [];
+    renderTransferVirtualKeyboard();
+    return;
+  }
+
+  const kw = transferCurrentInput.toLowerCase();
+  const rawCandidates = uniqueRoutes.filter(r => r.route.toLowerCase().startsWith(kw));
+
+  const byRoute = new Map();
+  rawCandidates.forEach(r => {
+    const code = String(r.route).toUpperCase();
+    const company = r.company || "KMB";
+    const isJointBus = !isGmbCompany(company) && (/^(N)?[1369]\d{2}[A-Z]?$/.test(code) || ["S1", "R8"].includes(code));
+    const key = isJointBus ? `JOINT-${code}` : `${code}-${company}`;
+
+    if (!byRoute.has(key)) {
+      byRoute.set(key, {
+        route: code,
+        orig_tc: r.orig_tc,
+        dest_tc: r.dest_tc,
+        companies: new Set([company]),
+        sampleObj: r
+      });
+    } else {
+      byRoute.get(key).companies.add(company);
+    }
+  });
+
+  const groupedRoutes = Array.from(byRoute.values()).sort((a, b) =>
+    a.route.localeCompare(b.route, undefined, { numeric: true })
+  );
+  transferCandidateRoutes = groupedRoutes.map(g => g.sampleObj);
+
+  const topGmbSamples = groupedRoutes.slice(0, 15).map(g => g.sampleObj).filter(s => isGmbCompany(s.company));
+  prefetchVisibleGmbOrigins(topGmbSamples, () => {
+    if (!transferRoute && transferCurrentInput) updateAfterTransferInputChange();
+  });
+
+  if (!groupedRoutes.length) {
+    listDiv.textContent = "冇符合路線";
+  } else {
+    groupedRoutes.slice(0, 100).forEach(group => {
+      const sObj = group.sampleObj;
+      const cos = Array.from(group.companies);
+      const { div, bottomRow } = createTwoLineRouteItemDOM(group.route, cos, sObj.orig_tc, sObj.dest_tc);
+
+      div.onclick = async () => {
+        if (isGmbCompany(sObj.company)) {
+          bottomRow.textContent = "載入小巴總站與站點中...";
+          await ensureGmbRouteMeta(sObj);
+        }
+        selectTransferRoute(sObj);
+      };
+      listDiv.appendChild(div);
+    });
+  }
+
+  renderTransferVirtualKeyboard();
+}
+
+// 4. ★ 修復 Notification 距離實時更新（每次強制拉取最新 GPS 座標 + 支援九巴/城巴/小巴站座標）
+function getOriginStopLatLng() {
+  if (!originStopId) return null;
+  const stopObj = routeStops.find(s => s.stop_id === originStopId);
+  const info = allStopsMap.get(originStopId);
+  const lat = parseFloat((stopObj && stopObj.lat) || (info && info.lat));
+  const lon = parseFloat((stopObj && stopObj.long) || (info && info.long));
+  if (!isFinite(lat) || !isFinite(lon)) return null;
+  return { lat, lon, name: stopObj ? stripBracketCode(stopObj.name_tc) : (info ? stripBracketCode(info.name_tc) : "車站") };
+}
+
+async function refreshWalkDistanceForOrigin() {
+  const stopCoords = getOriginStopLatLng();
+  if (!stopCoords || userLat == null || userLon == null) return;
+
+  const straightDist = haversineDistanceMeters(userLat, userLon, stopCoords.lat, stopCoords.lon);
+  currentWalkDistMeters = Math.round(straightDist * 1.2);
+  currentWalkMinutes = currentWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
+
+  if (straightDist >= 15 && straightDist < 15000) {
+    try {
+      const coordsStr = `${userLon.toFixed(6)},${userLat.toFixed(6)};${stopCoords.lon.toFixed(6)},${stopCoords.lat.toFixed(6)}`;
+      // 加入 cache: "no-store" 防止瀏覽器回傳舊嘅步行米數
+      const res = await fetch(
+        `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coordsStr}?overview=full&geometries=geojson`,
+        { cache: "no-store" }
+      );
+      if (res.ok) {
+        const routeData = await res.json();
+        if (routeData && routeData.routes && routeData.routes[0]) {
+          const r = routeData.routes[0];
+          currentWalkDistMeters = Math.round(r.distance || straightDist);
+          currentWalkMinutes = currentWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(currentWalkDistMeters / (5000 / 60)));
+
+          const coords = r.geometry.coordinates.map(c => [c[1], c[0]]);
+          if (userToStopRouteLayer && map && map.hasLayer(userToStopRouteLayer)) {
+            userToStopRouteLayer.setLatLngs(coords);
+          }
+        }
+      }
+    } catch (e) {}
+  }
+
+  const walkBox = document.getElementById("userWalkInfo");
+  if (walkBox) {
+    walkBox.textContent = `🚶 由你位置行去「${stopCoords.name}」：約 ${currentWalkMinutes} 分鐘（實際步程 ${currentWalkDistMeters} 米）`;
+  }
+}
+
+async function updatePersistentTrackingNotification() {
+  if (!selectedEtaTime || !currentRoute || !originStopId) {
+    stopPersistentTrackingNotification();
+    return;
+  }
+
+  // (A) 強制向手機請求一次最新無快取 GPS 座標，確保行路時距離一定識變！
+  if (navigator.geolocation) {
+    await new Promise(resolve => {
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          userLat = pos.coords.latitude;
+          userLon = pos.coords.longitude;
+          renderUserLocationSpot();
+          resolve();
+        },
+        () => resolve(),
+        { enableHighAccuracy: true, maximumAge: 0, timeout: 5000 }
+      );
+    });
+  }
+
+  // (B) 重新計算最新實際步行米數同分鐘
+  await refreshWalkDistanceForOrigin();
+
+  // (C) 重新向九巴 / 城巴 / 小巴 API 拉取最新班次時間
+  try {
+    const company = currentRoute.company || "KMB";
+    const routeName = currentRoute.route;
+    const data = await BusAPI.getEta(company, originStopId, routeName, currentServiceType);
+    const list = (data.data || []).filter(item => {
+      if (!item.eta) return false;
+      const rmk = String(item.rmk_tc || "");
+      if (rmk.includes("時段") || rmk.includes("預定班次") || rmk === "離開") return false;
+      if (originSeq && parseInt(item.seq) !== parseInt(originSeq)) return false;
+      if ((company === "KMB" || isGmbCompany(company)) && currentDirectionCode && item.dir !== currentDirectionCode) return false;
+      return true;
+    });
+
+    if (list.length > 0) {
+      const candidates = list.map((item, idx) => {
+        const d = formatDetailLine(item);
+        return d.etaTime ? { index: idx, time: d.etaTime, status: d.status } : null;
+      }).filter(Boolean);
+
+      const match = findClosestMatchingBus(selectedEtaTime, selectedEtaStatus || "departed", candidates);
+      if (match && match.type === "ok" && match.bus && match.bus.time) {
+        selectedEtaTime = match.bus.time;
+      }
+    }
+  } catch (e) {}
+
+  const diffMin = Math.round((selectedEtaTime - new Date()) / 60000);
+  if (diffMin < 0) {
+    stopPersistentTrackingNotification();
+    return;
+  }
+
+  const dirTerm = currentDirection === "inbound"
+    ? (inboundTerminalName !== "?" ? inboundTerminalName : stripBracketCode(currentRoute.dest_tc))
+    : (outboundTerminalName !== "?" ? outboundTerminalName : stripBracketCode(currentRoute.orig_tc));
+
+  const stopCoords = getOriginStopLatLng();
+  const stopName = stopCoords ? stopCoords.name : "";
+  const hhmmStr = formatTimeHHMM(selectedEtaTime);
+
+  const titleText = `${currentRoute.route} (往${dirTerm})`;
+  const etaLine = diffMin <= 0 ? `即將到達 (${hhmmStr})` : `${diffMin} 分鐘 (${hhmmStr})`;
+  const bodyLines = [stopName, etaLine];
+
+  if (currentWalkDistMeters != null && currentWalkMinutes != null) {
+    bodyLines.push(
+      currentWalkDistMeters < 20
+        ? `已到達車站附近 (${currentWalkDistMeters}米)`
+        : `距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`
+    );
+  }
+
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+  const badgeIconUrl = createCountdownBadgeIcon(diffMin, currentRoute.route, hhmmStr);
+  const options = {
+    body: bodyLines.join("\n"),
+    icon: badgeIconUrl,
+    tag: "bus-eta-tracker",
+    renotify: true,
+    requireInteraction: true
+  };
+
+  try {
+    if ("serviceWorker" in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg && reg.showNotification) {
+        await reg.showNotification(titleText, options);
+        return;
+      }
+    }
+    activeBusNotification = new Notification(titleText, options);
+  } catch (e) {}
+}
+
+// 當 watchPosition 偵測到用家行咗超過 12 米時，即時刷新步程距離
+let lastNotiGpsLat = null;
+let lastNotiGpsLon = null;
+
+async function startPersistentTrackingNotification() {
+  if ("Notification" in window && Notification.permission !== "granted") {
+    try { await Notification.requestPermission(); } catch (e) {}
+  }
+  if ("Notification" in window && Notification.permission === "denied") {
+    showToast("⚠️ 通知已被封鎖，請撳網址列鎖頭允許通知");
+    return;
+  }
+
+  startSilentAudioKeepAlive();
+
+  if (navigator.geolocation) {
+    if (gpsWatchId !== null) navigator.geolocation.clearWatch(gpsWatchId);
+    gpsWatchId = navigator.geolocation.watchPosition(
+      async (pos) => {
+        userLat = pos.coords.latitude;
+        userLon = pos.coords.longitude;
+        renderUserLocationSpot();
+
+        if (lastNotiGpsLat == null || haversineDistanceMeters(lastNotiGpsLat, lastNotiGpsLon, userLat, userLon) >= 12) {
+          lastNotiGpsLat = userLat;
+          lastNotiGpsLon = userLon;
+          await refreshWalkDistanceForOrigin();
+        }
+      },
+      () => {},
+      { enableHighAccuracy: true, maximumAge: 0, timeout: 10000 }
+    );
+  }
+
+  await updatePersistentTrackingNotification();
+  startWorkerInterval(() => updatePersistentTrackingNotification(), 60000);
+}
+
+// 5. ★ 一開網頁預設自動彈開抽屜 ("half")
+setBottomSheetState("half");

@@ -304,6 +304,111 @@
     #toast-msg.show { visibility: visible; animation: toastIn 0.3s, toastOut 0.3s 2.7s; }
     @keyframes toastIn { from {top: -10px; opacity: 0;} to {top: 18px; opacity: 1;} }
     @keyframes toastOut { from {top: 18px; opacity: 1;} to {top: -10px; opacity: 0;} }
+	
+	    /* ★ 平板模式加闊 80px (單程 530px / 轉車雙欄 1060px) */
+    @media (min-width: 768px) {
+      #bottom-sheet {
+        width: 530px !important;
+      }
+      #bottom-sheet.has-transfer {
+        width: 1060px !important;
+        max-width: calc(100vw - 24px) !important;
+      }
+    }
+
+    /* ★ 路線搜尋結果：左邊顏色 Tag + 第一行(路線+種類) + 第二行(總站) */
+    .route-item {
+      display: flex;
+      align-items: stretch;
+      padding: 0 !important;
+      margin: 5px 2px;
+      background: #ffffff;
+      border: 1px solid #e2e8f0 !important;
+      border-radius: 8px !important;
+      overflow: hidden;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.1s;
+    }
+    .route-item:hover {
+      background: #f1f5f9 !important;
+    }
+
+    /* 最左邊顏色 Tag 條 */
+    .route-color-bar {
+      width: 7px;
+      flex-shrink: 0;
+    }
+    .route-color-bar.co-kmb {
+      background: #e53935; /* 九巴紅 */
+    }
+    .route-color-bar.co-ctb {
+      background: #facc15; /* 城巴黃 */
+    }
+    .route-color-bar.co-joint {
+      /* 九巴/城巴：上紅下黃各半 */
+      background: linear-gradient(180deg, #e53935 50%, #facc15 50%);
+    }
+    .route-color-bar.co-gmb {
+      background: #16a34a; /* 小巴綠 */
+    }
+
+    .route-item-content {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 9px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+
+    /* 第一行：路線號碼 + 公司章 */
+    .route-row-top {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .route-code-text {
+      font-size: 15px;
+      font-weight: 800;
+      color: #0f172a;
+      letter-spacing: 0.2px;
+    }
+    .route-co-tag {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 1px 6px;
+      border-radius: 5px;
+      line-height: 1.4;
+    }
+    .route-co-tag.co-kmb {
+      background: #fee2e2;
+      color: #b91c1c;
+    }
+    .route-co-tag.co-ctb {
+      background: #fef08a;
+      color: #854d0e;
+    }
+    .route-co-tag.co-joint {
+      /* 紅黃各半漸層底章 */
+      background: linear-gradient(90deg, #fecaca 50%, #fef08a 50%);
+      color: #1e293b;
+      border: 1px solid #cbd5e1;
+    }
+    .route-co-tag.co-gmb {
+      background: #dcfce7;
+      color: #166534;
+    }
+
+    /* 第二行：總站名稱 */
+    .route-row-bottom {
+      font-size: 12px;
+      font-weight: 500;
+      color: #475569;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
   </style>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
@@ -326,7 +431,7 @@
     <button class="ltb-close" id="ltbCloseBtn" title="停止追蹤通知">✕</button>
   </div>
 
-  <div id="bottom-sheet" class="sheet-collapsed">
+  <div id="bottom-sheet" class="sheet-half">
     <div id="sheet-header">
       <div class="sheet-pill"></div>
       <div class="sheet-title-row">
@@ -335,7 +440,7 @@
           <span class="status-hint" id="sheetStatusHint">向上拉輸入路線</span>
         </div>
         <div class="sheet-quick-btns">
-          <button type="button" class="btn-sheet-toggle" id="btnSheetToggle">展開 ▲</button>
+          <button type="button" class="btn-sheet-toggle" id="btnSheetToggle">全開 ▲</button>
         </div>
       </div>
     </div>
