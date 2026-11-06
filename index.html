@@ -409,6 +409,36 @@
       text-overflow: ellipsis;
     }
 
+    /* ★ 車站列表同搜尋列表嘅車費標籤樣式 */
+    .stop-fare-badge {
+      display: inline-block;
+      font-size: 11px;
+      font-weight: 700;
+      color: #0f766e;
+      background: #ccfbf1;
+      border: 1px solid #99f6e4;
+      padding: 1px 6px;
+      border-radius: 6px;
+      margin-left: 6px;
+      flex-shrink: 0;
+    }
+    .stop-fare-badge.is-terminal {
+      color: #64748b;
+      background: #f1f5f9;
+      border-color: #cbd5e1;
+    }
+    .route-fare-tag {
+      margin-left: auto;
+      font-size: 12px;
+      font-weight: 800;
+      color: #0f766e;
+      background: #f0fdfa;
+      border: 1px solid #99f6e4;
+      padding: 1px 7px;
+      border-radius: 6px;
+    }
+
+
   </style>
 
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"

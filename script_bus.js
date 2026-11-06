@@ -4190,3 +4190,293 @@ async function startPersistentTrackingNotification() {
 
 // 5. ★ 一開網頁預設自動彈開抽屜 ("half")
 setBottomSheetState("half");
+
+
+/* =========================================================================
+   ★ 全港九巴 + 城巴 + 專線小巴「每個站分段車費 (Fares)」自動掛載模組
+   數據來源：運輸署 / hkbus 開源車費整合庫 (支援雙 CDN 自動備援 + 本地快取)
+   ========================================================================= */
+
+var hkFareRouteList = null; // 儲存 routeFareList 入面嘅 routeList
+var fareLoadingPromise = null;
+
+// 1. 背景載入全港車費資料庫（優先讀 24 小時 IndexedDB 快取，秒開唔卡畫面）
+async function loadHkFareDatabase() {
+  if (hkFareRouteList) return hkFareRouteList;
+  if (fareLoadingPromise) return fareLoadingPromise;
+
+  fareLoadingPromise = (async () => {
+    // 嘗試由 IndexedDB 讀取快取（因為全港車費表較大，放 IndexedDB 最穩陣）
+    try {
+      const cached = await getFareFromIndexedDB();
+      if (cached && Date.now() - cached.ts < 86400000 && cached.routeList) {
+        hkFareRouteList = cached.routeList;
+        refreshAllVisibleStopFares();
+        return hkFareRouteList;
+      }
+    } catch (e) {}
+
+    // 雙 CDN 來源（主線 data.hkbus.app + 後備 jsDelivr GitHub CDN）
+    const urls = [
+      "https://data.hkbus.app/routeFareList.min.json",
+      "https://cdn.jsdelivr.net/gh/hkbus/hk-bus-crawling@gh-pages/routeFareList.min.json"
+    ];
+
+    for (const url of urls) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) continue;
+        const json = await res.json();
+        if (json && json.routeList) {
+          // 只抽取精簡欄位 { route, co, orig, dest, stops, fares, gtfsId } 慳記憶體
+          const slimList = {};
+          for (const [k, v] of Object.entries(json.routeList)) {
+            if (v && v.fares && v.fares.length > 0) {
+              slimList[k] = {
+                route: String(v.route || "").toUpperCase(),
+                co: v.co || [],
+                orig: v.orig ? v.orig.zh : "",
+                dest: v.dest ? v.dest.zh : "",
+                gtfsId: v.gtfsId || "",
+                stops: v.stops || {},
+                fares: v.fares
+              };
+            }
+          }
+          hkFareRouteList = slimList;
+          saveFareToIndexedDB({ ts: Date.now(), routeList: slimList }).catch(() => {});
+          console.log("💰 成功載入全港巴士及小巴分段車費庫！");
+          refreshAllVisibleStopFares();
+          return hkFareRouteList;
+        }
+      } catch (e) {
+        console.warn("車費庫來源切換中:", url, e.message);
+      }
+    }
+    return null;
+  })();
+
+  return fareLoadingPromise;
+}
+
+// IndexedDB 輕量讀寫 Helper
+function getFareFromIndexedDB() {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open("BusFareCacheDB", 1);
+      req.onupgradeneeded = e => e.target.result.createObjectStore("fares");
+      req.onsuccess = e => {
+        const db = e.target.result;
+        const tx = db.transaction("fares", "readonly");
+        const getReq = tx.objectStore("fares").get("hk_fares_v1");
+        getReq.onsuccess = () => resolve(getReq.result || null);
+        getReq.onerror = () => resolve(null);
+      };
+      req.onerror = () => resolve(null);
+    } catch (e) { resolve(null); }
+  });
+}
+
+function saveFareToIndexedDB(data) {
+  return new Promise((resolve) => {
+    try {
+      const req = indexedDB.open("BusFareCacheDB", 1);
+      req.onupgradeneeded = e => e.target.result.createObjectStore("fares");
+      req.onsuccess = e => {
+        const db = e.target.result;
+        const tx = db.transaction("fares", "readwrite");
+        tx.objectStore("fares").put(data, "hk_fares_v1");
+        tx.oncomplete = () => resolve(true);
+      };
+      req.onerror = () => resolve(false);
+    } catch (e) { resolve(false); }
+  });
+}
+
+// 2. 根據路線、公司及當前站點序列，精準配對該方向嘅每個站分段車費陣列
+function findFaresArrayForRouteStops(routeObj, stopsArray) {
+  if (!hkFareRouteList || !routeObj || !stopsArray || !stopsArray.length) return null;
+
+  const targetRouteCode = String(routeObj.route || "").toUpperCase();
+  const isGmb = isGmbCompany(routeObj.company);
+  const coKey = isGmb ? "gmb" : (routeObj.company === "CTB" ? "ctb" : "kmb");
+
+  // 將當前方向嘅站點 ID 轉為純 ID 集合（小巴去掉 GMB_ 前綴）
+  const currentStopIds = stopsArray.map(s => String(s.stop_id || "").replace(/^GMB_/, ""));
+  const currentStopSet = new Set(currentStopIds);
+
+  let bestEntry = null;
+  let bestScore = -1;
+
+  for (const entry of Object.values(hkFareRouteList)) {
+    if (entry.route !== targetRouteCode) continue;
+    if (!entry.co.includes(coKey) && !(coKey !== "gmb" && (entry.co.includes("kmb") || entry.co.includes("ctb")))) continue;
+
+    let score = 0;
+
+    // (A) 如果係小巴而且有 gmbRouteId，直接對比 gtfsId 最準
+    if (isGmb && routeObj.gmbRouteId && String(entry.gtfsId) === String(routeObj.gmbRouteId)) {
+      score += 50;
+    }
+
+    // (B) 對比站點 ID 重疊數量（同時區分往返方向與小巴分區）
+    const entryStops = entry.stops[coKey] || entry.stops.kmb || entry.stops.ctb || entry.stops.gmb || [];
+    let matchCount = 0;
+    entryStops.forEach(sid => {
+      if (currentStopSet.has(String(sid))) matchCount++;
+    });
+    score += matchCount * 10;
+
+    // (C) 對比首尾站方向順序（確保循環線或雙向線無掉轉方向）
+    if (entryStops.length >= 2 && currentStopIds.length >= 2) {
+      if (String(entryStops[0]) === currentStopIds[0]) score += 25;
+      if (String(entryStops[entryStops.length - 1]) === currentStopIds[currentStopIds.length - 1]) score += 25;
+    }
+
+    // (D) 終點站名稱關鍵字輔助對齊
+    const lastStopName = stripBracketCode(stopsArray[stopsArray.length - 1].name_tc || "");
+    if (lastStopName && entry.dest && lastStopName.includes(entry.dest.substring(0, 2))) {
+      score += 15;
+    }
+
+    if (score > bestScore && score > 0) {
+      bestScore = score;
+      bestEntry = entry;
+    }
+  }
+
+  return bestEntry ? bestEntry.fares : null;
+}
+
+// 查詢某條路線嘅最高（全程）車費，供 Step 1 搜尋列表顯示
+function getMaxFareForRouteObj(routeObj) {
+  if (!hkFareRouteList || !routeObj) return null;
+  const targetRouteCode = String(routeObj.route || "").toUpperCase();
+  const isGmb = isGmbCompany(routeObj.company);
+  const coKey = isGmb ? "gmb" : (routeObj.company === "CTB" ? "ctb" : "kmb");
+
+  for (const entry of Object.values(hkFareRouteList)) {
+    if (entry.route !== targetRouteCode) continue;
+    if (!entry.co.includes(coKey)) continue;
+    if (isGmb && routeObj.gmbRouteId && String(entry.gtfsId) !== String(routeObj.gmbRouteId)) continue;
+    if (entry.fares && entry.fares[0]) return entry.fares[0];
+  }
+  return null;
+}
+
+// 3. 將每個站嘅分段車費章 ($X.X) 掛上第一程同第二程嘅車站列表
+function decorateStopListWithFares(containerSelector, routeObj, stopsArray) {
+  if (!hkFareRouteList || !routeObj || !stopsArray || !stopsArray.length) return;
+  const fares = findFaresArrayForRouteStops(routeObj, stopsArray);
+  if (!fares || !fares.length) return;
+
+  const stopEls = document.querySelectorAll(`${containerSelector} .stop-item`);
+  stopEls.forEach((el, idx) => {
+    const titleDiv = el.querySelector(".stop-title");
+    if (!titleDiv) return;
+
+    let badge = titleDiv.querySelector(".stop-fare-badge");
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "stop-fare-badge";
+      // 插喺站名後面、「轉車」掣前面
+      const firstSpan = titleDiv.querySelector("span");
+      if (firstSpan && firstSpan.nextSibling) {
+        titleDiv.insertBefore(badge, firstSpan.nextSibling);
+      } else {
+        titleDiv.appendChild(badge);
+      }
+    }
+
+    // 尾站係落車總站，唔收上車車費；其餘各站顯示對應分段車費
+    if (idx >= stopsArray.length - 1) {
+      badge.textContent = "總站";
+      badge.classList.add("is-terminal");
+      el.dataset.fare = "0";
+    } else {
+      const fareVal = fares[Math.min(idx, fares.length - 1)];
+      if (fareVal) {
+        badge.textContent = `$${fareVal}`;
+        badge.classList.remove("is-terminal");
+        el.dataset.fare = String(fareVal);
+      }
+    }
+  });
+}
+
+// 喺 Step 4 轉車步行提示框自動加埋「兩程車費總和」
+function updateCombinedTransferFareText() {
+  const walkInfoDiv = document.getElementById("transferWalkInfo");
+  if (!walkInfoDiv || !walkInfoDiv.textContent) return;
+  if (walkInfoDiv.textContent.includes("💰")) return;
+
+  const leg1El = originStopId
+    ? document.querySelector(`#stopList .stop-item[data-stop-id="${originStopId}"]`)
+    : null;
+  const leg2El = transferCurrentStopId
+    ? document.querySelector(`#transferStopList .stop-item[data-stop-id="${transferCurrentStopId}"]`)
+    : null;
+
+  const f1 = leg1El && leg1El.dataset.fare ? parseFloat(leg1El.dataset.fare) : NaN;
+  const f2 = leg2El && leg2El.dataset.fare ? parseFloat(leg2El.dataset.fare) : NaN;
+
+  if (isFinite(f1) && f1 > 0 && isFinite(f2) && f2 > 0) {
+    const total = (f1 + f2).toFixed(1).replace(/\.0$/, "");
+    walkInfoDiv.textContent += ` ｜ 💰 車費：$${f1} + $${f2} = $${total}`;
+  }
+}
+
+function refreshAllVisibleStopFares() {
+  if (currentRoute && routeStops && routeStops.length) {
+    decorateStopListWithFares("#stopList", currentRoute, routeStops);
+  }
+  if (transferRoute && transferRouteStops && transferRouteStops.length) {
+    decorateStopListWithFares("#transferStopList", transferRoute, transferRouteStops);
+    updateCombinedTransferFareText();
+  }
+  if (!currentRoute && currentInput) {
+    renderRouteList();
+  }
+}
+
+// 4. 掛鈎現有嘅 renderStopList、renderTransferStopList、selectTransferStop 同 createTwoLineRouteItemDOM
+const _origRenderStopListForFare = renderStopList;
+renderStopList = function() {
+  _origRenderStopListForFare();
+  decorateStopListWithFares("#stopList", currentRoute, routeStops);
+};
+
+const _origRenderTransferStopListForFare = renderTransferStopList;
+renderTransferStopList = function() {
+  _origRenderTransferStopListForFare();
+  decorateStopListWithFares("#transferStopList", transferRoute, transferRouteStops);
+};
+
+const _origSelectTransferStopForFare = selectTransferStop;
+selectTransferStop = async function(stopId, seq) {
+  await _origSelectTransferStopForFare(stopId, seq);
+  decorateStopListWithFares("#transferStopList", transferRoute, transferRouteStops);
+  updateCombinedTransferFareText();
+};
+
+if (typeof createTwoLineRouteItemDOM === "function") {
+  const _origCreateTwoLine = createTwoLineRouteItemDOM;
+  createTwoLineRouteItemDOM = function(routeCode, cosArray, origText, destText, sampleObj) {
+    const res = _origCreateTwoLine(routeCode, cosArray, origText, destText);
+    const sample = sampleObj || uniqueRoutes.find(r => r.route === routeCode && cosArray.includes(r.company));
+    const maxFare = getMaxFareForRouteObj(sample);
+    if (maxFare) {
+      const topRow = res.div.querySelector(".route-row-top");
+      if (topRow) {
+        const fareTag = document.createElement("span");
+        fareTag.className = "route-fare-tag";
+        fareTag.textContent = `$${maxFare}`;
+        topRow.appendChild(fareTag);
+      }
+    }
+    return res;
+  };
+}
+
+// 啟動時喺背景載入全港車費表
+loadHkFareDatabase();
