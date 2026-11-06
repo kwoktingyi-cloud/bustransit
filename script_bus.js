@@ -7405,82 +7405,556 @@ resetAllState = function() {
   }
 };
 
+
 /* =========================================================================
-   ★ 專線小巴 (data.etagmb.gov.hk) 自動繞過 CORS 封鎖 + LocalStorage 極速快取
-   （直接貼喺 script_bus.js 最底部即可生效）
+   ★ 專線小巴 (GMB) + 九巴 (KMB) + 城巴 (CTB) 終極修正版
+   （解決 Hoisting 變數 undefined 問題 + 智能排序令小巴排返上頂）
    ========================================================================= */
 
-async function fetchJSON(url, retries = 3, delayMs = 300) {
-  const isGmb = String(url).includes("data.etagmb.gov.hk");
-  const isGmbRealtimeEta = isGmb && String(url).includes("/eta/");
-  const cacheKey = "gmb_cache_" + url;
+var gmbRouteDetailCache = new Map();
+var gmbStopNameCache = new Map();
+var gmbPrefetchLock = new Set();
 
-  // 1. 小巴靜態資料（路線表、總站、站點座標）優先讀 LocalStorage 快取（7日有效，0ms 秒出）
-  if (isGmb && !isGmbRealtimeEta) {
-    try {
-      const cached = localStorage.getItem(cacheKey);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        if (Date.now() - parsed.ts < 7 * 86400000 && parsed.payload) {
-          return parsed.payload;
-        }
-      }
-    } catch (e) {}
-  }
-
-  // 2. 九巴 / 城巴（或非 file:// 下嘗試直連）
-  if (!isGmb || window.location.protocol !== "file:") {
-    for (let i = 0; i < (isGmb ? 1 : retries); i++) {
-      try {
-        const res = await fetch(url);
-        if (!res.ok) throw new Error("HTTP " + res.status);
-        const json = await res.json();
-        if (isGmb && !isGmbRealtimeEta) {
-          try { localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), payload: json })); } catch (e) {}
-        }
-        return json;
-      } catch (e) {
-        if (!isGmb) {
-          if (i === retries - 1) throw e;
-          await new Promise(r => setTimeout(r, delayMs));
-        }
-      }
-    }
-  }
-
-  // 3. ★ 專線小巴遇到 CORS 封鎖時，自動並行透過多條 CORS 通道穿透讀取（邊條最快用邊條）
-  const encoded = encodeURIComponent(url);
-  const proxyUrls = [
-    `https://corsproxy.io/?${encoded}`,
-    `https://api.allorigins.win/raw?url=${encoded}`,
-    `https://api.codetabs.com/v1/proxy?quest=${encoded}`
-  ];
-
-  const fetchViaProxy = async (pUrl) => {
-    const controller = new AbortController();
-    const tid = setTimeout(() => controller.abort(), 6000);
-    try {
-      const res = await fetch(pUrl, { signal: controller.signal });
-      clearTimeout(tid);
-      if (!res.ok) throw new Error("Proxy HTTP " + res.status);
-      const json = await res.json();
-      if (!json || typeof json !== "object") throw new Error("Invalid JSON");
-      return json;
-    } catch (err) {
-      clearTimeout(tid);
-      throw err;
-    }
-  };
-
-  const data = await Promise.any(proxyUrls.map(u => fetchViaProxy(u)));
-
-  // 將小巴路線同站點存入快取，下次撳同一條小巴線唔使再經網絡，即刻秒開！
-  if (!isGmbRealtimeEta) {
-    try { localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), payload: data })); } catch (e) {}
-  }
-
-  return data;
+function isGmbCompany(company) {
+  return String(company || "").startsWith("GMB");
 }
 
-// 重新啟動一次載入小巴路線
+function getGmbRegionName(company) {
+  if (company === "GMB-HKI") return "港島小巴";
+  if (company === "GMB-KLN") return "九龍小巴";
+  if (company === "GMB-NT")  return "新界小巴";
+  return "專線小巴";
+}
+
+function getCompanyLabel(cosArray) {
+  if (cosArray.length === 1) {
+    const c = cosArray[0];
+    if (c === "KMB") return "（九巴）";
+    if (c === "CTB") return "（城巴）";
+    if (isGmbCompany(c)) return ` 🚐（${getGmbRegionName(c)}）`;
+    return `（${c}）`;
+  }
+  return "（九巴 / 城巴）";
+}
+
+// 1. 按需拉取小巴路線嘅真實 route_id 與起訖點總站名
+async function ensureGmbRouteMeta(routeObj) {
+  if (!routeObj || !isGmbCompany(routeObj.company)) return routeObj;
+  if (routeObj.gmbRouteId && routeObj.gmbDirections) return routeObj;
+
+  if (!gmbRouteDetailCache) gmbRouteDetailCache = new Map();
+  const region = routeObj.gmbRegion || routeObj.company.replace("GMB-", "");
+  const cacheKey = `${region}-${routeObj.route}`;
+
+  if (gmbRouteDetailCache.has(cacheKey)) {
+    Object.assign(routeObj, gmbRouteDetailCache.get(cacheKey));
+    return routeObj;
+  }
+
+  try {
+    const res = await fetchJSON(`https://data.etagmb.gov.hk/route/${region}/${routeObj.route}`, 2, 200);
+    const variants = (res && Array.isArray(res.data)) ? res.data : [];
+    if (variants.length > 0) {
+      const mainVar = variants.find(v => v.directions && v.directions.length > 0) || variants[0];
+      const dirs = mainVar.directions || [];
+      const dir1 = dirs.find(d => d.route_seq === 1) || dirs[0];
+      const dir2 = dirs.find(d => d.route_seq === 2) || dirs[1];
+
+      const meta = {
+        gmbRouteId: mainVar.route_id,
+        gmbDirections: dirs,
+        orig_tc: dir1 ? dir1.orig_tc : routeObj.orig_tc,
+        dest_tc: dir1 ? dir1.dest_tc : (dir2 ? dir2.orig_tc : routeObj.dest_tc)
+      };
+      gmbRouteDetailCache.set(cacheKey, meta);
+      Object.assign(routeObj, meta);
+    }
+  } catch (e) {
+    console.warn("小巴路線詳情載入失敗:", cacheKey, e.message);
+  }
+  return routeObj;
+}
+
+// 背景自動預載小巴總站名
+function prefetchVisibleGmbOrigins(routesList, onDone) {
+  if (!gmbPrefetchLock) gmbPrefetchLock = new Set();
+  const targets = (routesList || [])
+    .filter(r => isGmbCompany(r.company) && !r.gmbRouteId && !gmbPrefetchLock.has(`${r.company}-${r.route}`))
+    .slice(0, 12);
+
+  if (!targets.length) return;
+  targets.forEach(r => gmbPrefetchLock.add(`${r.company}-${r.route}`));
+
+  Promise.all(targets.map(r => ensureGmbRouteMeta(r))).then(() => {
+    if (typeof onDone === "function") onDone();
+  });
+}
+
+// 2. 升級 BusAPI 支援 KMB + CTB + GMB
+BusAPI.getRouteStops = async function(company, route, dir, serviceType = "1") {
+  if (!isGmbCompany(company)) {
+    const url = company === "KMB"
+      ? `${API_BASE.KMB}/route-stop/${route}/${dir}/${serviceType}`
+      : `${API_BASE.CTB}/route-stop/ctb/${route}/${dir}`;
+    return await fetchJSON(url);
+  }
+
+  let routeObj = (currentRoute && currentRoute.company === company && currentRoute.route === route)
+    ? currentRoute
+    : (transferRoute && transferRoute.company === company && transferRoute.route === route)
+      ? transferRoute
+      : uniqueRoutes.find(r => r.company === company && r.route === route);
+
+  if (routeObj) await ensureGmbRouteMeta(routeObj);
+  const gmbRouteId = routeObj ? routeObj.gmbRouteId : null;
+  if (!gmbRouteId) return { data: [] };
+
+  const routeSeq = dir === "outbound" ? 1 : 2;
+  const hasDir = !routeObj.gmbDirections || routeObj.gmbDirections.some(d => d.route_seq === routeSeq);
+  if (!hasDir) return { data: [] };
+
+  const res = await fetchJSON(`https://data.etagmb.gov.hk/route-stop/${gmbRouteId}/${routeSeq}`, 2, 200);
+  const stops = (res && res.data && res.data.route_stops) ? res.data.route_stops : [];
+
+  if (!gmbStopNameCache) gmbStopNameCache = new Map();
+  return {
+    data: stops.map(s => {
+      const sid = `GMB_${s.stop_id}`;
+      gmbStopNameCache.set(sid, { name_tc: s.name_tc, name_en: s.name_en || "" });
+      return {
+        stop: sid,
+        seq: s.stop_seq,
+        name_tc: s.name_tc,
+        name_en: s.name_en || ""
+      };
+    })
+  };
+};
+
+BusAPI.getStop = async function(company, stopId) {
+  if (!isGmbCompany(company) && !String(stopId).startsWith("GMB_")) {
+    const url = company === "KMB"
+      ? `${API_BASE.KMB}/stop/${stopId}`
+      : `${API_BASE.CTB}/stop/${stopId}`;
+    return await fetchJSON(url);
+  }
+
+  const rawStopId = String(stopId).replace(/^GMB_/, "");
+  const cachedNames = (gmbStopNameCache && gmbStopNameCache.get(String(stopId))) || {};
+
+  try {
+    const res = await fetchJSON(`https://data.etagmb.gov.hk/stop/${rawStopId}`, 2, 200);
+    const wgs = res && res.data && res.data.coordinates && res.data.coordinates.wgs84
+      ? res.data.coordinates.wgs84
+      : null;
+    return {
+      data: {
+        stop: String(stopId),
+        name_tc: cachedNames.name_tc || `(小巴站) ${rawStopId}`,
+        name_en: cachedNames.name_en || "",
+        lat: wgs ? String(wgs.latitude) : null,
+        long: wgs ? String(wgs.longitude) : null
+      }
+    };
+  } catch (e) {
+    return {
+      data: {
+        stop: String(stopId),
+        name_tc: cachedNames.name_tc || `(小巴站) ${rawStopId}`,
+        name_en: cachedNames.name_en || "",
+        lat: null,
+        long: null
+      }
+    };
+  }
+};
+
+BusAPI.getEta = async function(company, stopId, route, serviceType = "1") {
+  if (!isGmbCompany(company) && !String(stopId).startsWith("GMB_")) {
+    const url = company === "KMB"
+      ? `${API_BASE.KMB}/eta/${stopId}/${route}/${serviceType}`
+      : `${API_BASE.CTB}/eta/ctb/${stopId}/${route}`;
+    return await fetchJSON(url);
+  }
+
+  let routeObj = (currentRoute && currentRoute.company === company && currentRoute.route === route)
+    ? currentRoute
+    : (transferRoute && transferRoute.company === company && transferRoute.route === route)
+      ? transferRoute
+      : uniqueRoutes.find(r => r.company === company && r.route === route);
+
+  if (routeObj && !routeObj.gmbRouteId) await ensureGmbRouteMeta(routeObj);
+  const gmbRouteId = routeObj ? routeObj.gmbRouteId : null;
+  if (!gmbRouteId) return { data: [] };
+
+  const rawStopId = String(stopId).replace(/^GMB_/, "");
+  const res = await fetchJSON(`https://data.etagmb.gov.hk/eta/route-stop/${gmbRouteId}/${rawStopId}`, 2, 200);
+  const rawData = res ? res.data : null;
+  const groups = Array.isArray(rawData) ? rawData : (rawData ? [rawData] : []);
+
+  const flatEtas = [];
+  groups.forEach(g => {
+    const dirCode = g.route_seq === 2 ? "I" : "O";
+    const etaArr = Array.isArray(g.eta) ? g.eta : [];
+    etaArr.forEach(item => {
+      if (item.timestamp) {
+        flatEtas.push({
+          eta: item.timestamp,
+          rmk_tc: item.remarks_tc || "",
+          seq: g.stop_seq,
+          dir: dirCode,
+          eta_seq: item.eta_seq
+        });
+      }
+    });
+  });
+
+  return { data: flatEtas };
+};
+
+// 3. ★ 直接將網址寫入 Function 內（防止 Hoisting 時 GMB_BASE 係 undefined！）
+async function loadAllBusData() {
+  const [kmbRouteRes, kmbStopRes, ctbRouteRes, gmbRouteRes] = await Promise.allSettled([
+    fetchJSON("https://data.etabus.gov.hk/v1/transport/kmb/route/", 3, 400),
+    fetchJSON("https://data.etabus.gov.hk/v1/transport/kmb/stop/", 3, 400),
+    fetchJSON("https://rt.data.gov.hk/v2/transport/citybus/route/ctb", 3, 400),
+    fetchJSON("https://data.etagmb.gov.hk/route", 3, 400)
+  ]);
+
+  const loadedRoutes = [];
+  const routeMap = new Map();
+  allStopsMap = new Map();
+  routesByStopId = {};
+
+  if (kmbRouteRes.status === "fulfilled" && kmbRouteRes.value) {
+    for (const r of (kmbRouteRes.value.data || [])) {
+      const key = `KMB-${r.route}-${r.service_type || "1"}`;
+      if (!routeMap.has(key)) {
+        const obj = { company: "KMB", route: r.route, bound: null, service_type: r.service_type || "1", orig_tc: r.orig_tc, dest_tc: r.dest_tc };
+        routeMap.set(key, obj);
+        loadedRoutes.push(obj);
+      }
+    }
+  }
+  if (kmbStopRes.status === "fulfilled" && kmbStopRes.value) {
+    (kmbStopRes.value.data || []).forEach(s => allStopsMap.set(s.stop, { ...s, company: "KMB" }));
+  }
+
+  if (ctbRouteRes.status === "fulfilled" && ctbRouteRes.value) {
+    for (const r of (ctbRouteRes.value.data || [])) {
+      const key = `CTB-${r.route}`;
+      if (!routeMap.has(key)) {
+        const obj = { company: "CTB", route: r.route, bound: null, service_type: "", orig_tc: r.orig_tc, dest_tc: r.dest_tc };
+        routeMap.set(key, obj);
+        loadedRoutes.push(obj);
+      }
+    }
+  }
+
+  let gmbCount = 0;
+  if (gmbRouteRes.status === "fulfilled" && gmbRouteRes.value && gmbRouteRes.value.data && gmbRouteRes.value.data.routes) {
+    const regions = gmbRouteRes.value.data.routes;
+    ["HKI", "KLN", "NT"].forEach(reg => {
+      const list = regions[reg] || [];
+      const coCode = `GMB-${reg}`;
+      list.forEach(rCode => {
+        const cleanCode = String(rCode).toUpperCase();
+        const key = `${coCode}-${cleanCode}`;
+        if (!routeMap.has(key)) {
+          const obj = {
+            company: coCode,
+            gmbRegion: reg,
+            route: cleanCode,
+            bound: null,
+            service_type: "1",
+            orig_tc: getGmbRegionName(coCode),
+            dest_tc: "撳此或稍候載入總站"
+          };
+          routeMap.set(key, obj);
+          loadedRoutes.push(obj);
+          gmbCount++;
+        }
+      });
+    });
+  }
+
+  if (gmbCount > 0) {
+    console.log(`✅ 成功載入 ${gmbCount} 條專線小巴路線`);
+  }
+
+  return loadedRoutes;
+}
+
+// 4. ★ 覆蓋 Step 1 renderRouteList（加入自然數字排序，令小巴唔會沉底！）
+function renderRouteList() {
+  const container = document.getElementById("routeList");
+  if (!container) return;
+  container.innerHTML = "";
+
+  if (currentRoute) return;
+  if (!currentInput) {
+    container.textContent = "請先輸入至少一個字元。";
+    return;
+  }
+  if (candidateRoutes.length === 0) {
+    container.textContent = "冇符合路線";
+    return;
+  }
+
+  const byRoute = new Map();
+  candidateRoutes.forEach(r => {
+    const code = String(r.route).toUpperCase();
+    const isJointBus = !isGmbCompany(r.company) && (/^(N)?[1369]\d{2}[A-Z]?$/.test(code) || ["S1", "R8"].includes(code));
+    const key = isJointBus ? `JOINT-${code}` : `${code}-${r.company}`;
+
+    if (!byRoute.has(key)) {
+      byRoute.set(key, {
+        route: code,
+        orig_tc: r.orig_tc,
+        dest_tc: r.dest_tc,
+        companies: new Set([r.company]),
+        samples: [r]
+      });
+    } else {
+      const obj = byRoute.get(key);
+      obj.companies.add(r.company);
+      obj.samples.push(r);
+    }
+  });
+
+  // ★ 按路線號碼短至長排序（例如打 1，會先出 1 號九巴、1 號城巴、1 號小巴，唔會俾 101 霸晒個頂）
+  const sortedGroups = Array.from(byRoute.values()).sort((a, b) => {
+    return a.route.localeCompare(b.route, undefined, { numeric: true });
+  });
+
+  // 自動預載排喺前面嘅小巴總站名
+  const topGmbSamples = sortedGroups.slice(0, 30).map(g => g.samples[0]).filter(s => isGmbCompany(s.company));
+  prefetchVisibleGmbOrigins(topGmbSamples, () => {
+    if (!currentRoute && currentInput) renderRouteList();
+  });
+
+  sortedGroups.slice(0, 100).forEach(r => {
+    const div = document.createElement("div");
+    div.className = "route-item";
+
+    const sample0 = r.samples[0];
+    const origText = sample0.orig_tc || r.orig_tc;
+    const destText = sample0.dest_tc || r.dest_tc;
+
+    const cos = Array.from(r.companies);
+    const coLabel = getCompanyLabel(cos);
+    div.textContent = `${r.route}${coLabel}：${origText} ↔ ${destText}`;
+
+    div.onclick = async () => {
+      const samples = r.samples;
+      const chosen = samples.find(x => x.company === "KMB") || samples.find(x => x.company === "CTB") || samples[0];
+      if (isGmbCompany(chosen.company)) {
+        div.textContent = `${r.route}${coLabel}：載入小巴總站中...`;
+        await ensureGmbRouteMeta(chosen);
+      }
+      selectRoute(chosen);
+    };
+
+    container.appendChild(div);
+  });
+}
+
+// 5. ★ 覆蓋 Step 4 轉車列表（同樣加入排序，令小巴排喺前面）
+function updateAfterTransferInputChange() {
+  const display = document.getElementById("transferRouteInputDisplay");
+  if (display) display.textContent = transferCurrentInput || "(未輸入)";
+
+  const listDiv = document.getElementById("transferRouteList");
+  if (!listDiv) return;
+  listDiv.innerHTML = "";
+
+  if (!transferCurrentInput) {
+    listDiv.textContent = "請輸入路線，會以同名站作為預設轉車站。";
+    transferCandidateRoutes = [];
+    renderTransferVirtualKeyboard();
+    return;
+  }
+
+  const kw = transferCurrentInput.toLowerCase();
+  const rawCandidates = uniqueRoutes.filter(r => r.route.toLowerCase().startsWith(kw));
+
+  const byRoute = new Map();
+  rawCandidates.forEach(r => {
+    const code = String(r.route).toUpperCase();
+    const company = r.company || "KMB";
+    const isJointBus = !isGmbCompany(company) && (/^(N)?[1369]\d{2}[A-Z]?$/.test(code) || ["S1", "R8"].includes(code));
+    const key = isJointBus ? `JOINT-${code}` : `${code}-${company}`;
+
+    if (!byRoute.has(key)) {
+      byRoute.set(key, {
+        route: code,
+        orig_tc: r.orig_tc,
+        dest_tc: r.dest_tc,
+        companies: new Set([company]),
+        sampleObj: r
+      });
+    } else {
+      byRoute.get(key).companies.add(company);
+    }
+  });
+
+  const groupedRoutes = Array.from(byRoute.values()).sort((a, b) => {
+    return a.route.localeCompare(b.route, undefined, { numeric: true });
+  });
+  transferCandidateRoutes = groupedRoutes.map(g => g.sampleObj);
+
+  const topGmbSamples = groupedRoutes.slice(0, 30).map(g => g.sampleObj).filter(s => isGmbCompany(s.company));
+  prefetchVisibleGmbOrigins(topGmbSamples, () => {
+    if (!transferRoute && transferCurrentInput) updateAfterTransferInputChange();
+  });
+
+  if (!groupedRoutes.length) {
+    listDiv.textContent = "冇符合路線";
+  } else {
+    groupedRoutes.slice(0, 100).forEach(group => {
+      const div = document.createElement("div");
+      div.className = "route-item";
+      const coLabel = getCompanyLabel(Array.from(group.companies));
+      const sObj = group.sampleObj;
+      div.textContent = `${group.route}${coLabel}：${sObj.orig_tc} ↔ ${sObj.dest_tc}`;
+      div.onclick = async () => {
+        if (isGmbCompany(sObj.company)) {
+          div.textContent = `${group.route}${coLabel}：載入小巴總站中...`;
+          await ensureGmbRouteMeta(sObj);
+        }
+        selectTransferRoute(sObj);
+      };
+      listDiv.appendChild(div);
+    });
+  }
+
+  renderTransferVirtualKeyboard();
+}
+
+// 6. 支援小巴第一程 ETA 顯示
+async function selectStop(stopId, seq) {
+  currentStopId = stopId;
+  const targetSeq = parseInt(seq);
+  if (!currentRoute) return;
+
+  const company = currentRoute.company;
+  const routeName = currentRoute.route;
+  const allItems = document.querySelectorAll("#stopList .stop-item");
+
+  let destKey = (currentRoute.dest_tc || "").substring(0, 2);
+  if (routeStops.length > 0) {
+    const lastStop = routeStops[routeStops.length - 1];
+    const cleanName = (lastStop.name_tc || "").replace(/^[\d\s.\-、]+/, "").replace(/\s+/g, "");
+    if (cleanName.length >= 2) destKey = cleanName.substring(0, 2);
+  }
+
+  allItems.forEach(el => {
+    el.classList.toggle("selected", el.dataset.stopId === stopId && parseInt(el.dataset.seq) === targetSeq);
+  });
+
+  const el = document.querySelector(`#stopList .stop-item[data-stop-id="${stopId}"][data-seq="${targetSeq}"]`);
+  if (!el) return;
+  const etaBlock = el.querySelector(".eta-block");
+  if (!etaBlock) return;
+  etaBlock.textContent = "載入 ETA 中...";
+
+  if (mainEtaTimer) { clearInterval(mainEtaTimer); mainEtaTimer = null; }
+
+  async function loadEta() {
+    try {
+      let combinedEtaList = [];
+      const isCrossHarbour = !isGmbCompany(company) && (/^(N)?[1369]\d{2}[A-Z]?$/i.test(routeName) || ["S1", "R8"].includes(routeName));
+
+      try {
+        const mainData = await BusAPI.getEta(company, stopId, routeName, currentServiceType);
+        let mainList = (mainData.data || []).filter(item => parseInt(item.seq) === targetSeq);
+        if ((company === "KMB" || isGmbCompany(company)) && currentDirectionCode) {
+          mainList = mainList.filter(item => item.dir === currentDirectionCode);
+        }
+        mainList.forEach(item => {
+          item._company = company;
+          combinedEtaList.push(item);
+        });
+      } catch (e) {}
+
+      if (isCrossHarbour && destKey) {
+        const oppCompany = company === "KMB" ? "CTB" : "KMB";
+        try {
+          const [oppIn, oppOut] = await Promise.all([
+            BusAPI.getRouteStops(oppCompany, routeName, "inbound", currentServiceType).catch(() => ({ data: [] })),
+            BusAPI.getRouteStops(oppCompany, routeName, "outbound", currentServiceType).catch(() => ({ data: [] }))
+          ]);
+          const oppStopIds = new Set();
+          const s1 = (oppIn.data || []).find(s => parseInt(s.seq) === targetSeq);
+          if (s1) oppStopIds.add(s1.stop);
+          const s2 = (oppOut.data || []).find(s => parseInt(s.seq) === targetSeq);
+          if (s2) oppStopIds.add(s2.stop);
+
+          const etaResults = await Promise.all(
+            Array.from(oppStopIds).map(sid => BusAPI.getEta(oppCompany, sid, routeName, currentServiceType).catch(() => ({ data: [] })))
+          );
+          etaResults.forEach(res => {
+            (res.data || []).forEach(item => {
+              if (parseInt(item.seq) === targetSeq && (item.dest_tc || "").includes(destKey)) {
+                item._company = oppCompany;
+                combinedEtaList.push(item);
+              }
+            });
+          });
+        } catch (e) {}
+      }
+
+      const seen = new Set();
+      combinedEtaList = combinedEtaList.filter(item => {
+        const etaStr = String(item.eta || "").trim().toUpperCase();
+        const rmkStr = String(item.rmk_tc || "").trim();
+        if (!etaStr || etaStr === "N/A" || etaStr === "NULL") return false;
+        if (rmkStr.includes("時段") || rmkStr.includes("預定班次") || rmkStr === "離開") return false;
+        const key = `${item._company}_${etaStr}_${item.dest_tc}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+
+      combinedEtaList.sort((a, b) => new Date(a.eta) - new Date(b.eta));
+
+      etaBlock.innerHTML = "";
+      if (!combinedEtaList.length) {
+        etaBlock.textContent = "暫時冇班次資料";
+      } else {
+        combinedEtaList.forEach(item => {
+          const { text, minutes, isScheduled, status, etaTime } = formatDetailLine(item);
+          const row = document.createElement("div");
+          row.className = "eta-row";
+          if (minutes <= 0) row.classList.add("eta-imminent");
+          else row.style.color = grayColorByMinutes(minutes);
+
+          const contentNode = document.createElement("span");
+          const badge = isCrossHarbour ? (item._company === "KMB" ? "[九巴] " : "[城巴] ") : "";
+          contentNode.textContent = badge + text;
+          if (isScheduled) contentNode.style.fontStyle = "italic";
+          row.appendChild(contentNode);
+
+          const btnTrack = document.createElement("button");
+          btnTrack.className = "btn-track";
+          btnTrack.textContent = "追蹤";
+          btnTrack.onclick = (e) => {
+            e.stopPropagation();
+            setTrackingEta({ id: item.eta_seq || `${routeName}_${item.seq}_${item.eta}`, etaTime, status }, row);
+          };
+          row.appendChild(btnTrack);
+          etaBlock.appendChild(row);
+        });
+      }
+    } catch (e) {
+      etaBlock.textContent = "載入 ETA 失敗";
+    }
+  }
+
+  loadEta();
+  mainEtaTimer = setInterval(loadEta, 30000);
+  setTimeout(() => { focusMapToStop(stopId, 16, true); }, 300);
+}
+
+// ★ 最重要一步：貼喺最底時主動重新執行一次 init()，確保 uniqueRoutes 包含晒所有小巴！
 init();
