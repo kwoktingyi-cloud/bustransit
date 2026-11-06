@@ -321,89 +321,6 @@ async function fetchJSON(url, retries = 5, delayMs = 200) {
 //   dest_tc: "..."
 // }
 
-/* =========================================================================
-   ★ 修復 init() Failed to fetch：移除無用巨型請求 /route-stop + 改用 allSettled 容錯
-   ========================================================================= */
-
-async function loadAllBusData() {
-  // 改用 Promise.allSettled，並移除無使用且極易斷線嘅 /route-stop 巨型總表請求
-  const [
-    kmbRouteRes,
-    kmbStopRes,
-    ctbRouteRes
-  ] = await Promise.allSettled([
-    fetchJSON(`${KMB_BASE}/route/`, 3, 400),
-    fetchJSON(`${KMB_BASE}/stop/`, 3, 400),
-    fetchJSON(`${CTB_BASE}/route/ctb`, 3, 400)
-  ]);
-
-  const allRoutes = [];
-  const routeMap = new Map();
-
-  allStopsMap = new Map();
-  routesByStopId = {};
-
-  // 1. 處理 九巴 (KMB) 路線數據
-  if (kmbRouteRes.status === "fulfilled" && kmbRouteRes.value) {
-    const kmbRoutesRaw = kmbRouteRes.value.data || [];
-    for (const r of kmbRoutesRaw) {
-      const key = `KMB-${r.route}-${r.service_type || "1"}`;
-      if (!routeMap.has(key)) {
-        const obj = {
-          company: "KMB",
-          route: r.route,
-          bound: null,
-          service_type: r.service_type || "1",
-          orig_tc: r.orig_tc,
-          dest_tc: r.dest_tc
-        };
-        routeMap.set(key, obj);
-        allRoutes.push(obj);
-      }
-    }
-  } else {
-    console.warn("九巴路線載入失敗:", kmbRouteRes.reason);
-  }
-
-  // 2. 處理 九巴 (KMB) 車站座標及名稱數據
-  if (kmbStopRes.status === "fulfilled" && kmbStopRes.value) {
-    const kmbStops = kmbStopRes.value.data || [];
-    kmbStops.forEach(s => {
-      allStopsMap.set(s.stop, { ...s, company: "KMB" });
-    });
-  } else {
-    console.warn("九巴車站總表載入失敗 (之後會自動逐站補飛):", kmbStopRes.reason);
-  }
-
-  // 3. 處理 城巴 (CTB) 路線數據
-  if (ctbRouteRes.status === "fulfilled" && ctbRouteRes.value) {
-    const ctbRoutesRaw = ctbRouteRes.value.data || [];
-    for (const r of ctbRoutesRaw) {
-      const key = `CTB-${r.route}`;
-      if (!routeMap.has(key)) {
-        const obj = {
-          company: "CTB",
-          route: r.route,
-          bound: null,
-          service_type: "",
-          orig_tc: r.orig_tc,
-          dest_tc: r.dest_tc
-        };
-        routeMap.set(key, obj);
-        allRoutes.push(obj);
-      }
-    }
-  } else {
-    console.warn("城巴路線載入失敗:", ctbRouteRes.reason);
-  }
-
-  if (allRoutes.length === 0) {
-    throw new Error("無法連線至巴士伺服器，請檢查網絡連線或稍後再試。");
-  }
-
-  return allRoutes;
-}
-
 /* ========== 距離 / 速度 / 時間 ========== */
 
 function haversineDistanceMeters(lat1, lon1, lat2, lon2) {
@@ -4414,7 +4331,7 @@ async function handleDir2Logic(route, staParam) {
 
 /* ========== 啟動 ========== */
 
-init();
+
 
 initMap();
 
@@ -7487,3 +7404,83 @@ resetAllState = function() {
     renderUserLocationSpot();
   }
 };
+
+/* =========================================================================
+   ★ 專線小巴 (data.etagmb.gov.hk) 自動繞過 CORS 封鎖 + LocalStorage 極速快取
+   （直接貼喺 script_bus.js 最底部即可生效）
+   ========================================================================= */
+
+async function fetchJSON(url, retries = 3, delayMs = 300) {
+  const isGmb = String(url).includes("data.etagmb.gov.hk");
+  const isGmbRealtimeEta = isGmb && String(url).includes("/eta/");
+  const cacheKey = "gmb_cache_" + url;
+
+  // 1. 小巴靜態資料（路線表、總站、站點座標）優先讀 LocalStorage 快取（7日有效，0ms 秒出）
+  if (isGmb && !isGmbRealtimeEta) {
+    try {
+      const cached = localStorage.getItem(cacheKey);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        if (Date.now() - parsed.ts < 7 * 86400000 && parsed.payload) {
+          return parsed.payload;
+        }
+      }
+    } catch (e) {}
+  }
+
+  // 2. 九巴 / 城巴（或非 file:// 下嘗試直連）
+  if (!isGmb || window.location.protocol !== "file:") {
+    for (let i = 0; i < (isGmb ? 1 : retries); i++) {
+      try {
+        const res = await fetch(url);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const json = await res.json();
+        if (isGmb && !isGmbRealtimeEta) {
+          try { localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), payload: json })); } catch (e) {}
+        }
+        return json;
+      } catch (e) {
+        if (!isGmb) {
+          if (i === retries - 1) throw e;
+          await new Promise(r => setTimeout(r, delayMs));
+        }
+      }
+    }
+  }
+
+  // 3. ★ 專線小巴遇到 CORS 封鎖時，自動並行透過多條 CORS 通道穿透讀取（邊條最快用邊條）
+  const encoded = encodeURIComponent(url);
+  const proxyUrls = [
+    `https://corsproxy.io/?${encoded}`,
+    `https://api.allorigins.win/raw?url=${encoded}`,
+    `https://api.codetabs.com/v1/proxy?quest=${encoded}`
+  ];
+
+  const fetchViaProxy = async (pUrl) => {
+    const controller = new AbortController();
+    const tid = setTimeout(() => controller.abort(), 6000);
+    try {
+      const res = await fetch(pUrl, { signal: controller.signal });
+      clearTimeout(tid);
+      if (!res.ok) throw new Error("Proxy HTTP " + res.status);
+      const json = await res.json();
+      if (!json || typeof json !== "object") throw new Error("Invalid JSON");
+      return json;
+    } catch (err) {
+      clearTimeout(tid);
+      throw err;
+    }
+  };
+
+  const data = await Promise.any(proxyUrls.map(u => fetchViaProxy(u)));
+
+  // 將小巴路線同站點存入快取，下次撳同一條小巴線唔使再經網絡，即刻秒開！
+  if (!isGmbRealtimeEta) {
+    try { localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), payload: data })); } catch (e) {}
+  }
+
+  return data;
+}
+
+// 重新啟動一次載入小巴路線
+init();
