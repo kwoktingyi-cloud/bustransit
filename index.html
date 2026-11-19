@@ -438,6 +438,269 @@
       border-radius: 6px;
     }
 
+    /* ================= ★ 點對點 1km 直達導航樣式（支援下拉睇地圖 + 電話精簡版） ================= */
+    .btn-p2p-entry {
+      margin: 0;
+      padding: 5px 12px;
+      font-size: 12.5px;
+      font-weight: 800;
+      color: #ffffff;
+      background: linear-gradient(135deg, #0ea5e9, #1565c0);
+      border: none;
+      border-radius: 999px;
+      box-shadow: 0 2px 6px rgba(21, 101, 192, 0.28);
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .btn-p2p-entry:hover { opacity: 0.92; }
+
+    /* 全螢幕 + 可下拉睇地圖導航抽屜 */
+    #p2p-nav-modal {
+      display: none;
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      width: 100vw;
+      height: 100vh;
+      background: #f8fafc;
+      z-index: 9200;
+      flex-direction: column;
+      overflow: hidden;
+      transform: translateY(0%);
+      transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1), border-radius 0.25s ease;
+      box-shadow: 0 -8px 30px rgba(15, 23, 42, 0.25);
+      will-change: transform;
+    }
+    #p2p-nav-modal.active { display: flex; }
+    #p2p-nav-modal.dragging { transition: none !important; }
+
+    /* 下拉半開睇地圖狀態：露出上半部地圖，下面繼續睇路線表 */
+    #p2p-nav-modal.p2p-sheet-map {
+      transform: translateY(52%);
+      border-radius: 20px 20px 0 0;
+    }
+    #p2p-nav-modal.p2p-sheet-map .p2p-search-panel {
+      display: none; /* 下拉睇地圖時自動收起搜尋框，留位顯示路線表 */
+    }
+    /* 下拉到底只留頂欄 */
+    #p2p-nav-modal.p2p-sheet-min {
+      transform: translateY(calc(100% - 58px));
+      border-radius: 20px 20px 0 0;
+    }
+
+    .p2p-top-bar {
+      display: flex;
+      flex-direction: column;
+      padding: 6px 14px 10px;
+      background: #0f172a;
+      color: #ffffff;
+      flex-shrink: 0;
+      cursor: grab;
+      user-select: none;
+      touch-action: none;
+    }
+    .p2p-drag-pill {
+      width: 42px;
+      height: 5px;
+      background: rgba(255, 255, 255, 0.35);
+      border-radius: 999px;
+      margin: 0 auto 6px;
+    }
+    .p2p-top-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .p2p-top-title { font-size: 15px; font-weight: 800; display: flex; align-items: center; gap: 6px; }
+    .p2p-top-btns { display: flex; align-items: center; gap: 6px; }
+    .p2p-map-toggle-btn, .p2p-close-btn {
+      margin: 0; padding: 4px 10px; font-size: 12px; font-weight: 700;
+      background: rgba(255,255,255,0.16); color: #fff; border: 1px solid rgba(255,255,255,0.25);
+      border-radius: 8px;
+    }
+    .p2p-map-toggle-btn { background: rgba(56, 189, 248, 0.22); border-color: rgba(56, 189, 248, 0.45); color: #bae6fd; }
+
+    .p2p-search-panel {
+      padding: 10px 14px;
+      background: #ffffff;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      flex-shrink: 0;
+    }
+    .p2p-input-row {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+    .p2p-input-label {
+      font-size: 12.5px;
+      font-weight: 800;
+      width: 56px;
+      flex-shrink: 0;
+    }
+    .p2p-input-wrap {
+      position: relative;
+      flex: 1;
+      min-width: 160px;
+    }
+    .p2p-text-input {
+      width: 100%;
+      padding: 7px 10px;
+      font-size: 13px;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      outline: none;
+      background: #f8fafc;
+    }
+    .p2p-text-input:focus { border-color: var(--primary); background: #fff; }
+
+    .p2p-suggest-box {
+      display: none;
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0; right: 0;
+      max-height: 210px;
+      overflow-y: auto;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(15, 23, 42, 0.16);
+      z-index: 9300;
+    }
+    .p2p-suggest-item {
+      padding: 8px 10px;
+      font-size: 13px;
+      border-bottom: 1px solid #f1f5f9;
+      cursor: pointer;
+    }
+    .p2p-suggest-item:hover { background: var(--primary-light); }
+    .p2p-suggest-sub { font-size: 11px; color: var(--text-muted); display: block; margin-top: 2px; }
+
+    .p2p-action-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .p2p-btn-search {
+      padding: 7px 16px;
+      background: var(--primary);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 800;
+      margin: 0;
+    }
+
+    .p2p-sort-bar {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      overflow-x: auto;
+      white-space: nowrap;
+      padding: 7px 12px;
+      background: #f1f5f9;
+      border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
+      font-size: 12px;
+    }
+    .p2p-sort-btn {
+      margin: 0;
+      padding: 4px 10px;
+      font-size: 11.5px;
+      border-radius: 999px;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      color: var(--text-main);
+      flex-shrink: 0;
+    }
+    .p2p-sort-btn.active {
+      background: var(--primary);
+      color: #ffffff;
+      border-color: var(--primary);
+    }
+
+    /* 結果表格區 */
+    .p2p-results-area {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overflow-x: auto;
+      padding: 8px 10px 42vh;
+    }
+    .p2p-table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #ffffff;
+      border-radius: 10px;
+      overflow: hidden;
+      box-shadow: 0 1px 4px rgba(15, 23, 42, 0.06);
+      font-size: 12.5px;
+    }
+    .p2p-table th {
+      background: #e2e8f0;
+      color: #1e293b;
+      font-weight: 800;
+      text-align: left;
+      padding: 8px 6px;
+      white-space: nowrap;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      font-size: 11.5px;
+    }
+    .p2p-table td {
+      padding: 8px 6px;
+      border-bottom: 1px solid #f1f5f9;
+      vertical-align: top;
+      line-height: 1.35;
+    }
+    .p2p-table tr.p2p-row { cursor: pointer; transition: background 0.12s; }
+    .p2p-table tr.p2p-row:hover, .p2p-table tr.p2p-row:active { background: #eff6ff; }
+
+    .p2p-line1-route { font-size: 15px; font-weight: 800; color: #0f172a; }
+    .p2p-line2-dir { font-size: 11.5px; color: #334155; font-weight: 600; margin-top: 2px; }
+    .p2p-line3-co { margin-top: 3px; }
+    .p2p-sub-muted { font-size: 11px; color: #64748b; margin-top: 2px; }
+
+    /* ★ 電話版 (< 768px)：隱藏多餘欄位，只顯示精簡 5 欄 */
+    @media (max-width: 767px) {
+      .p2p-desktop-only { display: none !important; }
+      .p2p-results-area { padding: 6px 6px 56vh; }
+      .p2p-table th, .p2p-table td { padding: 7px 5px; }
+      .p2p-line1-route { font-size: 14.5px; }
+      .p2p-line2-dir { font-size: 11px; max-width: 76px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .p2p-stop-name-cell { max-width: 88px; font-size: 12px; font-weight: 700; color: #0f172a; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+    }
+
+    /* 地圖篤點浮動提示橫額 */
+    #p2p-map-pick-banner {
+      display: none;
+      position: fixed;
+      top: 14px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 9600;
+      background: rgba(15, 23, 42, 0.94);
+      color: #fff;
+      padding: 10px 18px;
+      border-radius: 999px;
+      font-size: 13.5px;
+      font-weight: 700;
+      box-shadow: 0 6px 20px rgba(0,0,0,0.35);
+      align-items: center;
+      gap: 10px;
+    }
+    #p2p-map-pick-banner.active { display: inline-flex; }
+
 
   </style>
 
@@ -483,12 +746,16 @@
     <div id="sheet-body">
       <div id="primary-panel">
         <div class="unified-step-block" id="step1-section">
-          <div class="route-header-bar">
-            <div class="route-header-title">
-              <span>第一程路線：</span>
-              <span id="routeInputDisplay">(未輸入)</span>
-            </div>
-          </div>
+		
+												  <div class="route-header-bar">
+													<div class="route-header-title">
+													  <span>第一程路線：</span>
+													  <span id="routeInputDisplay">(未輸入)</span>
+													</div>
+													<!-- ★ 新增：未揀巴士時顯示導航按鈕 -->
+													<button type="button" id="btnOpenP2PNav" class="btn-p2p-entry">🧭 點對點導航</button>
+												  </div>
+												  		
           <div id="step1-layout">
             <div id="route-search-area">
               <div id="routeList">請先輸入至少一個字元。</div>
@@ -546,6 +813,69 @@
       </div>
     </div>
   </div>
+
+    <!-- ★ 地圖篤點模式頂部提示 -->
+  <div id="p2p-map-pick-banner">
+    <span id="p2pMapPickText">📍 請喺地圖篤一下揀選位置</span>
+    <button type="button" id="btnCancelMapPick" style="margin:0;padding:3px 10px;font-size:12px;border-radius:999px;background:#ef4444;color:#fff;border:none;">取消</button>
+  </div>
+
+  <!-- ★ 全螢幕點對點 1km 直達導航面板（頂部可向下拉睇地圖） -->
+  <div id="p2p-nav-modal">
+    <div class="p2p-top-bar" id="p2pDragHeader">
+      <div class="p2p-drag-pill"></div>
+      <div class="p2p-top-row">
+        <div class="p2p-top-title">🧭 點對點直達導航</div>
+        <div class="p2p-top-btns">
+          <button type="button" class="p2p-map-toggle-btn" id="btnToggleP2PMap">🗺️ 睇地圖 ▼</button>
+          <button type="button" class="p2p-close-btn" id="btnCloseP2PModal">✕ 關閉</button>
+        </div>
+      </div>
+    </div>
+
+    <div class="p2p-search-panel">
+      <!-- 出發地 -->
+      <div class="p2p-input-row">
+        <span class="p2p-input-label" style="color:#15803d;">🟢 出發地</span>
+        <div class="p2p-input-wrap">
+          <input type="text" id="p2pOriginInput" class="p2p-text-input" placeholder="輸入地點/車站，或用現時位置" autocomplete="off" />
+          <div id="p2pOriginSuggest" class="p2p-suggest-box"></div>
+        </div>
+        <button type="button" id="btnP2PUseGps" style="margin:0;padding:6px 8px;font-size:12px;">🎯 定位</button>
+        <button type="button" id="btnP2PPickOrigin" style="margin:0;padding:6px 8px;font-size:12px;">📍 篤點</button>
+      </div>
+
+      <!-- 目的地 -->
+      <div class="p2p-input-row">
+        <span class="p2p-input-label" style="color:#b91c1c;">🔴 目的地</span>
+        <div class="p2p-input-wrap">
+          <input type="text" id="p2pDestInput" class="p2p-text-input" placeholder="輸入目的地 / 巴士站，或撳篤點" autocomplete="off" />
+          <div id="p2pDestSuggest" class="p2p-suggest-box"></div>
+        </div>
+        <button type="button" id="btnP2PPickDest" style="margin:0;padding:6px 8px;font-size:12px;">📍 篤點</button>
+      </div>
+
+      <div class="p2p-action-row">
+        <span id="p2pStatusText" style="font-size:11.5px;color:#475569;">預設現時位置出發，搵兩端 1km 內最近上落車站。</span>
+        <button type="button" id="btnP2PSearchGo" class="p2p-btn-search">🔍 搜尋路線</button>
+      </div>
+    </div>
+
+    <!-- 排序按鈕列 -->
+    <div class="p2p-sort-bar">
+      <strong style="color:#334155;">排序：</strong>
+      <button type="button" class="p2p-sort-btn active" data-sort="arrival">🏁 到達時間</button>
+      <button type="button" class="p2p-sort-btn" data-sort="fare">💰 價錢</button>
+      <button type="button" class="p2p-sort-btn" data-sort="boardEta">🚌 下班車</button>
+      <button type="button" class="p2p-sort-btn" data-sort="walk">🚶 步行時間</button>
+    </div>
+
+    <!-- 結果表列 -->
+    <div class="p2p-results-area" id="p2pResultsContainer">
+      <div style="padding:24px;text-align:center;color:#64748b;">請選擇目的地後撳「搜尋路線」。</div>
+    </div>
+  </div>
+
 
   <div id="toast-msg"></div>
 

@@ -28,8 +28,14 @@ let currentInput = "";
 let candidateRoutes = [];
 let currentStopId = null;
 let keyboardHidden = false;
-let mainEtaTimer = null;
+let mainSummaryTimer = null;
+let selectedStopEtaTimer = null;
 let transferEtaTimer = null;
+
+function clearMainTimers() {
+  if (mainSummaryTimer) { clearInterval(mainSummaryTimer); mainSummaryTimer = null; }
+  if (selectedStopEtaTimer) { clearInterval(selectedStopEtaTimer); selectedStopEtaTimer = null; }
+}
 
 let mode = "normal"; // normal | interchange_pick | interchange_pair
 let originStopId = null;
@@ -1048,7 +1054,11 @@ function updateRouteInputDisplay() {
   } else {
     el.textContent = currentInput || "(未輸入)";
   }
+  // ★ 新增：只喺主頁（未揀巴士路線果陣）顯示點對點導航掣
+  const p2pBtn = document.getElementById("btnOpenP2PNav");
+  if (p2pBtn) p2pBtn.style.display = currentRoute ? "none" : "inline-flex";
 }
+
 
 function filterRoutesByInput() {
   if (!currentInput) {
@@ -1311,7 +1321,7 @@ function resetAllState() {
   transferStopName = null;
   mode = "normal";
 
-  if (mainEtaTimer) { clearInterval(mainEtaTimer); mainEtaTimer = null; }
+  clearMainTimers();
   if (transferEtaTimer) { clearInterval(transferEtaTimer); transferEtaTimer = null; }
 
   currentRoute = null;
@@ -1390,7 +1400,7 @@ async function getStopDetail(company, stopId) {
 }
 
 async function selectRoute(route) {
-  if (mainEtaTimer) { clearInterval(mainEtaTimer); mainEtaTimer = null; }
+  clearMainTimers();
   if (route && isGmbCompany(route.company)) await ensureGmbRouteMeta(route);
 
   currentRoute = route;
@@ -1525,6 +1535,7 @@ document.getElementById("dirOutbound").addEventListener("click", () => {
 
 async function loadRouteStopsForCurrentDirection() {
   if (!currentRoute || !currentDirection) return;
+  clearMainTimers();
   const company = currentRoute.company;
   const routeId = currentRoute.route;
   const serviceType = currentServiceType;
@@ -1593,13 +1604,21 @@ async function loadRouteStopsForCurrentDirection() {
       }
     }
 
-    if (mainEtaTimer) clearInterval(mainEtaTimer);
-    mainEtaTimer = setInterval(async () => {
+    if (mainSummaryTimer) clearInterval(mainSummaryTimer);
+    mainSummaryTimer = setInterval(async () => {
       if (!currentRoute || !currentDirection || !routeStops.length) return;
       await loadEtaSummaryForAllStops();
       await loadHeadwayInfo();
       updateMainSunAdviceUI();
-      if (currentStopId) await loadEtaDetailForStop(currentStopId, originSeq);
+      if (mode === "interchange_pair") {
+        if (originStopId) await loadEtaDetailForStop(originStopId, originSeq);
+        if (transferStopId && (transferStopId !== originStopId || transferSeq != originSeq)) {
+          await loadEtaDetailForStop(transferStopId, transferSeq);
+        }
+        await guessBoardingBusAtTransferStop();
+      } else if (currentStopId && !selectedStopEtaTimer) {
+        await loadEtaDetailForStop(currentStopId, originSeq);
+      }
     }, 30000);
 
     saveAppState();
@@ -1765,6 +1784,7 @@ function onInterchangeButtonClick(stopId, seq) {
     currentTransferStopId = stopId;
     currentTransferSeq = targetSeq;
     mode = "interchange_pair";
+    if (selectedStopEtaTimer) { clearInterval(selectedStopEtaTimer); selectedStopEtaTimer = null; }
 
     renderStopList();
     updateMainSunAdviceUI();
@@ -1833,7 +1853,7 @@ async function selectStop(stopId, seq) {
   if (!etaBlock) return;
   etaBlock.textContent = "載入 ETA 中...";
 
-  if (mainEtaTimer) { clearInterval(mainEtaTimer); mainEtaTimer = null; }
+  if (selectedStopEtaTimer) { clearInterval(selectedStopEtaTimer); selectedStopEtaTimer = null; }
 
   async function loadEta() {
     try {
@@ -1907,12 +1927,17 @@ async function selectStop(stopId, seq) {
           if (isScheduled) contentNode.style.fontStyle = "italic";
           row.appendChild(contentNode);
 
+          const etaId = item.eta_seq || `${routeName}_${item.seq}_${item.eta}`;
           const btnTrack = document.createElement("button");
           btnTrack.className = "btn-track";
           btnTrack.textContent = "追蹤";
+          if (selectedEtaTime && etaTime && stopId === originStopId && Math.abs(etaTime - selectedEtaTime) <= 90000) {
+            row.classList.add("tracked");
+            btnTrack.classList.add("active");
+          }
           btnTrack.onclick = (e) => {
             e.stopPropagation();
-            setTrackingEta({ id: item.eta_seq || `${routeName}_${item.seq}_${item.eta}`, etaTime, status }, row);
+            setTrackingEta({ id: etaId, etaTime, status }, row);
           };
           row.appendChild(btnTrack);
           etaBlock.appendChild(row);
@@ -1924,7 +1949,7 @@ async function selectStop(stopId, seq) {
   }
 
   loadEta();
-  mainEtaTimer = setInterval(loadEta, 30000);
+  selectedStopEtaTimer = setInterval(loadEta, 30000);
   setTimeout(() => focusMapToStop(stopId, 16, true), 300);
 }
 
@@ -4126,6 +4151,10 @@ async function updatePersistentTrackingNotification() {
         : `距離${currentWalkDistMeters}米 (${currentWalkMinutes}分鐘)`
     );
   }
+	  // ====== ★ 新增以下 4 行：喺 Notification 底部顯示被追蹤巴士站（Tag Location）座標 ======
+	  if (stopCoords && isFinite(stopCoords.lat) && isFinite(stopCoords.lon)) {
+		bodyLines.push(`座標: ${stopCoords.lat.toFixed(6)}, ${stopCoords.lon.toFixed(6)}`);
+	  }
 
   if (!("Notification" in window) || Notification.permission !== "granted") return;
 
@@ -4198,25 +4227,24 @@ setBottomSheetState("half");
    ========================================================================= */
 
 var hkFareRouteList = null; // 儲存 routeFareList 入面嘅 routeList
+var hkFareStopList = null;  // ★ 新增：儲存全港九巴/城巴/小巴車站 { name, lat, lon }
 var fareLoadingPromise = null;
 
-// 1. 背景載入全港車費資料庫（優先讀 24 小時 IndexedDB 快取，秒開唔卡畫面）
 async function loadHkFareDatabase() {
-  if (hkFareRouteList) return hkFareRouteList;
+  if (hkFareRouteList && hkFareStopList) return hkFareRouteList;
   if (fareLoadingPromise) return fareLoadingPromise;
 
   fareLoadingPromise = (async () => {
-    // 嘗試由 IndexedDB 讀取快取（因為全港車費表較大，放 IndexedDB 最穩陣）
     try {
       const cached = await getFareFromIndexedDB();
-      if (cached && Date.now() - cached.ts < 86400000 && cached.routeList) {
+      if (cached && Date.now() - cached.ts < 86400000 && cached.routeList && cached.stopList) {
         hkFareRouteList = cached.routeList;
+        hkFareStopList = cached.stopList;
         refreshAllVisibleStopFares();
         return hkFareRouteList;
       }
     } catch (e) {}
 
-    // 雙 CDN 來源（主線 data.hkbus.app + 後備 jsDelivr GitHub CDN）
     const urls = [
       "https://data.hkbus.app/routeFareList.min.json",
       "https://cdn.jsdelivr.net/gh/hkbus/hk-bus-crawling@gh-pages/routeFareList.min.json"
@@ -4228,7 +4256,6 @@ async function loadHkFareDatabase() {
         if (!res.ok) continue;
         const json = await res.json();
         if (json && json.routeList) {
-          // 只抽取精簡欄位 { route, co, orig, dest, stops, fares, gtfsId } 慳記憶體
           const slimList = {};
           for (const [k, v] of Object.entries(json.routeList)) {
             if (v && v.fares && v.fares.length > 0) {
@@ -4238,14 +4265,30 @@ async function loadHkFareDatabase() {
                 orig: v.orig ? v.orig.zh : "",
                 dest: v.dest ? v.dest.zh : "",
                 gtfsId: v.gtfsId || "",
+                serviceType: v.serviceType || "1",
+                bound: v.bound || {},
                 stops: v.stops || {},
                 fares: v.fares
               };
             }
           }
+          const slimStops = {};
+          if (json.stopList) {
+            for (const [sid, s] of Object.entries(json.stopList)) {
+              const loc = s && s.location;
+              if (loc && isFinite(loc.lat) && isFinite(loc.lng)) {
+                slimStops[sid] = {
+                  name: (s.name && s.name.zh) ? s.name.zh : sid,
+                  lat: Number(loc.lat),
+                  lon: Number(loc.lng)
+                };
+              }
+            }
+          }
           hkFareRouteList = slimList;
-          saveFareToIndexedDB({ ts: Date.now(), routeList: slimList }).catch(() => {});
-          console.log("💰 成功載入全港巴士及小巴分段車費庫！");
+          hkFareStopList = slimStops;
+          saveFareToIndexedDB({ ts: Date.now(), routeList: slimList, stopList: slimStops }).catch(() => {});
+          console.log("💰 成功載入全港巴士及小巴分段車費與車站座標庫！");
           refreshAllVisibleStopFares();
           return hkFareRouteList;
         }
@@ -4259,7 +4302,6 @@ async function loadHkFareDatabase() {
   return fareLoadingPromise;
 }
 
-// IndexedDB 輕量讀寫 Helper
 function getFareFromIndexedDB() {
   return new Promise((resolve) => {
     try {
@@ -4268,7 +4310,7 @@ function getFareFromIndexedDB() {
       req.onsuccess = e => {
         const db = e.target.result;
         const tx = db.transaction("fares", "readonly");
-        const getReq = tx.objectStore("fares").get("hk_fares_v1");
+        const getReq = tx.objectStore("fares").get("hk_fares_v2");
         getReq.onsuccess = () => resolve(getReq.result || null);
         getReq.onerror = () => resolve(null);
       };
@@ -4285,13 +4327,14 @@ function saveFareToIndexedDB(data) {
       req.onsuccess = e => {
         const db = e.target.result;
         const tx = db.transaction("fares", "readwrite");
-        tx.objectStore("fares").put(data, "hk_fares_v1");
+        tx.objectStore("fares").put(data, "hk_fares_v2");
         tx.oncomplete = () => resolve(true);
       };
       req.onerror = () => resolve(false);
     } catch (e) { resolve(false); }
   });
 }
+
 
 // 2. 根據路線、公司及當前站點序列，精準配對該方向嘅每個站分段車費陣列
 function findFaresArrayForRouteStops(routeObj, stopsArray) {
@@ -4480,3 +4523,881 @@ if (typeof createTwoLineRouteItemDOM === "function") {
 
 // 啟動時喺背景載入全港車費表
 loadHkFareDatabase();
+
+/* =========================================================================
+   ★ 點對點 1km 直達導航模組（極速批量 ETA + 電話 5 欄精簡版 + 下拉睇地圖 + 自動揀站）
+   ========================================================================= */
+
+let p2pOriginPoint = null;
+let p2pDestPoint = null;
+let p2pOriginPin = null;
+let p2pDestPin = null;
+let p2pPickMode = null;
+let p2pResultsData = [];
+let p2pCurrentSort = "arrival";
+let p2pSearchToken = 0;
+let p2pSheetState = "full"; // "full" | "map" | "min"
+
+// 攔截自動 GPS 最近站搶焦點，確保撳選路線後 100% 揀中指定上車站
+let p2pApplyingLock = false;
+let lastP2PRouteStopsPromise = null;
+
+if (typeof loadRouteStopsForCurrentDirection === "function") {
+  const _origLoadRouteStopsForP2P = loadRouteStopsForCurrentDirection;
+  loadRouteStopsForCurrentDirection = function () {
+    const p = _origLoadRouteStopsForP2P.apply(this, arguments);
+    lastP2PRouteStopsPromise = p;
+    return p;
+  };
+}
+
+if (typeof onStopClicked === "function") {
+  const _origOnStopClickedForP2P = onStopClicked;
+  onStopClicked = function (stopId, seq) {
+    if (p2pApplyingLock) return;
+    return _origOnStopClickedForP2P.apply(this, arguments);
+  };
+}
+
+// 帶 Timeout 嘅極速 Fetch（防止個別 API 或小巴 CORS Proxy 卡住成個進度）
+async function fetchJsonFast(url, timeoutMs = 2500) {
+  const ctrl = new AbortController();
+  const tid = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal, credentials: "omit" });
+    if (!res.ok) throw new Error("HTTP " + res.status);
+    return await res.json();
+  } finally {
+    clearTimeout(tid);
+  }
+}
+
+// 專線小巴極速並發穿透（直連失敗即同步競速雙 Proxy，最多等 2.5 秒絕不卡死）
+async function fetchGmbEtaFast(gtfsId, gmbStopId, timeoutMs = 2500) {
+  const targetUrl = `${GMB_BASE}/eta/route-stop/${gtfsId}/${gmbStopId}`;
+  if (window.location.protocol !== "file:") {
+    try {
+      return await fetchJsonFast(targetUrl, 1600);
+    } catch (e) {}
+  }
+  const p1 = fetchJsonFast(`https://api.allorigins.win/get?url=${encodeURIComponent(targetUrl)}&_=${Date.now()}`, timeoutMs)
+    .then(w => (typeof w.contents === "string" ? JSON.parse(w.contents) : w.contents));
+  const p2 = fetchJsonFast(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`, timeoutMs);
+  return await Promise.any([p1, p2]);
+}
+
+function getUnifiedStopInfo(stopId) {
+  const rawId = String(stopId).replace(/^GMB_/, "");
+  if (hkFareStopList && hkFareStopList[rawId]) {
+    return hkFareStopList[rawId];
+  }
+  const s = allStopsMap.get(stopId) || allStopsMap.get(rawId);
+  if (s && isFinite(parseFloat(s.lat)) && isFinite(parseFloat(s.long))) {
+    return { name: s.name_tc || rawId, lat: parseFloat(s.lat), lon: parseFloat(s.long) };
+  }
+  return null;
+}
+
+function updateP2PMapPin(type, pt) {
+  if (!map || !pt) return;
+  if (type === "origin") {
+    if (p2pOriginPin && map.hasLayer(p2pOriginPin)) map.removeLayer(p2pOriginPin);
+    const icon = L.divIcon({
+      className: "",
+      html: `<div style="background:#16a34a;color:#fff;font-weight:800;font-size:12px;width:26px;height:26px;border-radius:50%;border:2px solid #fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.4);">起</div>`,
+      iconSize: [26, 26], iconAnchor: [13, 13]
+    });
+    p2pOriginPin = L.marker([pt.lat, pt.lon], { icon, zIndexOffset: 2500 }).addTo(map).bindPopup(`🟢 出發地：${pt.label}`);
+  } else {
+    if (p2pDestPin && map.hasLayer(p2pDestPin)) map.removeLayer(p2pDestPin);
+    const icon = L.divIcon({
+      className: "",
+      html: `<div style="background:#dc2626;color:#fff;font-weight:800;font-size:12px;width:26px;height:26px;border-radius:50%;border:2px solid #fff;display:flex;align-items:center;justify-content:center;box-shadow:0 2px 6px rgba(0,0,0,0.4);">終</div>`,
+      iconSize: [26, 26], iconAnchor: [13, 13]
+    });
+    p2pDestPin = L.marker([pt.lat, pt.lon], { icon, zIndexOffset: 2500 }).addTo(map).bindPopup(`🔴 目的地：${pt.label}`);
+  }
+
+  if (p2pOriginPoint && p2pDestPoint) {
+    map.fitBounds(
+      L.latLngBounds([[p2pOriginPoint.lat, p2pOriginPoint.lon], [p2pDestPoint.lat, p2pDestPoint.lon]]),
+      { padding: [50, 50], maxZoom: 15 }
+    );
+  }
+}
+
+// 控制導航面板全開 / 下拉半開睇地圖 / 收到底
+function setP2PSheetState(state) {
+  const modal = document.getElementById("p2p-nav-modal");
+  const toggleBtn = document.getElementById("btnToggleP2PMap");
+  if (!modal) return;
+
+  p2pSheetState = state;
+  modal.classList.remove("p2p-sheet-map", "p2p-sheet-min");
+  if (state === "map") modal.classList.add("p2p-sheet-map");
+  else if (state === "min") modal.classList.add("p2p-sheet-min");
+
+  if (toggleBtn) {
+    toggleBtn.textContent = state === "full" ? "🗺️ 睇地圖 ▼" : "全開列表 ▲";
+  }
+
+  // 當下拉睇地圖時，自動將地圖鏡頭置於上半部可見區域
+  if (state !== "full" && map && p2pOriginPoint && p2pDestPoint) {
+    map.fitBounds(
+      L.latLngBounds([[p2pOriginPoint.lat, p2pOriginPoint.lon], [p2pDestPoint.lat, p2pDestPoint.lon]]),
+      { paddingTopLeft: [30, 30], paddingBottomRight: [30, Math.round(window.innerHeight * 0.5)] }
+    );
+  }
+}
+
+function applyDefaultGpsToP2POrigin(showToastIfFail = false) {
+  const origInput = document.getElementById("p2pOriginInput");
+  if (userLat != null && userLon != null) {
+    p2pOriginPoint = { lat: userLat, lon: userLon, label: `現時位置 (${userLat.toFixed(4)}, ${userLon.toFixed(4)})` };
+    if (origInput) origInput.value = p2pOriginPoint.label;
+    updateP2PMapPin("origin", p2pOriginPoint);
+    return;
+  }
+  if (navigator.geolocation) {
+    if (origInput) origInput.value = "定位中...";
+    navigator.geolocation.getCurrentPosition(
+      pos => {
+        userLat = pos.coords.latitude;
+        userLon = pos.coords.longitude;
+        renderUserLocationSpot();
+        p2pOriginPoint = { lat: userLat, lon: userLon, label: `現時位置 (${userLat.toFixed(4)}, ${userLon.toFixed(4)})` };
+        if (origInput) origInput.value = p2pOriginPoint.label;
+        updateP2PMapPin("origin", p2pOriginPoint);
+      },
+      () => {
+        if (origInput && origInput.value === "定位中...") origInput.value = "";
+        if (showToastIfFail) showToast("⚠️ 無法取得 GPS，請打字搜尋或喺地圖篤點");
+      },
+      { enableHighAccuracy: true, timeout: 5000 }
+    );
+  }
+}
+
+function openP2PModal() {
+  const modal = document.getElementById("p2p-nav-modal");
+  if (!modal) return;
+  setBottomSheetState("collapsed"); // 收起主頁底抽屜，方便下拉時直接睇地圖
+  modal.classList.add("active");
+  setP2PSheetState("full");
+  if (!p2pOriginPoint) applyDefaultGpsToP2POrigin(false);
+}
+
+function closeP2PModal() {
+  const modal = document.getElementById("p2p-nav-modal");
+  if (modal) modal.classList.remove("active");
+  if (!currentRoute) setBottomSheetState("half");
+}
+
+// 1. 地圖篤點揀位功能
+function startP2PMapPick(targetType) {
+  p2pPickMode = targetType;
+  const modal = document.getElementById("p2p-nav-modal");
+  if (modal) modal.classList.remove("active");
+  setBottomSheetState("collapsed");
+
+  const banner = document.getElementById("p2p-map-pick-banner");
+  const textEl = document.getElementById("p2pMapPickText");
+  if (textEl) {
+    textEl.textContent = targetType === "origin"
+      ? "📍 請喺地圖篤一下揀選【出發地】"
+      : "📍 請喺地圖篤一下揀選【目的地】";
+  }
+  if (banner) banner.classList.add("active");
+
+  if (map) {
+    map.once("click", (e) => {
+      if (!p2pPickMode) return;
+      const lat = e.latlng.lat;
+      const lon = e.latlng.lng;
+      const picked = { lat, lon, label: `地圖選點 (${lat.toFixed(5)}, ${lon.toFixed(5)})` };
+      if (p2pPickMode === "origin") {
+        p2pOriginPoint = picked;
+        const inp = document.getElementById("p2pOriginInput");
+        if (inp) inp.value = picked.label;
+        updateP2PMapPin("origin", picked);
+      } else {
+        p2pDestPoint = picked;
+        const inp = document.getElementById("p2pDestInput");
+        if (inp) inp.value = picked.label;
+        updateP2PMapPin("dest", picked);
+      }
+      p2pPickMode = null;
+      if (banner) banner.classList.remove("active");
+      openP2PModal();
+    });
+  }
+}
+
+// 2. 香港地點 + 巴士站名稱打字搜尋
+async function queryHKPlacesAndStops(keyword) {
+  const kw = String(keyword || "").trim();
+  if (!kw) return [];
+  const results = [];
+
+  await loadHkFareDatabase();
+  if (hkFareStopList) {
+    const seenStopNames = new Set();
+    for (const s of Object.values(hkFareStopList)) {
+      if (s.name && s.name.toLowerCase().includes(kw.toLowerCase())) {
+        const clean = stripBracketCode(s.name);
+        const dedupKey = `${clean}_${s.lat.toFixed(2)}_${s.lon.toFixed(2)}`;
+        if (!seenStopNames.has(dedupKey)) {
+          seenStopNames.add(dedupKey);
+          results.push({ label: clean, sub: "🚌 巴士 / 小巴站位置", lat: s.lat, lon: s.lon });
+          if (results.length >= 5) break;
+        }
+      }
+    }
+  }
+
+  try {
+    const res = await fetch(`https://www.als.gov.hk/lookup?q=${encodeURIComponent(kw)}&n=6`, {
+      headers: { "Accept": "application/json" }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      (data.SuggestedAddress || []).forEach(item => {
+        const prem = item.Address && item.Address.PremisesAddress;
+        const geo = prem && prem.GeospatialInformation;
+        if (!geo || !geo.Latitude || !geo.Longitude) return;
+        const chi = prem.ChiPremisesAddress || {};
+        const bldg = chi.BuildingName || "";
+        const estate = (chi.ChiEstate && chi.ChiEstate.EstateName) || "";
+        const street = (chi.ChiStreet && `${chi.ChiStreet.StreetName || ""}${chi.ChiStreet.BuildingNoFrom || ""}`) || "";
+        const dist = (chi.ChiDistrict && chi.ChiDistrict.DcDistrict) || "";
+        const fullTitle = [estate, bldg, street].filter(Boolean).join(" ") || kw;
+        results.push({
+          label: fullTitle,
+          sub: `🏢 香港地址 ${dist ? `(${dist})` : ""}`,
+          lat: Number(geo.Latitude),
+          lon: Number(geo.Longitude)
+        });
+      });
+    }
+  } catch (e) {}
+
+  return results.slice(0, 10);
+}
+
+function bindPlaceAutocomplete(inputId, suggestId, type) {
+  const inp = document.getElementById(inputId);
+  const box = document.getElementById(suggestId);
+  if (!inp || !box) return;
+  let timer = null;
+
+  inp.addEventListener("input", () => {
+    clearTimeout(timer);
+    const val = inp.value.trim();
+    if (!val) { box.style.display = "none"; return; }
+    timer = setTimeout(async () => {
+      const items = await queryHKPlacesAndStops(val);
+      box.innerHTML = "";
+      if (!items.length) { box.style.display = "none"; return; }
+      items.forEach(pt => {
+        const div = document.createElement("div");
+        div.className = "p2p-suggest-item";
+        div.innerHTML = `<strong>${pt.label}</strong><span class="p2p-suggest-sub">${pt.sub}</span>`;
+        div.onclick = () => {
+          inp.value = pt.label;
+          box.style.display = "none";
+          if (type === "origin") { p2pOriginPoint = pt; updateP2PMapPin("origin", pt); }
+          else { p2pDestPoint = pt; updateP2PMapPin("dest", pt); }
+        };
+        box.appendChild(div);
+      });
+      box.style.display = "block";
+    }, 260);
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!inp.contains(e.target) && !box.contains(e.target)) box.style.display = "none";
+  });
+}
+
+// 3. 預計行車分鐘數計算
+function estimateBusRideMinutesByStopIds(stopIds, fromIdx, toIdx, departDate = new Date()) {
+  let accMin = 0;
+  let curTime = new Date(departDate.getTime());
+  for (let i = fromIdx + 1; i <= toIdx; i++) {
+    const prev = getUnifiedStopInfo(stopIds[i - 1]);
+    const cur = getUnifiedStopInfo(stopIds[i]);
+    if (!prev || !cur) { accMin += 1.8; continue; }
+    const segDist = haversineDistanceMeters(prev.lat, prev.lon, cur.lat, cur.lon);
+    if (segDist <= 0) continue;
+    const vKmH = getSegmentEffectiveSpeedKmH(segDist, curTime);
+    const mins = ((segDist / 1000) / vKmH) * 60;
+    accMin += mins;
+    curTime = new Date(curTime.getTime() + mins * 60000);
+  }
+  return Math.max(1, Math.round(accMin));
+}
+
+// 將收集到嘅班次時間計算成最終上車時間與到達時間
+function finalizeCandidateEta(cand, rawEtaDates) {
+  const now = new Date();
+  rawEtaDates.sort((a, b) => a - b);
+
+  const uniqueDates = [];
+  rawEtaDates.forEach(d => {
+    if (!uniqueDates.length || Math.abs(d - uniqueDates[uniqueDates.length - 1]) > 30000) {
+      uniqueDates.push(d);
+    }
+  });
+
+  cand.etaLoaded = true;
+  cand.nextBusDate = uniqueDates[0] || null;
+  const catchable = uniqueDates.find(d => (d - now) / 60000 >= cand.walkOrigMin - 1) || null;
+  cand.boardBusDate = catchable || cand.nextBusDate;
+  cand.missedFirstBus = Boolean(cand.nextBusDate && catchable && catchable !== cand.nextBusDate);
+  cand.cannotCatchOnlyBus = Boolean(cand.nextBusDate && !catchable);
+
+  if (cand.boardBusDate) {
+    cand.rideMin = estimateBusRideMinutesByStopIds(cand.stopIds, cand.originIdx, cand.destIdx, cand.boardBusDate);
+    cand.destArrivalDate = new Date(cand.boardBusDate.getTime() + (cand.rideMin + cand.walkDestMin) * 60000);
+  } else {
+    cand.destArrivalDate = null;
+  }
+}
+
+// 4. ★ 極速搜尋：九巴用 `/stop-eta/{stop_id}` 一槍過批量拉取 ＋ 城巴/小巴限時 2.5 秒並發拉取 ＋ 即時漸進式出表
+async function runP2PDirectSearch() {
+  const statusEl = document.getElementById("p2pStatusText");
+  const container = document.getElementById("p2pResultsContainer");
+  if (!p2pOriginPoint) { showToast("⚠️ 請先設定出發地點"); return; }
+  if (!p2pDestPoint) { showToast("⚠️ 請先輸入或喺地圖篤點揀選目的地"); return; }
+
+  const myToken = ++p2pSearchToken;
+  setP2PSheetState("full");
+  if (statusEl) statusEl.textContent = "⏳ 正在掃描兩端 1km 內車站...";
+  if (container) container.innerHTML = `<div style="padding:30px;text-align:center;color:#475569;font-weight:700;">⏳ 正在掃描兩端 1km 內所有巴士及小巴站...</div>`;
+
+  await loadHkFareDatabase();
+  if (!hkFareRouteList || !hkFareStopList) {
+    if (container) container.innerHTML = `<div style="padding:24px;text-align:center;color:#dc2626;">無法載入全港車站座標庫，請檢查網絡連線。</div>`;
+    return;
+  }
+
+  const originNearby = new Map();
+  const destNearby = new Map();
+
+  for (const [sid, s] of Object.entries(hkFareStopList)) {
+    const dOrig = haversineDistanceMeters(p2pOriginPoint.lat, p2pOriginPoint.lon, s.lat, s.lon);
+    if (dOrig <= 1000) originNearby.set(sid, dOrig);
+    const dDest = haversineDistanceMeters(p2pDestPoint.lat, p2pDestPoint.lon, s.lat, s.lon);
+    if (dDest <= 1000) destNearby.set(sid, dDest);
+  }
+
+  if (originNearby.size === 0 || destNearby.size === 0) {
+    if (statusEl) statusEl.textContent = "附近 1km 內搵唔到車站。";
+    if (container) container.innerHTML = `<div style="padding:28px;text-align:center;color:#64748b;">⚠️ ${originNearby.size === 0 ? "出發地" : "目的地"} 1km 範圍內無巴士或專線小巴站。</div>`;
+    return;
+  }
+
+  const now = new Date();
+  const routeGroupMap = new Map();
+
+  for (const entry of Object.values(hkFareRouteList)) {
+    const coList = entry.co || [];
+    const primaryCo = coList.includes("kmb") ? "kmb" : (coList.includes("ctb") ? "ctb" : coList[0]);
+    const stopIds = entry.stops[primaryCo] || Object.values(entry.stops)[0] || [];
+    if (stopIds.length < 2) continue;
+
+    const origCandidates = [];
+    const destCandidates = [];
+    for (let i = 0; i < stopIds.length; i++) {
+      const sid = String(stopIds[i]);
+      if (i < stopIds.length - 1 && originNearby.has(sid)) origCandidates.push(i);
+      if (i > 0 && destNearby.has(sid)) destCandidates.push(i);
+    }
+    if (!origCandidates.length || !destCandidates.length) continue;
+
+    const validOrigIndices = origCandidates.filter(i => destCandidates.some(j => j > i));
+    if (!validOrigIndices.length) continue;
+
+    let bestOriginIdx = validOrigIndices[0];
+    let minOrigDist = originNearby.get(String(stopIds[bestOriginIdx]));
+    for (const idx of validOrigIndices) {
+      const d = originNearby.get(String(stopIds[idx]));
+      if (d < minOrigDist) { minOrigDist = d; bestOriginIdx = idx; }
+    }
+
+    const validDestIndices = destCandidates.filter(j => j > bestOriginIdx);
+    let bestDestIdx = validDestIndices[0];
+    let minDestDist = destNearby.get(String(stopIds[bestDestIdx]));
+    for (const idx of validDestIndices) {
+      const d = destNearby.get(String(stopIds[idx]));
+      if (d < minDestDist) { minDestDist = d; bestDestIdx = idx; }
+    }
+
+    const origStopId = String(stopIds[bestOriginIdx]);
+    const destStopId = String(stopIds[bestDestIdx]);
+    const origStopInfo = getUnifiedStopInfo(origStopId);
+    const destStopInfo = getUnifiedStopInfo(destStopId);
+
+    const fareRaw = entry.fares[Math.min(bestOriginIdx, entry.fares.length - 1)];
+    const fareNum = fareRaw != null ? parseFloat(fareRaw) : NaN;
+    const walkOrigMin = minOrigDist < 25 ? 0 : Math.max(1, Math.round(minOrigDist / (5000 / 60)));
+    const walkDestMin = minDestDist < 25 ? 0 : Math.max(1, Math.round(minDestDist / (5000 / 60)));
+
+    const boundDir = entry.bound[primaryCo] || Object.values(entry.bound)[0] || "O";
+    const groupKey = `${coList.join("+")}_${entry.route}_${entry.gtfsId || ""}_${boundDir}_${entry.dest}`;
+
+    if (!routeGroupMap.has(groupKey)) {
+      routeGroupMap.set(groupKey, {
+        route: entry.route,
+        coList,
+        primaryCo,
+        gtfsId: entry.gtfsId || "",
+        bound: entry.bound || {},
+        boundDir,
+        serviceTypes: new Set([String(entry.serviceType || "1")]),
+        origTerminal: entry.orig,
+        destTerminal: entry.dest,
+        stopIds,
+        originIdx: bestOriginIdx,
+        destIdx: bestDestIdx,
+        originStopId: origStopId,
+        destStopId: destStopId,
+        origStopLat: origStopInfo ? origStopInfo.lat : null,
+        origStopLon: origStopInfo ? origStopInfo.lon : null,
+        kmbStopId: entry.stops.kmb ? entry.stops.kmb[bestOriginIdx] : null,
+        ctbStopId: entry.stops.ctb ? entry.stops.ctb[bestOriginIdx] : null,
+        gmbStopId: entry.stops.gmb ? entry.stops.gmb[bestOriginIdx] : null,
+        originStopName: origStopInfo ? stripBracketCode(origStopInfo.name) : origStopId,
+        destStopName: destStopInfo ? stripBracketCode(destStopInfo.name) : destStopId,
+        walkOrigDist: Math.round(minOrigDist),
+        walkDestDist: Math.round(minDestDist),
+        walkOrigMin,
+        walkDestMin,
+        totalWalkMin: walkOrigMin + walkDestMin,
+        rideMin: estimateBusRideMinutesByStopIds(stopIds, bestOriginIdx, bestDestIdx, now),
+        fare: isFinite(fareNum) ? fareNum : null,
+        etaLoaded: false,
+        rawEtaBucket: []
+      });
+    } else {
+      const existing = routeGroupMap.get(groupKey);
+      existing.serviceTypes.add(String(entry.serviceType || "1"));
+      if (minOrigDist + minDestDist < existing.walkOrigDist + existing.walkDestDist) {
+        existing.stopIds = stopIds;
+        existing.originIdx = bestOriginIdx;
+        existing.destIdx = bestDestIdx;
+        existing.originStopId = origStopId;
+        existing.destStopId = destStopId;
+        existing.origStopLat = origStopInfo ? origStopInfo.lat : existing.origStopLat;
+        existing.origStopLon = origStopInfo ? origStopInfo.lon : existing.origStopLon;
+        existing.kmbStopId = entry.stops.kmb ? entry.stops.kmb[bestOriginIdx] : existing.kmbStopId;
+        existing.ctbStopId = entry.stops.ctb ? entry.stops.ctb[bestOriginIdx] : existing.ctbStopId;
+        existing.gmbStopId = entry.stops.gmb ? entry.stops.gmb[bestOriginIdx] : existing.gmbStopId;
+        existing.originStopName = origStopInfo ? stripBracketCode(origStopInfo.name) : origStopId;
+        existing.destStopName = destStopInfo ? stripBracketCode(destStopInfo.name) : destStopId;
+        existing.walkOrigDist = Math.round(minOrigDist);
+        existing.walkDestDist = Math.round(minDestDist);
+        existing.walkOrigMin = walkOrigMin;
+        existing.walkDestMin = walkDestMin;
+        existing.totalWalkMin = walkOrigMin + walkDestMin;
+      }
+    }
+  }
+
+  const candidates = Array.from(routeGroupMap.values());
+  if (!candidates.length) {
+    if (statusEl) statusEl.textContent = "無直達路線連接兩地 1km 範圍。";
+    if (container) container.innerHTML = `<div style="padding:28px;text-align:center;color:#64748b;">😔 搵唔到一程直達路線連接兩地 1km 內嘅車站。</div>`;
+    return;
+  }
+
+  // ★ 先即刻畫出所有路線、站名、距離同車費（0.1 秒即見，唔使白等）
+  p2pResultsData = candidates;
+  renderP2PResultsTable();
+  if (statusEl) statusEl.textContent = `⚡ 搵到 ${candidates.length} 條路線，正在極速同步實時班次...`;
+
+  // ★ (1) 九巴批量優化：按唯一 kmbStopId 一次過拉 `/stop-eta/{stopId}`，幾個 Request 搞掂晒全場九巴線！
+  const uniqueKmbStops = Array.from(new Set(candidates.filter(c => c.coList.includes("kmb") && c.kmbStopId).map(c => c.kmbStopId)));
+  const kmbBatchPromise = Promise.all(
+    uniqueKmbStops.map(async (stopId) => {
+      try {
+        const res = await fetchJsonFast(`${KMB_BASE}/stop-eta/${stopId}`, 2500);
+        const list = res.data || [];
+        candidates.forEach(cand => {
+          if (!cand.coList.includes("kmb") || cand.kmbStopId !== stopId) return;
+          list.forEach(item => {
+            if (String(item.route).toUpperCase() !== cand.route || !item.eta) return;
+            const rmk = String(item.rmk_tc || "");
+            if (rmk.includes("時段") || rmk.includes("預定班次") || rmk === "離開") return;
+            if (cand.bound.kmb && (cand.bound.kmb === "O" || cand.bound.kmb === "I") && item.dir !== cand.bound.kmb) return;
+            if (item.seq != null && Math.abs(parseInt(item.seq) - (cand.originIdx + 1)) > 2) return;
+            const d = new Date(item.eta);
+            if (!isNaN(d) && d.getTime() >= now.getTime() - 30000) cand.rawEtaBucket.push(d);
+          });
+        });
+      } catch (e) {}
+    })
+  );
+
+  // ★ (2) 城巴 + 專線小巴高並發 + 2.5 秒硬上限 Timeout（絕不卡喺最後兩條小巴線）
+  const extraTasks = candidates.filter(c => (c.coList.includes("ctb") && c.ctbStopId) || (c.primaryCo === "gmb" && c.gtfsId && c.gmbStopId));
+  const CONCURRENCY = 10;
+  const queue = extraTasks.slice();
+
+  async function extraWorker() {
+    while (queue.length > 0) {
+      if (myToken !== p2pSearchToken) return;
+      const cand = queue.shift();
+
+      if (cand.coList.includes("ctb") && cand.ctbStopId) {
+        try {
+          const res = await fetchJsonFast(`${CTB_BASE}/eta/ctb/${cand.ctbStopId}/${cand.route}`, 2500);
+          (res.data || []).forEach(item => {
+            if (!item.eta) return;
+            const rmk = String(item.rmk_tc || "");
+            if (rmk.includes("時段") || rmk === "離開") return;
+            if (cand.bound.ctb && (cand.bound.ctb === "O" || cand.bound.ctb === "I") && item.dir && item.dir !== cand.bound.ctb) return;
+            if (item.seq != null && Math.abs(parseInt(item.seq) - (cand.originIdx + 1)) > 2) return;
+            const d = new Date(item.eta);
+            if (!isNaN(d) && d.getTime() >= now.getTime() - 30000) cand.rawEtaBucket.push(d);
+          });
+        } catch (e) {}
+      }
+
+      if (cand.primaryCo === "gmb" && cand.gtfsId && cand.gmbStopId) {
+        try {
+          const res = await fetchGmbEtaFast(cand.gtfsId, cand.gmbStopId, 2500);
+          const rawData = res ? res.data : null;
+          const groups = Array.isArray(rawData) ? rawData : (rawData ? [rawData] : []);
+          groups.forEach(g => {
+            if (cand.bound.gmb === "I" && g.route_seq !== 2) return;
+            if (cand.bound.gmb === "O" && g.route_seq !== 1) return;
+            (g.eta || []).forEach(e => {
+              if (e.timestamp) {
+                const d = new Date(e.timestamp);
+                if (!isNaN(d) && d.getTime() >= now.getTime() - 30000) cand.rawEtaBucket.push(d);
+              }
+            });
+          });
+        } catch (e) {}
+      }
+    }
+  }
+
+  await Promise.all([
+    kmbBatchPromise,
+    ...Array.from({ length: Math.min(CONCURRENCY, extraTasks.length) }, () => extraWorker())
+  ]);
+
+  if (myToken !== p2pSearchToken) return;
+
+  candidates.forEach(cand => finalizeCandidateEta(cand, cand.rawEtaBucket));
+  p2pResultsData = candidates;
+  if (statusEl) statusEl.textContent = `✅ 共 ${candidates.length} 條直達線（撳路線自動載入，向下拉頂欄可睇地圖）`;
+  renderP2PResultsTable();
+}
+
+// 5. 排序與渲染表格（電話版自動顯示精簡 5 欄三行排版）
+function sortP2PResults(list, sortBy) {
+  const INF = Number.MAX_SAFE_INTEGER;
+  return list.slice().sort((a, b) => {
+    if (sortBy === "fare") {
+      const fa = a.fare != null ? a.fare : INF;
+      const fb = b.fare != null ? b.fare : INF;
+      if (fa !== fb) return fa - fb;
+    } else if (sortBy === "boardEta") {
+      const ba = a.boardBusDate ? a.boardBusDate.getTime() : INF;
+      const bb = b.boardBusDate ? b.boardBusDate.getTime() : INF;
+      if (ba !== bb) return ba - bb;
+    } else if (sortBy === "walk") {
+      if (a.totalWalkMin !== b.totalWalkMin) return a.totalWalkMin - b.totalWalkMin;
+      if ((a.walkOrigDist + a.walkDestDist) !== (b.walkOrigDist + b.walkDestDist)) {
+        return (a.walkOrigDist + a.walkDestDist) - (b.walkOrigDist + b.walkDestDist);
+      }
+    }
+    const aa = a.destArrivalDate ? a.destArrivalDate.getTime() : INF;
+    const ab = b.destArrivalDate ? b.destArrivalDate.getTime() : INF;
+    if (aa !== ab) return aa - ab;
+    return a.totalWalkMin - b.totalWalkMin;
+  });
+}
+
+function getP2PCoBadgeHTML(cand) {
+  if (cand.primaryCo === "gmb") return `<span class="route-co-tag co-gmb">小巴</span>`;
+  if (cand.coList.includes("kmb") && cand.coList.includes("ctb")) return `<span class="route-co-tag co-joint">九巴/城巴</span>`;
+  if (cand.primaryCo === "ctb") return `<span class="route-co-tag co-ctb">城巴</span>`;
+  return `<span class="route-co-tag co-kmb">九巴</span>`;
+}
+
+function renderP2PResultsTable() {
+  const container = document.getElementById("p2pResultsContainer");
+  if (!container || !p2pResultsData.length) return;
+
+  const sorted = sortP2PResults(p2pResultsData, p2pCurrentSort);
+  const now = new Date();
+
+  const table = document.createElement("table");
+  table.className = "p2p-table";
+  table.innerHTML = `
+    <thead>
+      <tr>
+        <th>路線</th>
+        <th>上車站</th>
+        <th class="p2p-desktop-only">下車站</th>
+        <th class="p2p-desktop-only">步行時間</th>
+        <th>價錢</th>
+        <th>下班車</th>
+        <th>預計到達時間</th>
+      </tr>
+    </thead>
+    <tbody></tbody>
+  `;
+  const tbody = table.querySelector("tbody");
+
+  sorted.forEach(cand => {
+    const tr = document.createElement("tr");
+    tr.className = "p2p-row";
+
+    // 下班車：電話精簡顯示「XX分鐘」
+    let nextBusHtml = !cand.etaLoaded
+      ? `<span style="color:#94a3b8;font-size:11.5px;">載入中...</span>`
+      : `<span style="color:#94a3b8;">暫無班次</span>`;
+
+    if (cand.boardBusDate) {
+      const waitMin = Math.max(0, Math.round((cand.boardBusDate - now) / 60000));
+      const waitStr = waitMin <= 0 ? "即將到達" : `${waitMin}分鐘`;
+      if (cand.cannotCatchOnlyBus) {
+        nextBusHtml = `<strong style="color:#d97706;">${waitStr}</strong><div class="p2p-sub-muted">步程較趕</div>`;
+      } else if (cand.missedFirstBus) {
+        nextBusHtml = `<strong style="color:#0f172a;">${waitStr}</strong><div class="p2p-sub-muted">下班趕得切</div>`;
+      } else {
+        nextBusHtml = `<strong style="color:#1565c0;">${waitStr}</strong>`;
+      }
+    }
+
+    // 預計到達時間：第一行 XX:XX，第二行 全程... (車程 ...)
+    let arriveHtml = `<span style="color:#94a3b8;">--</span>`;
+    if (cand.destArrivalDate) {
+      const totalTripMin = Math.max(1, Math.round((cand.destArrivalDate - now) / 60000));
+      arriveHtml = `
+        <strong style="color:#15803d;font-size:14px;">${formatTimeHHMM(cand.destArrivalDate)}</strong>
+        <div class="p2p-sub-muted">全程${totalTripMin}分 (車程${cand.rideMin}分)</div>
+      `;
+    } else if (cand.etaLoaded) {
+      arriveHtml = `<span style="color:#94a3b8;">--:--</span><div class="p2p-sub-muted">車程約${cand.rideMin}分</div>`;
+    }
+
+    const fareHtml = cand.fare != null ? `<strong style="color:#0f766e;">$${cand.fare}</strong>` : `--`;
+
+    tr.innerHTML = `
+      <td>
+        <div class="p2p-line1-route">${cand.route}</div>
+        <div class="p2p-line2-dir">往${cand.destTerminal}</div>
+        <div class="p2p-line3-co">${getP2PCoBadgeHTML(cand)}</div>
+      </td>
+      <td>
+        <div class="p2p-stop-name-cell">${cand.originStopName}</div>
+        <div class="p2p-sub-muted">${cand.walkOrigDist} m</div>
+      </td>
+      <td class="p2p-desktop-only">
+        <strong>${cand.destStopName}</strong>
+        <div class="p2p-sub-muted">${cand.walkDestDist} m</div>
+      </td>
+      <td class="p2p-desktop-only">
+        上車 ${cand.walkOrigMin}分 + 下車 ${cand.walkDestMin}分
+        <div class="p2p-sub-muted">共 ${cand.totalWalkMin} 分鐘</div>
+      </td>
+      <td>${fareHtml}</td>
+      <td>${nextBusHtml}</td>
+      <td>${arriveHtml}</td>
+    `;
+
+    tr.onclick = () => applySelectedP2PRouteToMainApp(cand);
+    tbody.appendChild(tr);
+  });
+
+  container.innerHTML = "";
+  container.appendChild(table);
+}
+
+// 6. ★ 撳揀路線後：自動揀車 ➔ 自動揀方向 ➔ 自動撳開上車站 ETA 並置中
+async function applySelectedP2PRouteToMainApp(cand) {
+  const modal = document.getElementById("p2p-nav-modal");
+  if (modal) modal.classList.remove("active");
+  setBottomSheetState("half");
+
+  let chosenRoute = null;
+  if (cand.primaryCo === "gmb") {
+    const gmbMatches = uniqueRoutes.filter(r => isGmbCompany(r.company) && r.route === cand.route);
+    await Promise.all(gmbMatches.map(r => ensureGmbRouteMeta(r)));
+    chosenRoute = gmbMatches.find(r => String(r.gmbRouteId) === String(cand.gtfsId)) || gmbMatches[0];
+  } else if (cand.primaryCo === "ctb" && !cand.coList.includes("kmb")) {
+    chosenRoute = uniqueRoutes.find(r => r.company === "CTB" && r.route === cand.route);
+  } else {
+    chosenRoute = uniqueRoutes.find(r => r.company === "KMB" && r.route === cand.route)
+               || uniqueRoutes.find(r => r.company === "CTB" && r.route === cand.route);
+  }
+
+  if (!chosenRoute) {
+    showToast("⚠️ 搵唔到對應路線資料");
+    return;
+  }
+
+  // 鎖住 GPS 自動最近站，防止覆蓋我哋揀定嘅上車站
+  p2pApplyingLock = true;
+  lastP2PRouteStopsPromise = null;
+
+  try {
+    await selectRoute(chosenRoute);
+    // 等 80ms 讓單向/循環線內置嘅 50ms 自動撳方向先觸發（如有）
+    await new Promise(r => setTimeout(r, 80));
+
+    const btnIn = document.getElementById("dirInbound");
+    const btnOut = document.getElementById("dirOutbound");
+
+    // 判斷正確方向（優先對比公司 bound，再用總站名稱雙重確認）
+    const coKey = isGmbCompany(chosenRoute.company) ? "gmb" : (chosenRoute.company === "CTB" ? "ctb" : "kmb");
+    const rawBound = String((cand.bound && cand.bound[coKey]) || cand.boundDir || "O").toUpperCase();
+    let targetDir = rawBound.startsWith("I") ? "inbound" : "outbound";
+
+    if (btnIn && btnOut && !btnIn.disabled && !btnOut.disabled && cand.destTerminal) {
+      const destShort = cand.destTerminal.substring(0, 2);
+      const inMatch = (btnIn.textContent || "").includes(destShort);
+      const outMatch = (btnOut.textContent || "").includes(destShort);
+      if (inMatch && !outMatch) targetDir = "inbound";
+      else if (outMatch && !inMatch) targetDir = "outbound";
+    }
+    if (targetDir === "inbound" && btnIn && (btnIn.disabled || btnIn.style.display === "none")) targetDir = "outbound";
+    if (targetDir === "outbound" && btnOut && (btnOut.disabled || btnOut.style.display === "none")) targetDir = "inbound";
+
+    // 如果單向線已經自動觸發載入，直接等佢完成；否則自動設定方向並載入站點
+    if (currentDirection === targetDir && lastP2PRouteStopsPromise) {
+      await lastP2PRouteStopsPromise;
+    } else {
+      currentDirection = targetDir;
+      currentDirectionCode = targetDir === "inbound" ? "I" : "O";
+      await loadRouteStopsForCurrentDirection();
+    }
+
+    // 等埋內部 300ms 定位計時器安全略過
+    await new Promise(r => setTimeout(r, 350));
+  } finally {
+    p2pApplyingLock = false;
+  }
+
+  if (!routeStops || !routeStops.length) return;
+
+  // 多重精準配對上車站（1. Stop ID -> 2. 標準化站名 -> 3. 最接近座標）
+  const targetId = cand.primaryCo === "gmb"
+    ? `GMB_${cand.gmbStopId || cand.originStopId}`
+    : (chosenRoute.company === "CTB" ? (cand.ctbStopId || cand.originStopId) : (cand.kmbStopId || cand.originStopId));
+
+  let matchedStop = routeStops.find(s => s.stop_id === targetId);
+
+  if (!matchedStop && cand.originStopName) {
+    const normTarget = normalizeStopName(cand.originStopName);
+    matchedStop = routeStops.find(s => normalizeStopName(s.name_tc) === normTarget);
+  }
+
+  if (!matchedStop && isFinite(cand.origStopLat) && isFinite(cand.origStopLon)) {
+    let bestD = Infinity;
+    routeStops.forEach(s => {
+      if (s.lat && s.long) {
+        const d = haversineDistanceMeters(cand.origStopLat, cand.origStopLon, parseFloat(s.lat), parseFloat(s.long));
+        if (d < bestD) { bestD = d; matchedStop = s; }
+      }
+    });
+  }
+
+  if (!matchedStop) matchedStop = routeStops[Math.min(cand.originIdx, routeStops.length - 1)];
+
+  if (matchedStop) {
+    // 正式觸發撳上車站（展開 ETA、畫紫線步行路線、地圖聚焦該站）
+    onStopClicked(matchedStop.stop_id, matchedStop.seq);
+    setTimeout(() => {
+      const el = document.querySelector(`#stopList .stop-item[data-stop-id="${matchedStop.stop_id}"][data-seq="${matchedStop.seq}"]`)
+              || document.querySelector(`#stopList .stop-item.selected`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 120);
+  }
+}
+
+// 7. 綁定事件 ＋ 頂欄向下拉顯示地圖手勢
+(function initP2PNavigationEvents() {
+  const modal = document.getElementById("p2p-nav-modal");
+  const dragHeader = document.getElementById("p2pDragHeader");
+  const btnToggleMap = document.getElementById("btnToggleP2PMap");
+  const btnOpen = document.getElementById("btnOpenP2PNav");
+  const btnClose = document.getElementById("btnCloseP2PModal");
+  const btnGps = document.getElementById("btnP2PUseGps");
+  const btnPickOrig = document.getElementById("btnP2PPickOrigin");
+  const btnPickDest = document.getElementById("btnP2PPickDest");
+  const btnCancelPick = document.getElementById("btnCancelMapPick");
+  const btnGo = document.getElementById("btnP2PSearchGo");
+
+  if (btnOpen) btnOpen.onclick = openP2PModal;
+  if (btnClose) btnClose.onclick = closeP2PModal;
+  if (btnToggleMap) {
+    btnToggleMap.onclick = (e) => {
+      e.stopPropagation();
+      setP2PSheetState(p2pSheetState === "full" ? "map" : "full");
+    };
+  }
+  if (btnGps) btnGps.onclick = () => applyDefaultGpsToP2POrigin(true);
+  if (btnPickOrig) btnPickOrig.onclick = () => startP2PMapPick("origin");
+  if (btnPickDest) btnPickDest.onclick = () => startP2PMapPick("dest");
+
+  if (btnCancelPick) {
+    btnCancelPick.onclick = () => {
+      p2pPickMode = null;
+      const banner = document.getElementById("p2p-map-pick-banner");
+      if (banner) banner.classList.remove("active");
+      openP2PModal();
+    };
+  }
+
+  if (btnGo) btnGo.onclick = runP2PDirectSearch;
+
+  // ★ 頂部深色橫欄支援手指 / 滑鼠上下拉動（拉落去睇地圖，拉返上嚟全螢幕）
+  if (modal && dragHeader) {
+    let startY = 0, deltaY = 0, dragging = false;
+    const onStart = (y, target) => {
+      if (target && target.closest("button")) return;
+      startY = y; deltaY = 0; dragging = true;
+      modal.classList.add("dragging");
+    };
+    const onMove = (y) => { if (dragging) deltaY = y - startY; };
+    const onEnd = () => {
+      if (!dragging) return;
+      dragging = false;
+      modal.classList.remove("dragging");
+      if (deltaY > 40) {
+        if (p2pSheetState === "full") setP2PSheetState("map");
+        else setP2PSheetState("min");
+      } else if (deltaY < -35) {
+        if (p2pSheetState === "min") setP2PSheetState("map");
+        else setP2PSheetState("full");
+      }
+    };
+
+    dragHeader.addEventListener("touchstart", e => onStart(e.touches[0].clientY, e.target), { passive: true });
+    dragHeader.addEventListener("touchmove", e => onMove(e.touches[0].clientY), { passive: true });
+    dragHeader.addEventListener("touchend", onEnd);
+    dragHeader.addEventListener("mousedown", e => onStart(e.clientY, e.target));
+    window.addEventListener("mousemove", e => onMove(e.clientY));
+    window.addEventListener("mouseup", onEnd);
+  }
+
+  document.querySelectorAll(".p2p-sort-btn").forEach(btn => {
+    btn.onclick = () => {
+      document.querySelectorAll(".p2p-sort-btn").forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      p2pCurrentSort = btn.dataset.sort || "arrival";
+      renderP2PResultsTable();
+    };
+  });
+
+  bindPlaceAutocomplete("p2pOriginInput", "p2pOriginSuggest", "origin");
+  bindPlaceAutocomplete("p2pDestInput", "p2pDestSuggest", "dest");
+})();
