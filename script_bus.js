@@ -4525,8 +4525,11 @@ if (typeof createTwoLineRouteItemDOM === "function") {
 loadHkFareDatabase();
 
 /* =========================================================================
-   ★ 點對點 1km 直達導航模組（單一去重路線 + 極速批量 ETA + 電話 5 欄精簡版 + 下拉睇地圖）
+   ★ 點對點 800m 直達導航模組（頂部留 10% 地圖 + 全域 1.5 倍步程 + 最佳選擇排序 + 無班次置底變灰）
    ========================================================================= */
+
+const P2P_SEARCH_RADIUS_M = 800;     // 搜尋車站半徑：800m
+const WALK_TIME_MULTIPLIER = 1.5;    // 所有步行時間乘 1.5 倍
 
 let p2pOriginPoint = null;
 let p2pDestPoint = null;
@@ -4534,9 +4537,169 @@ let p2pOriginPin = null;
 let p2pDestPin = null;
 let p2pPickMode = null;
 let p2pResultsData = [];
-let p2pCurrentSort = "arrival";
+let p2pCurrentSort = "best";         // 預設使用「最佳選擇」排序
 let p2pSearchToken = 0;
-let p2pSheetState = "full"; // "full" | "map" | "min"
+let p2pSheetState = "full";          // "full" (留頂 10% 地圖) | "map" | "min"
+
+// 統一計算 1.5 倍步行分鐘數
+function calcWalkMinutes15x(distMeters) {
+  if (!isFinite(distMeters) || distMeters <= 0) return 0;
+  return (distMeters / (5000 / 60)) * WALK_TIME_MULTIPLIER;
+}
+
+// ★ 全域掛載：令主程式（上車站步程、轉車步程、背景通知倒數）所有步行時間一併按 1.5 倍計算
+if (typeof walkingMinutesBetweenStops === "function") {
+  walkingMinutesBetweenStops = function (stopIdA, stopIdB) {
+    if (!stopIdA || !stopIdB) return null;
+    if (stopIdA === stopIdB) return 0;
+    const infoA = allStopsMap.get(stopIdA);
+    const infoB = allStopsMap.get(stopIdB);
+    if (!infoA || !infoB) return null;
+    const lat1 = parseFloat(infoA.lat), lon1 = parseFloat(infoA.long);
+    const lat2 = parseFloat(infoB.lat), lon2 = parseFloat(infoB.long);
+    if (!isFinite(lat1) || !isFinite(lon1) || !isFinite(lat2) || !isFinite(lon2)) return null;
+    const distMeters = haversineDistanceMeters(lat1, lon1, lat2, lon2);
+    return calcWalkMinutes15x(distMeters);
+  };
+}
+
+if (typeof drawUserWalkRouteToStop === "function") {
+  drawUserWalkRouteToStop = async function (stopId) {
+    const walkBox = document.getElementById("userWalkInfo");
+    if (userToStopRouteLayer && map && map.hasLayer(userToStopRouteLayer)) {
+      map.removeLayer(userToStopRouteLayer);
+      userToStopRouteLayer = null;
+    }
+    if (!stopId || userLat == null || userLon == null) {
+      currentWalkDistMeters = null;
+      currentWalkMinutes = null;
+      if (walkBox) walkBox.textContent = "";
+      return;
+    }
+
+    const stopInfo = allStopsMap.get(stopId);
+    const stopObj = routeStops.find(s => s.stop_id === stopId);
+    if (!stopInfo) return;
+
+    const sLat = parseFloat(stopInfo.lat), sLon = parseFloat(stopInfo.long);
+    if (!isFinite(sLat) || !isFinite(sLon)) return;
+
+    const straightDist = haversineDistanceMeters(userLat, userLon, sLat, sLon);
+    const stopName = stopObj ? stripBracketCode(stopObj.name_tc) : stripBracketCode(stopInfo.name_tc || "車站");
+
+    currentWalkDistMeters = Math.round(straightDist * 1.2);
+    currentWalkMinutes = currentWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(calcWalkMinutes15x(currentWalkDistMeters)));
+
+    if (walkBox) walkBox.textContent = `🚶 由你位置行去「${stopName}」：計算實際步程中...`;
+
+    if (straightDist < 15000) {
+      try {
+        const coordsStr = `${userLon.toFixed(6)},${userLat.toFixed(6)};${sLon.toFixed(6)},${sLat.toFixed(6)}`;
+        const res = await fetch(`https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coordsStr}?overview=full&geometries=geojson`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.routes && data.routes[0]) {
+            const r = data.routes[0];
+            const coords = r.geometry.coordinates.map(c => [c[1], c[0]]);
+            userToStopRouteLayer = L.polyline(coords, {
+              color: "#9333ea", weight: 5, dashArray: "6, 8", opacity: 0.9
+            }).addTo(map);
+
+            currentWalkDistMeters = Math.round(r.distance || straightDist);
+            currentWalkMinutes = currentWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(calcWalkMinutes15x(currentWalkDistMeters)));
+            if (walkBox) {
+              walkBox.textContent = `🚶 由你位置行去「${stopName}」：約 ${currentWalkMinutes} 分鐘（實際步程 ${currentWalkDistMeters} 米）`;
+            }
+            return;
+          }
+        }
+      } catch (e) {}
+    }
+
+    if (walkBox) {
+      walkBox.textContent = `🚶 由你位置行去「${stopName}」：約 ${currentWalkMinutes} 分鐘（約 ${currentWalkDistMeters} 米）`;
+    }
+  };
+}
+
+if (typeof refreshWalkDistanceForOrigin === "function") {
+  refreshWalkDistanceForOrigin = async function () {
+    const stopCoords = getOriginStopLatLng();
+    if (!stopCoords || userLat == null || userLon == null) return;
+
+    const straightDist = haversineDistanceMeters(userLat, userLon, stopCoords.lat, stopCoords.lon);
+    currentWalkDistMeters = Math.round(straightDist * 1.2);
+    currentWalkMinutes = currentWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(calcWalkMinutes15x(currentWalkDistMeters)));
+
+    if (straightDist >= 15 && straightDist < 15000) {
+      try {
+        const coordsStr = `${userLon.toFixed(6)},${userLat.toFixed(6)};${stopCoords.lon.toFixed(6)},${stopCoords.lat.toFixed(6)}`;
+        const res = await fetch(
+          `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coordsStr}?overview=full&geometries=geojson`,
+          { cache: "no-store" }
+        );
+        if (res.ok) {
+          const routeData = await res.json();
+          if (routeData && routeData.routes && routeData.routes[0]) {
+            const r = routeData.routes[0];
+            currentWalkDistMeters = Math.round(r.distance || straightDist);
+            currentWalkMinutes = currentWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(calcWalkMinutes15x(currentWalkDistMeters)));
+
+            const coords = r.geometry.coordinates.map(c => [c[1], c[0]]);
+            if (userToStopRouteLayer && map && map.hasLayer(userToStopRouteLayer)) {
+              userToStopRouteLayer.setLatLngs(coords);
+            }
+          }
+        }
+      } catch (e) {}
+    }
+
+    const walkBox = document.getElementById("userWalkInfo");
+    if (walkBox) {
+      walkBox.textContent = `🚶 由你位置行去「${stopCoords.name}」：約 ${currentWalkMinutes} 分鐘（實際步程 ${currentWalkDistMeters} 米）`;
+    }
+  };
+}
+
+// 自動注入最新 CSS（導航 Mode 頂部留 10% 俾地圖 + 暫無班次變灰樣式）
+(function injectP2PUpgradeStyles() {
+  if (document.getElementById("p2p-upgrade-styles")) return;
+  const style = document.createElement("style");
+  style.id = "p2p-upgrade-styles";
+  style.textContent = `
+    #p2p-nav-modal {
+      top: 10vh !important;
+      bottom: 0 !important;
+      left: 0 !important;
+      right: 0 !important;
+      height: 90vh !important;
+      max-height: 90vh !important;
+      border-radius: 18px 18px 0 0 !important;
+      box-shadow: 0 -8px 28px rgba(15, 23, 42, 0.28) !important;
+      border-top: 1px solid rgba(255, 255, 255, 0.2);
+      overflow: hidden;
+    }
+    #p2p-nav-modal.p2p-sheet-map {
+      transform: translateY(42vh) !important;
+    }
+    #p2p-nav-modal.p2p-sheet-min {
+      transform: translateY(calc(90vh - 54px)) !important;
+    }
+    .p2p-row.p2p-row-no-eta {
+      background: #f1f5f9 !important;
+      opacity: 0.52;
+      filter: grayscale(92%);
+    }
+    .p2p-row.p2p-row-no-eta td,
+    .p2p-row.p2p-row-no-eta strong,
+    .p2p-row.p2p-row-no-eta .p2p-line1-route,
+    .p2p-row.p2p-row-no-eta .p2p-line2-dir,
+    .p2p-row.p2p-row-no-eta .p2p-stop-name-cell {
+      color: #94a3b8 !important;
+    }
+  `;
+  document.head.appendChild(style);
+})();
 
 // 攔截自動 GPS 最近站搶焦點，確保撳選路線後 100% 揀中指定上車站
 let p2pApplyingLock = false;
@@ -4559,7 +4722,7 @@ if (typeof onStopClicked === "function") {
   };
 }
 
-// 帶 Timeout 嘅極速 Fetch（防止個別 API 或小巴 CORS Proxy 卡住成個進度）
+// 帶 Timeout 嘅極速 Fetch（防止個別 API 或小巴 CORS Proxy 卡死）
 async function fetchJsonFast(url, timeoutMs = 2500) {
   const ctrl = new AbortController();
   const tid = setTimeout(() => ctrl.abort(), timeoutMs);
@@ -4572,7 +4735,6 @@ async function fetchJsonFast(url, timeoutMs = 2500) {
   }
 }
 
-// 專線小巴極速並發穿透（直連失敗即同步競速雙 Proxy，最多等 2.5 秒絕不卡死）
 async function fetchGmbEtaFast(gtfsId, gmbStopId, timeoutMs = 2500) {
   const targetUrl = `${GMB_BASE}/eta/route-stop/${gtfsId}/${gmbStopId}`;
   if (window.location.protocol !== "file:") {
@@ -4598,6 +4760,30 @@ function getUnifiedStopInfo(stopId) {
   return null;
 }
 
+// 自動將起終點聚焦喺導航面板上方露出嘅地圖區域（頂部 10% 或半開地圖區）
+function focusMapInVisibleP2PArea() {
+  if (!map) return;
+  const modal = document.getElementById("p2p-nav-modal");
+  const isModalOpen = modal && modal.classList.contains("active");
+  const bottomRatio = !isModalOpen ? 0.15 : (p2pSheetState === "full" ? 0.88 : (p2pSheetState === "map" ? 0.48 : 0.1));
+  const bottomPad = Math.round(window.innerHeight * bottomRatio);
+
+  if (p2pOriginPoint && p2pDestPoint) {
+    map.fitBounds(
+      L.latLngBounds([[p2pOriginPoint.lat, p2pOriginPoint.lon], [p2pDestPoint.lat, p2pDestPoint.lon]]),
+      { paddingTopLeft: [24, 12], paddingBottomRight: [24, bottomPad], maxZoom: 15 }
+    );
+  } else {
+    const pt = p2pDestPoint || p2pOriginPoint;
+    if (pt) {
+      const z = Math.max(map.getZoom(), 15);
+      const targetPx = map.project([pt.lat, pt.lon], z);
+      const shiftedLatLng = map.unproject([targetPx.x, targetPx.y + bottomPad / 2], z);
+      map.setView(shiftedLatLng, z, { animate: true });
+    }
+  }
+}
+
 function updateP2PMapPin(type, pt) {
   if (!map || !pt) return;
   if (type === "origin") {
@@ -4617,16 +4803,9 @@ function updateP2PMapPin(type, pt) {
     });
     p2pDestPin = L.marker([pt.lat, pt.lon], { icon, zIndexOffset: 2500 }).addTo(map).bindPopup(`🔴 目的地：${pt.label}`);
   }
-
-  if (p2pOriginPoint && p2pDestPoint) {
-    map.fitBounds(
-      L.latLngBounds([[p2pOriginPoint.lat, p2pOriginPoint.lon], [p2pDestPoint.lat, p2pDestPoint.lon]]),
-      { padding: [50, 50], maxZoom: 15 }
-    );
-  }
+  focusMapInVisibleP2PArea();
 }
 
-// 控制導航面板全開 / 下拉半開睇地圖 / 收到底
 function setP2PSheetState(state) {
   const modal = document.getElementById("p2p-nav-modal");
   const toggleBtn = document.getElementById("btnToggleP2PMap");
@@ -4638,15 +4817,9 @@ function setP2PSheetState(state) {
   else if (state === "min") modal.classList.add("p2p-sheet-min");
 
   if (toggleBtn) {
-    toggleBtn.textContent = state === "full" ? "🗺️ 睇地圖 ▼" : "全開列表 ▲";
+    toggleBtn.textContent = state === "full" ? "🗺️ 放大地圖 ▼" : "展開面板 ▲";
   }
-
-  if (state !== "full" && map && p2pOriginPoint && p2pDestPoint) {
-    map.fitBounds(
-      L.latLngBounds([[p2pOriginPoint.lat, p2pOriginPoint.lon], [p2pDestPoint.lat, p2pDestPoint.lon]]),
-      { paddingTopLeft: [30, 30], paddingBottomRight: [30, Math.round(window.innerHeight * 0.5)] }
-    );
-  }
+  focusMapInVisibleP2PArea();
 }
 
 function applyDefaultGpsToP2POrigin(showToastIfFail = false) {
@@ -4684,6 +4857,7 @@ function openP2PModal() {
   modal.classList.add("active");
   setP2PSheetState("full");
   if (!p2pOriginPoint) applyDefaultGpsToP2POrigin(false);
+  else focusMapInVisibleP2PArea();
 }
 
 function closeP2PModal() {
@@ -4862,26 +5036,22 @@ function finalizeCandidateEta(cand, rawEtaDates) {
   }
 }
 
-// ★ 同一路線號碼（例如 87D 正線 + 特別班次）只揀最優一個代表顯示，絕不重複出幾行
+// 同一路線號碼（如 87D 正線 + 特別班次）只揀最優一個代表顯示，絕不重複
 function pickBestVariantForRouteGroup(group) {
   const sorted = group.variants.slice().sort((a, b) => {
-    // 1) 優先揀選現時真正有實時班次開緊嘅分支（防止無車開嘅特別線遮蓋正線）
     const aHasEta = a.boardBusDate ? 1 : 0;
     const bHasEta = b.boardBusDate ? 1 : 0;
     if (aHasEta !== bHasEta) return bHasEta - aHasEta;
 
-    // 2) 若兩條分支都有車，揀最快到達目的地嗰班
     if (a.destArrivalDate && b.destArrivalDate) {
       const diff = a.destArrivalDate.getTime() - b.destArrivalDate.getTime();
       if (Math.abs(diff) > 30000) return diff;
     }
 
-    // 3) 優先揀正線 (serviceType === "1")
     const aMain = String(a.serviceType) === "1" ? 1 : 0;
     const bMain = String(b.serviceType) === "1" ? 1 : 0;
     if (aMain !== bMain) return bMain - aMain;
 
-    // 4) 最後以總步行距離較近者優先
     return (a.walkOrigDist + a.walkDestDist) - (b.walkOrigDist + b.walkDestDist);
   });
 
@@ -4890,7 +5060,45 @@ function pickBestVariantForRouteGroup(group) {
   return winner;
 }
 
-// 4. ★ 極速搜尋（每條路線嚴格去重只出一次 + 九巴單站批量拉 ETA + 2.5s 防卡死）
+// 標記邊幾條線屬於「而家嗰個巴士站」上車（支援已揀車站 / 身處 100m 內最近巴士站）
+function markCurrentStopPriority(list) {
+  if (!list || !list.length) return;
+
+  const activeMainId = originStopId || currentStopId || null;
+  let activeMainNormName = "";
+  if (activeMainId) {
+    const sInfo = getUnifiedStopInfo(activeMainId);
+    if (sInfo && sInfo.name) activeMainNormName = normalizeStopName(sInfo.name);
+  }
+
+  let minOrigDist = Infinity;
+  let nearestNormName = "";
+  list.forEach(c => {
+    if (c.walkOrigDist < minOrigDist) {
+      minOrigDist = c.walkOrigDist;
+      nearestNormName = normalizeStopName(c.originStopName);
+    }
+  });
+
+  list.forEach(c => {
+    const cNorm = normalizeStopName(c.originStopName);
+    if (activeMainId) {
+      const idMatch = c.originStopId === activeMainId ||
+                      c.kmbStopId === activeMainId ||
+                      c.ctbStopId === activeMainId ||
+                      `GMB_${c.gmbStopId}` === activeMainId;
+      const nameMatch = Boolean(activeMainNormName && cNorm === activeMainNormName && c.walkOrigDist <= 120);
+      c.isAtCurrentStop = idMatch || nameMatch;
+    } else if (minOrigDist <= 100) {
+      c.isAtCurrentStop = (c.walkOrigDist <= minOrigDist + 30) ||
+                          Boolean(nearestNormName && cNorm === nearestNormName && c.walkOrigDist <= 120);
+    } else {
+      c.isAtCurrentStop = false;
+    }
+  });
+}
+
+// 4. ★ 極速 800m 直達搜尋（1.5 倍步行時間 + 單一去重路線）
 async function runP2PDirectSearch() {
   const statusEl = document.getElementById("p2pStatusText");
   const container = document.getElementById("p2pResultsContainer");
@@ -4899,8 +5107,8 @@ async function runP2PDirectSearch() {
 
   const myToken = ++p2pSearchToken;
   setP2PSheetState("full");
-  if (statusEl) statusEl.textContent = "⏳ 正在掃描兩端 1km 內車站...";
-  if (container) container.innerHTML = `<div style="padding:30px;text-align:center;color:#475569;font-weight:700;">⏳ 正在掃描兩端 1km 內所有巴士及小巴站...</div>`;
+  if (statusEl) statusEl.textContent = `⏳ 正在掃描兩端 ${P2P_SEARCH_RADIUS_M}m 內車站...`;
+  if (container) container.innerHTML = `<div style="padding:30px;text-align:center;color:#475569;font-weight:700;">⏳ 正在掃描兩端 ${P2P_SEARCH_RADIUS_M}m 內所有巴士及小巴站...</div>`;
 
   await loadHkFareDatabase();
   if (!hkFareRouteList || !hkFareStopList) {
@@ -4913,14 +5121,14 @@ async function runP2PDirectSearch() {
 
   for (const [sid, s] of Object.entries(hkFareStopList)) {
     const dOrig = haversineDistanceMeters(p2pOriginPoint.lat, p2pOriginPoint.lon, s.lat, s.lon);
-    if (dOrig <= 1000) originNearby.set(sid, dOrig);
+    if (dOrig <= P2P_SEARCH_RADIUS_M) originNearby.set(sid, dOrig);
     const dDest = haversineDistanceMeters(p2pDestPoint.lat, p2pDestPoint.lon, s.lat, s.lon);
-    if (dDest <= 1000) destNearby.set(sid, dDest);
+    if (dDest <= P2P_SEARCH_RADIUS_M) destNearby.set(sid, dDest);
   }
 
   if (originNearby.size === 0 || destNearby.size === 0) {
-    if (statusEl) statusEl.textContent = "附近 1km 內搵唔到車站。";
-    if (container) container.innerHTML = `<div style="padding:28px;text-align:center;color:#64748b;">⚠️ ${originNearby.size === 0 ? "出發地" : "目的地"} 1km 範圍內無巴士或專線小巴站。</div>`;
+    if (statusEl) statusEl.textContent = `附近 ${P2P_SEARCH_RADIUS_M}m 內搵唔到車站。`;
+    if (container) container.innerHTML = `<div style="padding:28px;text-align:center;color:#64748b;">⚠️ ${originNearby.size === 0 ? "出發地" : "目的地"} ${P2P_SEARCH_RADIUS_M}m 範圍內無巴士或專線小巴站。</div>`;
     return;
   }
 
@@ -4965,7 +5173,7 @@ async function runP2PDirectSearch() {
     const origStopInfo = getUnifiedStopInfo(origStopId);
     const destStopInfo = getUnifiedStopInfo(destStopId);
 
-    // 過濾對面線反方向踩界（確保落車站真係比上車站更接近目的地）
+    // 過濾對面線反方向踩界
     if (origStopInfo && destStopInfo) {
       const origStopToDest = haversineDistanceMeters(origStopInfo.lat, origStopInfo.lon, p2pDestPoint.lat, p2pDestPoint.lon);
       const destStopToOrig = haversineDistanceMeters(destStopInfo.lat, destStopInfo.lon, p2pOriginPoint.lat, p2pOriginPoint.lon);
@@ -4977,11 +5185,11 @@ async function runP2PDirectSearch() {
 
     const fareRaw = entry.fares[Math.min(bestOriginIdx, entry.fares.length - 1)];
     const fareNum = fareRaw != null ? parseFloat(fareRaw) : NaN;
-    const walkOrigMin = minOrigDist < 25 ? 0 : Math.max(1, Math.round(minOrigDist / (5000 / 60)));
-    const walkDestMin = minDestDist < 25 ? 0 : Math.max(1, Math.round(minDestDist / (5000 / 60)));
+    // ★ 上下車步行時間均按 1.5 倍計算
+    const walkOrigMin = minOrigDist < 20 ? 0 : Math.max(1, Math.round(calcWalkMinutes15x(minOrigDist)));
+    const walkDestMin = minDestDist < 20 ? 0 : Math.max(1, Math.round(calcWalkMinutes15x(minDestDist)));
     const boundDir = entry.bound[primaryCo] || entry.bound.lwb || Object.values(entry.bound)[0] || "O";
 
-    // ★ 核心去重 Key：巴士按「BUS_路線號碼」、小巴按「GMB_路線號碼」歸一，確保 87D 等只會出現一次
     const routeKey = primaryCo === "gmb" ? `GMB_${entry.route}` : `BUS_${entry.route}`;
 
     const variantObj = {
@@ -5014,6 +5222,7 @@ async function runP2PDirectSearch() {
       rideMin: estimateBusRideMinutesByStopIds(stopIds, bestOriginIdx, bestDestIdx, now),
       fare: isFinite(fareNum) ? fareNum : null,
       etaLoaded: false,
+      isAtCurrentStop: false,
       rawEtaBucket: []
     };
 
@@ -5032,19 +5241,19 @@ async function runP2PDirectSearch() {
 
   const routeGroups = Array.from(routeGroupMap.values());
   if (!routeGroups.length) {
-    if (statusEl) statusEl.textContent = "無直達路線連接兩地 1km 範圍。";
-    if (container) container.innerHTML = `<div style="padding:28px;text-align:center;color:#64748b;">😔 搵唔到一程直達路線連接兩地 1km 內嘅車站。</div>`;
+    if (statusEl) statusEl.textContent = `無直達路線連接兩地 ${P2P_SEARCH_RADIUS_M}m 範圍。`;
+    if (container) container.innerHTML = `<div style="padding:28px;text-align:center;color:#64748b;">😔 搵唔到一程直達路線連接兩地 ${P2P_SEARCH_RADIUS_M}m 內嘅車站。</div>`;
     return;
   }
 
-  // 先即刻畫出唯一去重後嘅路線表（0.1 秒即見）
   p2pResultsData = routeGroups.map(pickBestVariantForRouteGroup);
+  markCurrentStopPriority(p2pResultsData);
   renderP2PResultsTable();
   if (statusEl) statusEl.textContent = `⚡ 搵到 ${p2pResultsData.length} 條直達線，正在極速同步實時班次...`;
 
   const allVariants = routeGroups.flatMap(g => g.variants);
 
-  // (1) 九巴批量優化：按唯一 kmbStopId 一次過拉 `/stop-eta/{stopId}`，並精準對齊 service_type 與站序
+  // (1) 九巴單站批量拉 ETA
   const uniqueKmbStops = Array.from(new Set(allVariants.filter(v => v.kmbStopId).map(v => v.kmbStopId)));
   const kmbBatchPromise = Promise.all(
     uniqueKmbStops.map(async (stopId) => {
@@ -5082,7 +5291,7 @@ async function runP2PDirectSearch() {
     })
   );
 
-  // (2) 城巴 + 小巴去重請求池（同一個站+路線只拉一次，限時 2.5 秒）
+  // (2) 城巴 + 小巴去重並發池
   const ctbTaskMap = new Map();
   const gmbTaskMap = new Map();
 
@@ -5159,17 +5368,44 @@ async function runP2PDirectSearch() {
 
   allVariants.forEach(v => finalizeCandidateEta(v, v.rawEtaBucket));
 
-  // ★ 每個路線組別揀出有實時車且最快到達嘅唯一代表，確保每條路線只出 1 次
   p2pResultsData = routeGroups.map(pickBestVariantForRouteGroup);
-  if (statusEl) statusEl.textContent = `✅ 共 ${p2pResultsData.length} 條直達線（撳路線自動載入，向下拉頂欄可睇地圖）`;
+  markCurrentStopPriority(p2pResultsData);
+  if (statusEl) statusEl.textContent = `✅ 共 ${p2pResultsData.length} 條直達線（範圍 ${P2P_SEARCH_RADIUS_M}m｜步程按 1.5x 計）`;
   renderP2PResultsTable();
 }
 
-// 5. 排序與渲染表格（電話版自動顯示精簡 5 欄三行排版）
+// 5. ★ 綜合評分與排序（暫無班次永遠置底 + 「最佳選擇」現時巴士站優先兼顧四項指標平衡）
+function computeBestBalanceScore(cand, nowMs) {
+  const arriveMin = cand.destArrivalDate ? Math.max(0, (cand.destArrivalDate.getTime() - nowMs) / 60000) : 999;
+  const boardMin = cand.boardBusDate ? Math.max(0, (cand.boardBusDate.getTime() - nowMs) / 60000) : 999;
+  const walkMin = cand.totalWalkMin || 0;
+  const fareVal = cand.fare != null ? cand.fare : 10;
+  const catchPenalty = cand.cannotCatchOnlyBus ? 15 : 0;
+
+  // 綜合權重（越細分越優）：早到(1.0) + 短步行(1.5) + 上車快(0.8) + 車費平(1.2)
+  return (arriveMin * 1.0) + (walkMin * 1.5) + (boardMin * 0.8) + (fareVal * 1.2) + catchPenalty;
+}
+
 function sortP2PResults(list, sortBy) {
   const INF = Number.MAX_SAFE_INTEGER;
+  const nowMs = Date.now();
+
   return list.slice().sort((a, b) => {
-    if (sortBy === "fare") {
+    // (0) 任何排序模式下，「暫無班次」嘅路線一律排到最後
+    if (a.etaLoaded && b.etaLoaded) {
+      const aHasBus = Boolean(a.boardBusDate);
+      const bHasBus = Boolean(b.boardBusDate);
+      if (aHasBus !== bHasBus) return aHasBus ? -1 : 1;
+    }
+
+    // (1) 🌟 最佳選擇：現時巴士站上車優先 ➔ 短步行 + 早到 + 上車快 + 車費平 平衡分
+    if (sortBy === "best") {
+      if (a.isAtCurrentStop !== b.isAtCurrentStop) {
+        return a.isAtCurrentStop ? -1 : 1;
+      }
+      const scoreDiff = computeBestBalanceScore(a, nowMs) - computeBestBalanceScore(b, nowMs);
+      if (Math.abs(scoreDiff) > 0.01) return scoreDiff;
+    } else if (sortBy === "fare") {
       const fa = a.fare != null ? a.fare : INF;
       const fb = b.fare != null ? b.fare : INF;
       if (fa !== fb) return fa - fb;
@@ -5183,6 +5419,7 @@ function sortP2PResults(list, sortBy) {
         return (a.walkOrigDist + a.walkDestDist) - (b.walkOrigDist + b.walkDestDist);
       }
     }
+
     const aa = a.destArrivalDate ? a.destArrivalDate.getTime() : INF;
     const ab = b.destArrivalDate ? b.destArrivalDate.getTime() : INF;
     if (aa !== ab) return aa - ab;
@@ -5223,12 +5460,13 @@ function renderP2PResultsTable() {
   const tbody = table.querySelector("tbody");
 
   sorted.forEach(cand => {
+    const isNoEta = cand.etaLoaded && !cand.boardBusDate;
     const tr = document.createElement("tr");
-    tr.className = "p2p-row";
+    tr.className = isNoEta ? "p2p-row p2p-row-no-eta" : "p2p-row";
 
     let nextBusHtml = !cand.etaLoaded
       ? `<span style="color:#94a3b8;font-size:11.5px;">載入中...</span>`
-      : `<span style="color:#94a3b8;">暫無班次</span>`;
+      : `<span>暫無班次</span>`;
 
     if (cand.boardBusDate) {
       const waitMin = Math.max(0, Math.round((cand.boardBusDate - now) / 60000));
@@ -5242,7 +5480,7 @@ function renderP2PResultsTable() {
       }
     }
 
-    let arriveHtml = `<span style="color:#94a3b8;">--</span>`;
+    let arriveHtml = `<span>--</span>`;
     if (cand.destArrivalDate) {
       const totalTripMin = Math.max(1, Math.round((cand.destArrivalDate - now) / 60000));
       arriveHtml = `
@@ -5250,7 +5488,7 @@ function renderP2PResultsTable() {
         <div class="p2p-sub-muted">全程${totalTripMin}分 (車程${cand.rideMin}分)</div>
       `;
     } else if (cand.etaLoaded) {
-      arriveHtml = `<span style="color:#94a3b8;">--:--</span><div class="p2p-sub-muted">車程約${cand.rideMin}分</div>`;
+      arriveHtml = `<span>--:--</span><div class="p2p-sub-muted">車程約${cand.rideMin}分</div>`;
     }
 
     const fareHtml = cand.fare != null ? `<strong style="color:#0f766e;">$${cand.fare}</strong>` : `--`;
@@ -5286,7 +5524,7 @@ function renderP2PResultsTable() {
   container.appendChild(table);
 }
 
-// 6. ★ 撳揀路線後：自動揀車（含對應 serviceType）➔ 自動揀方向 ➔ 自動撳開上車站 ETA
+// 6. 撳揀路線後：自動揀車 ➔ 自動揀方向 ➔ 自動撳開上車站 ETA
 async function applySelectedP2PRouteToMainApp(cand) {
   const modal = document.getElementById("p2p-nav-modal");
   if (modal) modal.classList.remove("active");
@@ -5382,7 +5620,7 @@ async function applySelectedP2PRouteToMainApp(cand) {
   }
 }
 
-// 7. 綁定事件 ＋ 頂欄向下拉顯示地圖手勢
+// 7. 綁定事件 ＋ 自動插入「🌟 最佳選擇」排序掣 ＋ 頂欄下拉手勢
 (function initP2PNavigationEvents() {
   const modal = document.getElementById("p2p-nav-modal");
   const dragHeader = document.getElementById("p2pDragHeader");
@@ -5394,6 +5632,25 @@ async function applySelectedP2PRouteToMainApp(cand) {
   const btnPickDest = document.getElementById("btnP2PPickDest");
   const btnCancelPick = document.getElementById("btnCancelMapPick");
   const btnGo = document.getElementById("btnP2PSearchGo");
+
+  // 將舊版 HTML 內可能殘留嘅 "1km" 提示字眼自動更新為 "800m"
+  [btnOpen, btnGo, document.getElementById("p2pStatusText"), document.getElementById("p2pResultsContainer")].forEach(el => {
+    if (el && el.innerHTML && el.children.length === 0) {
+      el.textContent = el.textContent.replace(/1\s*km/gi, "800m");
+    }
+  });
+
+  // 自動喺排序列最前面插入「🌟 最佳選擇」並設為預設選中
+  const firstSortBtn = document.querySelector(".p2p-sort-btn");
+  if (firstSortBtn && !document.querySelector('.p2p-sort-btn[data-sort="best"]')) {
+    const bestBtn = document.createElement("button");
+    bestBtn.type = "button";
+    bestBtn.className = "p2p-sort-btn active";
+    bestBtn.dataset.sort = "best";
+    bestBtn.textContent = "🌟 最佳選擇";
+    firstSortBtn.parentNode.insertBefore(bestBtn, firstSortBtn);
+    document.querySelectorAll('.p2p-sort-btn:not([data-sort="best"])').forEach(b => b.classList.remove("active"));
+  }
 
   if (btnOpen) btnOpen.onclick = openP2PModal;
   if (btnClose) btnClose.onclick = closeP2PModal;
@@ -5451,7 +5708,7 @@ async function applySelectedP2PRouteToMainApp(cand) {
     btn.onclick = () => {
       document.querySelectorAll(".p2p-sort-btn").forEach(b => b.classList.remove("active"));
       btn.classList.add("active");
-      p2pCurrentSort = btn.dataset.sort || "arrival";
+      p2pCurrentSort = btn.dataset.sort || "best";
       renderP2PResultsTable();
     };
   });
