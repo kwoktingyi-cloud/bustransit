@@ -4525,7 +4525,7 @@ if (typeof createTwoLineRouteItemDOM === "function") {
 loadHkFareDatabase();
 
 /* =========================================================================
-   ★ 點對點 1km 直達導航模組（極速批量 ETA + 電話 5 欄精簡版 + 下拉睇地圖 + 自動揀站）
+   ★ 點對點 1km 直達導航模組（單一去重路線 + 極速批量 ETA + 電話 5 欄精簡版 + 下拉睇地圖）
    ========================================================================= */
 
 let p2pOriginPoint = null;
@@ -4641,7 +4641,6 @@ function setP2PSheetState(state) {
     toggleBtn.textContent = state === "full" ? "🗺️ 睇地圖 ▼" : "全開列表 ▲";
   }
 
-  // 當下拉睇地圖時，自動將地圖鏡頭置於上半部可見區域
   if (state !== "full" && map && p2pOriginPoint && p2pDestPoint) {
     map.fitBounds(
       L.latLngBounds([[p2pOriginPoint.lat, p2pOriginPoint.lon], [p2pDestPoint.lat, p2pDestPoint.lon]]),
@@ -4681,7 +4680,7 @@ function applyDefaultGpsToP2POrigin(showToastIfFail = false) {
 function openP2PModal() {
   const modal = document.getElementById("p2p-nav-modal");
   if (!modal) return;
-  setBottomSheetState("collapsed"); // 收起主頁底抽屜，方便下拉時直接睇地圖
+  setBottomSheetState("collapsed");
   modal.classList.add("active");
   setP2PSheetState("full");
   if (!p2pOriginPoint) applyDefaultGpsToP2POrigin(false);
@@ -4819,7 +4818,7 @@ function bindPlaceAutocomplete(inputId, suggestId, type) {
   });
 }
 
-// 3. 預計行車分鐘數計算
+// 3. 預計行車分鐘數與班次篩選
 function estimateBusRideMinutesByStopIds(stopIds, fromIdx, toIdx, departDate = new Date()) {
   let accMin = 0;
   let curTime = new Date(departDate.getTime());
@@ -4837,7 +4836,6 @@ function estimateBusRideMinutesByStopIds(stopIds, fromIdx, toIdx, departDate = n
   return Math.max(1, Math.round(accMin));
 }
 
-// 將收集到嘅班次時間計算成最終上車時間與到達時間
 function finalizeCandidateEta(cand, rawEtaDates) {
   const now = new Date();
   rawEtaDates.sort((a, b) => a - b);
@@ -4864,7 +4862,35 @@ function finalizeCandidateEta(cand, rawEtaDates) {
   }
 }
 
-// 4. ★ 極速搜尋：九巴用 `/stop-eta/{stop_id}` 一槍過批量拉取 ＋ 城巴/小巴限時 2.5 秒並發拉取 ＋ 即時漸進式出表
+// ★ 同一路線號碼（例如 87D 正線 + 特別班次）只揀最優一個代表顯示，絕不重複出幾行
+function pickBestVariantForRouteGroup(group) {
+  const sorted = group.variants.slice().sort((a, b) => {
+    // 1) 優先揀選現時真正有實時班次開緊嘅分支（防止無車開嘅特別線遮蓋正線）
+    const aHasEta = a.boardBusDate ? 1 : 0;
+    const bHasEta = b.boardBusDate ? 1 : 0;
+    if (aHasEta !== bHasEta) return bHasEta - aHasEta;
+
+    // 2) 若兩條分支都有車，揀最快到達目的地嗰班
+    if (a.destArrivalDate && b.destArrivalDate) {
+      const diff = a.destArrivalDate.getTime() - b.destArrivalDate.getTime();
+      if (Math.abs(diff) > 30000) return diff;
+    }
+
+    // 3) 優先揀正線 (serviceType === "1")
+    const aMain = String(a.serviceType) === "1" ? 1 : 0;
+    const bMain = String(b.serviceType) === "1" ? 1 : 0;
+    if (aMain !== bMain) return bMain - aMain;
+
+    // 4) 最後以總步行距離較近者優先
+    return (a.walkOrigDist + a.walkDestDist) - (b.walkOrigDist + b.walkDestDist);
+  });
+
+  const winner = sorted[0];
+  winner.coList = Array.from(group.coSet);
+  return winner;
+}
+
+// 4. ★ 極速搜尋（每條路線嚴格去重只出一次 + 九巴單站批量拉 ETA + 2.5s 防卡死）
 async function runP2PDirectSearch() {
   const statusEl = document.getElementById("p2pStatusText");
   const container = document.getElementById("p2pResultsContainer");
@@ -4901,10 +4927,10 @@ async function runP2PDirectSearch() {
   const now = new Date();
   const routeGroupMap = new Map();
 
-  for (const entry of Object.values(hkFareRouteList)) {
+  for (const [rawKey, entry] of Object.entries(hkFareRouteList)) {
     const coList = entry.co || [];
-    const primaryCo = coList.includes("kmb") ? "kmb" : (coList.includes("ctb") ? "ctb" : coList[0]);
-    const stopIds = entry.stops[primaryCo] || Object.values(entry.stops)[0] || [];
+    const primaryCo = coList.includes("kmb") ? "kmb" : (coList.includes("lwb") ? "kmb" : (coList.includes("ctb") ? "ctb" : coList[0]));
+    const stopIds = entry.stops[primaryCo] || entry.stops.lwb || Object.values(entry.stops)[0] || [];
     if (stopIds.length < 2) continue;
 
     const origCandidates = [];
@@ -4939,145 +4965,184 @@ async function runP2PDirectSearch() {
     const origStopInfo = getUnifiedStopInfo(origStopId);
     const destStopInfo = getUnifiedStopInfo(destStopId);
 
+    // 過濾對面線反方向踩界（確保落車站真係比上車站更接近目的地）
+    if (origStopInfo && destStopInfo) {
+      const origStopToDest = haversineDistanceMeters(origStopInfo.lat, origStopInfo.lon, p2pDestPoint.lat, p2pDestPoint.lon);
+      const destStopToOrig = haversineDistanceMeters(destStopInfo.lat, destStopInfo.lon, p2pOriginPoint.lat, p2pOriginPoint.lon);
+      if (minDestDist >= origStopToDest || minOrigDist >= destStopToOrig) continue;
+    }
+
+    const stFromKey = rawKey.includes("+") ? rawKey.split("+")[1] : "";
+    const serviceType = String(entry.serviceType || stFromKey || "1");
+
     const fareRaw = entry.fares[Math.min(bestOriginIdx, entry.fares.length - 1)];
     const fareNum = fareRaw != null ? parseFloat(fareRaw) : NaN;
     const walkOrigMin = minOrigDist < 25 ? 0 : Math.max(1, Math.round(minOrigDist / (5000 / 60)));
     const walkDestMin = minDestDist < 25 ? 0 : Math.max(1, Math.round(minDestDist / (5000 / 60)));
+    const boundDir = entry.bound[primaryCo] || entry.bound.lwb || Object.values(entry.bound)[0] || "O";
 
-    const boundDir = entry.bound[primaryCo] || Object.values(entry.bound)[0] || "O";
-    const groupKey = `${coList.join("+")}_${entry.route}_${entry.gtfsId || ""}_${boundDir}_${entry.dest}`;
+    // ★ 核心去重 Key：巴士按「BUS_路線號碼」、小巴按「GMB_路線號碼」歸一，確保 87D 等只會出現一次
+    const routeKey = primaryCo === "gmb" ? `GMB_${entry.route}` : `BUS_${entry.route}`;
 
-    if (!routeGroupMap.has(groupKey)) {
-      routeGroupMap.set(groupKey, {
-        route: entry.route,
-        coList,
-        primaryCo,
-        gtfsId: entry.gtfsId || "",
-        bound: entry.bound || {},
-        boundDir,
-        serviceTypes: new Set([String(entry.serviceType || "1")]),
-        origTerminal: entry.orig,
-        destTerminal: entry.dest,
-        stopIds,
-        originIdx: bestOriginIdx,
-        destIdx: bestDestIdx,
-        originStopId: origStopId,
-        destStopId: destStopId,
-        origStopLat: origStopInfo ? origStopInfo.lat : null,
-        origStopLon: origStopInfo ? origStopInfo.lon : null,
-        kmbStopId: entry.stops.kmb ? entry.stops.kmb[bestOriginIdx] : null,
-        ctbStopId: entry.stops.ctb ? entry.stops.ctb[bestOriginIdx] : null,
-        gmbStopId: entry.stops.gmb ? entry.stops.gmb[bestOriginIdx] : null,
-        originStopName: origStopInfo ? stripBracketCode(origStopInfo.name) : origStopId,
-        destStopName: destStopInfo ? stripBracketCode(destStopInfo.name) : destStopId,
-        walkOrigDist: Math.round(minOrigDist),
-        walkDestDist: Math.round(minDestDist),
-        walkOrigMin,
-        walkDestMin,
-        totalWalkMin: walkOrigMin + walkDestMin,
-        rideMin: estimateBusRideMinutesByStopIds(stopIds, bestOriginIdx, bestDestIdx, now),
-        fare: isFinite(fareNum) ? fareNum : null,
-        etaLoaded: false,
-        rawEtaBucket: []
+    const variantObj = {
+      route: entry.route,
+      coList: coList.slice(),
+      primaryCo,
+      gtfsId: entry.gtfsId || "",
+      serviceType,
+      bound: entry.bound || {},
+      boundDir,
+      origTerminal: entry.orig,
+      destTerminal: entry.dest,
+      stopIds,
+      originIdx: bestOriginIdx,
+      destIdx: bestDestIdx,
+      originStopId: origStopId,
+      destStopId: destStopId,
+      origStopLat: origStopInfo ? origStopInfo.lat : null,
+      origStopLon: origStopInfo ? origStopInfo.lon : null,
+      kmbStopId: (entry.stops.kmb && entry.stops.kmb[bestOriginIdx]) || (entry.stops.lwb && entry.stops.lwb[bestOriginIdx]) || null,
+      ctbStopId: entry.stops.ctb ? entry.stops.ctb[bestOriginIdx] : null,
+      gmbStopId: entry.stops.gmb ? entry.stops.gmb[bestOriginIdx] : null,
+      originStopName: origStopInfo ? stripBracketCode(origStopInfo.name) : origStopId,
+      destStopName: destStopInfo ? stripBracketCode(destStopInfo.name) : destStopId,
+      walkOrigDist: Math.round(minOrigDist),
+      walkDestDist: Math.round(minDestDist),
+      walkOrigMin,
+      walkDestMin,
+      totalWalkMin: walkOrigMin + walkDestMin,
+      rideMin: estimateBusRideMinutesByStopIds(stopIds, bestOriginIdx, bestDestIdx, now),
+      fare: isFinite(fareNum) ? fareNum : null,
+      etaLoaded: false,
+      rawEtaBucket: []
+    };
+
+    if (!routeGroupMap.has(routeKey)) {
+      routeGroupMap.set(routeKey, {
+        routeKey,
+        coSet: new Set(coList.map(c => (c === "lwb" ? "kmb" : c))),
+        variants: [variantObj]
       });
     } else {
-      const existing = routeGroupMap.get(groupKey);
-      existing.serviceTypes.add(String(entry.serviceType || "1"));
-      if (minOrigDist + minDestDist < existing.walkOrigDist + existing.walkDestDist) {
-        existing.stopIds = stopIds;
-        existing.originIdx = bestOriginIdx;
-        existing.destIdx = bestDestIdx;
-        existing.originStopId = origStopId;
-        existing.destStopId = destStopId;
-        existing.origStopLat = origStopInfo ? origStopInfo.lat : existing.origStopLat;
-        existing.origStopLon = origStopInfo ? origStopInfo.lon : existing.origStopLon;
-        existing.kmbStopId = entry.stops.kmb ? entry.stops.kmb[bestOriginIdx] : existing.kmbStopId;
-        existing.ctbStopId = entry.stops.ctb ? entry.stops.ctb[bestOriginIdx] : existing.ctbStopId;
-        existing.gmbStopId = entry.stops.gmb ? entry.stops.gmb[bestOriginIdx] : existing.gmbStopId;
-        existing.originStopName = origStopInfo ? stripBracketCode(origStopInfo.name) : origStopId;
-        existing.destStopName = destStopInfo ? stripBracketCode(destStopInfo.name) : destStopId;
-        existing.walkOrigDist = Math.round(minOrigDist);
-        existing.walkDestDist = Math.round(minDestDist);
-        existing.walkOrigMin = walkOrigMin;
-        existing.walkDestMin = walkDestMin;
-        existing.totalWalkMin = walkOrigMin + walkDestMin;
-      }
+      const grp = routeGroupMap.get(routeKey);
+      coList.forEach(c => grp.coSet.add(c === "lwb" ? "kmb" : c));
+      grp.variants.push(variantObj);
     }
   }
 
-  const candidates = Array.from(routeGroupMap.values());
-  if (!candidates.length) {
+  const routeGroups = Array.from(routeGroupMap.values());
+  if (!routeGroups.length) {
     if (statusEl) statusEl.textContent = "無直達路線連接兩地 1km 範圍。";
     if (container) container.innerHTML = `<div style="padding:28px;text-align:center;color:#64748b;">😔 搵唔到一程直達路線連接兩地 1km 內嘅車站。</div>`;
     return;
   }
 
-  // ★ 先即刻畫出所有路線、站名、距離同車費（0.1 秒即見，唔使白等）
-  p2pResultsData = candidates;
+  // 先即刻畫出唯一去重後嘅路線表（0.1 秒即見）
+  p2pResultsData = routeGroups.map(pickBestVariantForRouteGroup);
   renderP2PResultsTable();
-  if (statusEl) statusEl.textContent = `⚡ 搵到 ${candidates.length} 條路線，正在極速同步實時班次...`;
+  if (statusEl) statusEl.textContent = `⚡ 搵到 ${p2pResultsData.length} 條直達線，正在極速同步實時班次...`;
 
-  // ★ (1) 九巴批量優化：按唯一 kmbStopId 一次過拉 `/stop-eta/{stopId}`，幾個 Request 搞掂晒全場九巴線！
-  const uniqueKmbStops = Array.from(new Set(candidates.filter(c => c.coList.includes("kmb") && c.kmbStopId).map(c => c.kmbStopId)));
+  const allVariants = routeGroups.flatMap(g => g.variants);
+
+  // (1) 九巴批量優化：按唯一 kmbStopId 一次過拉 `/stop-eta/{stopId}`，並精準對齊 service_type 與站序
+  const uniqueKmbStops = Array.from(new Set(allVariants.filter(v => v.kmbStopId).map(v => v.kmbStopId)));
   const kmbBatchPromise = Promise.all(
     uniqueKmbStops.map(async (stopId) => {
       try {
         const res = await fetchJsonFast(`${KMB_BASE}/stop-eta/${stopId}`, 2500);
         const list = res.data || [];
-        candidates.forEach(cand => {
-          if (!cand.coList.includes("kmb") || cand.kmbStopId !== stopId) return;
-          list.forEach(item => {
-            if (String(item.route).toUpperCase() !== cand.route || !item.eta) return;
+        allVariants.forEach(v => {
+          if (v.kmbStopId !== stopId) return;
+          const kmbDir = v.bound.kmb || v.bound.lwb;
+          const routeItems = list.filter(item => {
+            if (String(item.route).toUpperCase() !== v.route || !item.eta) return false;
             const rmk = String(item.rmk_tc || "");
-            if (rmk.includes("時段") || rmk.includes("預定班次") || rmk === "離開") return;
-            if (cand.bound.kmb && (cand.bound.kmb === "O" || cand.bound.kmb === "I") && item.dir !== cand.bound.kmb) return;
-            if (item.seq != null && Math.abs(parseInt(item.seq) - (cand.originIdx + 1)) > 2) return;
+            if (rmk.includes("時段") || rmk.includes("預定班次") || rmk === "離開") return false;
+            if (kmbDir && (kmbDir === "O" || kmbDir === "I") && item.dir !== kmbDir) return false;
+            return true;
+          });
+
+          const exactStItems = routeItems.filter(item =>
+            String(item.service_type || "1") === String(v.serviceType || "1") &&
+            (item.seq == null || Math.abs(parseInt(item.seq) - (v.originIdx + 1)) <= 2)
+          );
+
+          const targetItems = exactStItems.length > 0
+            ? exactStItems
+            : (String(v.serviceType) === "1"
+                ? routeItems.filter(item => item.seq == null || Math.abs(parseInt(item.seq) - (v.originIdx + 1)) <= 3)
+                : []);
+
+          targetItems.forEach(item => {
             const d = new Date(item.eta);
-            if (!isNaN(d) && d.getTime() >= now.getTime() - 30000) cand.rawEtaBucket.push(d);
+            if (!isNaN(d) && d.getTime() >= now.getTime() - 30000) v.rawEtaBucket.push(d);
           });
         });
       } catch (e) {}
     })
   );
 
-  // ★ (2) 城巴 + 專線小巴高並發 + 2.5 秒硬上限 Timeout（絕不卡喺最後兩條小巴線）
-  const extraTasks = candidates.filter(c => (c.coList.includes("ctb") && c.ctbStopId) || (c.primaryCo === "gmb" && c.gtfsId && c.gmbStopId));
+  // (2) 城巴 + 小巴去重請求池（同一個站+路線只拉一次，限時 2.5 秒）
+  const ctbTaskMap = new Map();
+  const gmbTaskMap = new Map();
+
+  allVariants.forEach(v => {
+    if (v.ctbStopId) {
+      const k = `${v.ctbStopId}_${v.route}`;
+      if (!ctbTaskMap.has(k)) ctbTaskMap.set(k, { stopId: v.ctbStopId, route: v.route, variants: [] });
+      ctbTaskMap.get(k).variants.push(v);
+    }
+    if (v.primaryCo === "gmb" && v.gtfsId && v.gmbStopId) {
+      const k = `${v.gtfsId}_${v.gmbStopId}`;
+      if (!gmbTaskMap.has(k)) gmbTaskMap.set(k, { gtfsId: v.gtfsId, stopId: v.gmbStopId, variants: [] });
+      gmbTaskMap.get(k).variants.push(v);
+    }
+  });
+
+  const extraJobs = [
+    ...Array.from(ctbTaskMap.values()).map(t => ({ type: "ctb", ...t })),
+    ...Array.from(gmbTaskMap.values()).map(t => ({ type: "gmb", ...t }))
+  ];
+
   const CONCURRENCY = 10;
-  const queue = extraTasks.slice();
+  const queue = extraJobs.slice();
 
   async function extraWorker() {
     while (queue.length > 0) {
       if (myToken !== p2pSearchToken) return;
-      const cand = queue.shift();
+      const job = queue.shift();
 
-      if (cand.coList.includes("ctb") && cand.ctbStopId) {
+      if (job.type === "ctb") {
         try {
-          const res = await fetchJsonFast(`${CTB_BASE}/eta/ctb/${cand.ctbStopId}/${cand.route}`, 2500);
-          (res.data || []).forEach(item => {
-            if (!item.eta) return;
-            const rmk = String(item.rmk_tc || "");
-            if (rmk.includes("時段") || rmk === "離開") return;
-            if (cand.bound.ctb && (cand.bound.ctb === "O" || cand.bound.ctb === "I") && item.dir && item.dir !== cand.bound.ctb) return;
-            if (item.seq != null && Math.abs(parseInt(item.seq) - (cand.originIdx + 1)) > 2) return;
-            const d = new Date(item.eta);
-            if (!isNaN(d) && d.getTime() >= now.getTime() - 30000) cand.rawEtaBucket.push(d);
+          const res = await fetchJsonFast(`${CTB_BASE}/eta/ctb/${job.stopId}/${job.route}`, 2500);
+          const items = res.data || [];
+          job.variants.forEach(v => {
+            items.forEach(item => {
+              if (!item.eta) return;
+              const rmk = String(item.rmk_tc || "");
+              if (rmk.includes("時段") || rmk === "離開") return;
+              if (v.bound.ctb && (v.bound.ctb === "O" || v.bound.ctb === "I") && item.dir && item.dir !== v.bound.ctb) return;
+              if (item.seq != null && Math.abs(parseInt(item.seq) - (v.originIdx + 1)) > 2) return;
+              const d = new Date(item.eta);
+              if (!isNaN(d) && d.getTime() >= now.getTime() - 30000) v.rawEtaBucket.push(d);
+            });
           });
         } catch (e) {}
-      }
-
-      if (cand.primaryCo === "gmb" && cand.gtfsId && cand.gmbStopId) {
+      } else {
         try {
-          const res = await fetchGmbEtaFast(cand.gtfsId, cand.gmbStopId, 2500);
+          const res = await fetchGmbEtaFast(job.gtfsId, job.stopId, 2500);
           const rawData = res ? res.data : null;
           const groups = Array.isArray(rawData) ? rawData : (rawData ? [rawData] : []);
-          groups.forEach(g => {
-            if (cand.bound.gmb === "I" && g.route_seq !== 2) return;
-            if (cand.bound.gmb === "O" && g.route_seq !== 1) return;
-            (g.eta || []).forEach(e => {
-              if (e.timestamp) {
-                const d = new Date(e.timestamp);
-                if (!isNaN(d) && d.getTime() >= now.getTime() - 30000) cand.rawEtaBucket.push(d);
-              }
+          job.variants.forEach(v => {
+            groups.forEach(g => {
+              if (v.bound.gmb === "I" && g.route_seq !== 2) return;
+              if (v.bound.gmb === "O" && g.route_seq !== 1) return;
+              (g.eta || []).forEach(e => {
+                if (e.timestamp) {
+                  const d = new Date(e.timestamp);
+                  if (!isNaN(d) && d.getTime() >= now.getTime() - 30000) v.rawEtaBucket.push(d);
+                }
+              });
             });
           });
         } catch (e) {}
@@ -5087,14 +5152,16 @@ async function runP2PDirectSearch() {
 
   await Promise.all([
     kmbBatchPromise,
-    ...Array.from({ length: Math.min(CONCURRENCY, extraTasks.length) }, () => extraWorker())
+    ...Array.from({ length: Math.min(CONCURRENCY, extraJobs.length) }, () => extraWorker())
   ]);
 
   if (myToken !== p2pSearchToken) return;
 
-  candidates.forEach(cand => finalizeCandidateEta(cand, cand.rawEtaBucket));
-  p2pResultsData = candidates;
-  if (statusEl) statusEl.textContent = `✅ 共 ${candidates.length} 條直達線（撳路線自動載入，向下拉頂欄可睇地圖）`;
+  allVariants.forEach(v => finalizeCandidateEta(v, v.rawEtaBucket));
+
+  // ★ 每個路線組別揀出有實時車且最快到達嘅唯一代表，確保每條路線只出 1 次
+  p2pResultsData = routeGroups.map(pickBestVariantForRouteGroup);
+  if (statusEl) statusEl.textContent = `✅ 共 ${p2pResultsData.length} 條直達線（撳路線自動載入，向下拉頂欄可睇地圖）`;
   renderP2PResultsTable();
 }
 
@@ -5159,7 +5226,6 @@ function renderP2PResultsTable() {
     const tr = document.createElement("tr");
     tr.className = "p2p-row";
 
-    // 下班車：電話精簡顯示「XX分鐘」
     let nextBusHtml = !cand.etaLoaded
       ? `<span style="color:#94a3b8;font-size:11.5px;">載入中...</span>`
       : `<span style="color:#94a3b8;">暫無班次</span>`;
@@ -5176,7 +5242,6 @@ function renderP2PResultsTable() {
       }
     }
 
-    // 預計到達時間：第一行 XX:XX，第二行 全程... (車程 ...)
     let arriveHtml = `<span style="color:#94a3b8;">--</span>`;
     if (cand.destArrivalDate) {
       const totalTripMin = Math.max(1, Math.round((cand.destArrivalDate - now) / 60000));
@@ -5221,7 +5286,7 @@ function renderP2PResultsTable() {
   container.appendChild(table);
 }
 
-// 6. ★ 撳揀路線後：自動揀車 ➔ 自動揀方向 ➔ 自動撳開上車站 ETA 並置中
+// 6. ★ 撳揀路線後：自動揀車（含對應 serviceType）➔ 自動揀方向 ➔ 自動撳開上車站 ETA
 async function applySelectedP2PRouteToMainApp(cand) {
   const modal = document.getElementById("p2p-nav-modal");
   if (modal) modal.classList.remove("active");
@@ -5235,7 +5300,8 @@ async function applySelectedP2PRouteToMainApp(cand) {
   } else if (cand.primaryCo === "ctb" && !cand.coList.includes("kmb")) {
     chosenRoute = uniqueRoutes.find(r => r.company === "CTB" && r.route === cand.route);
   } else {
-    chosenRoute = uniqueRoutes.find(r => r.company === "KMB" && r.route === cand.route)
+    chosenRoute = uniqueRoutes.find(r => r.company === "KMB" && r.route === cand.route && String(r.service_type || "1") === String(cand.serviceType || "1"))
+               || uniqueRoutes.find(r => r.company === "KMB" && r.route === cand.route)
                || uniqueRoutes.find(r => r.company === "CTB" && r.route === cand.route);
   }
 
@@ -5244,21 +5310,18 @@ async function applySelectedP2PRouteToMainApp(cand) {
     return;
   }
 
-  // 鎖住 GPS 自動最近站，防止覆蓋我哋揀定嘅上車站
   p2pApplyingLock = true;
   lastP2PRouteStopsPromise = null;
 
   try {
     await selectRoute(chosenRoute);
-    // 等 80ms 讓單向/循環線內置嘅 50ms 自動撳方向先觸發（如有）
     await new Promise(r => setTimeout(r, 80));
 
     const btnIn = document.getElementById("dirInbound");
     const btnOut = document.getElementById("dirOutbound");
 
-    // 判斷正確方向（優先對比公司 bound，再用總站名稱雙重確認）
     const coKey = isGmbCompany(chosenRoute.company) ? "gmb" : (chosenRoute.company === "CTB" ? "ctb" : "kmb");
-    const rawBound = String((cand.bound && cand.bound[coKey]) || cand.boundDir || "O").toUpperCase();
+    const rawBound = String((cand.bound && (cand.bound[coKey] || cand.bound.lwb)) || cand.boundDir || "O").toUpperCase();
     let targetDir = rawBound.startsWith("I") ? "inbound" : "outbound";
 
     if (btnIn && btnOut && !btnIn.disabled && !btnOut.disabled && cand.destTerminal) {
@@ -5271,7 +5334,6 @@ async function applySelectedP2PRouteToMainApp(cand) {
     if (targetDir === "inbound" && btnIn && (btnIn.disabled || btnIn.style.display === "none")) targetDir = "outbound";
     if (targetDir === "outbound" && btnOut && (btnOut.disabled || btnOut.style.display === "none")) targetDir = "inbound";
 
-    // 如果單向線已經自動觸發載入，直接等佢完成；否則自動設定方向並載入站點
     if (currentDirection === targetDir && lastP2PRouteStopsPromise) {
       await lastP2PRouteStopsPromise;
     } else {
@@ -5280,7 +5342,6 @@ async function applySelectedP2PRouteToMainApp(cand) {
       await loadRouteStopsForCurrentDirection();
     }
 
-    // 等埋內部 300ms 定位計時器安全略過
     await new Promise(r => setTimeout(r, 350));
   } finally {
     p2pApplyingLock = false;
@@ -5288,7 +5349,6 @@ async function applySelectedP2PRouteToMainApp(cand) {
 
   if (!routeStops || !routeStops.length) return;
 
-  // 多重精準配對上車站（1. Stop ID -> 2. 標準化站名 -> 3. 最接近座標）
   const targetId = cand.primaryCo === "gmb"
     ? `GMB_${cand.gmbStopId || cand.originStopId}`
     : (chosenRoute.company === "CTB" ? (cand.ctbStopId || cand.originStopId) : (cand.kmbStopId || cand.originStopId));
@@ -5313,7 +5373,6 @@ async function applySelectedP2PRouteToMainApp(cand) {
   if (!matchedStop) matchedStop = routeStops[Math.min(cand.originIdx, routeStops.length - 1)];
 
   if (matchedStop) {
-    // 正式觸發撳上車站（展開 ETA、畫紫線步行路線、地圖聚焦該站）
     onStopClicked(matchedStop.stop_id, matchedStop.seq);
     setTimeout(() => {
       const el = document.querySelector(`#stopList .stop-item[data-stop-id="${matchedStop.stop_id}"][data-seq="${matchedStop.seq}"]`)
@@ -5359,7 +5418,6 @@ async function applySelectedP2PRouteToMainApp(cand) {
 
   if (btnGo) btnGo.onclick = runP2PDirectSearch;
 
-  // ★ 頂部深色橫欄支援手指 / 滑鼠上下拉動（拉落去睇地圖，拉返上嚟全螢幕）
   if (modal && dragHeader) {
     let startY = 0, deltaY = 0, dragging = false;
     const onStart = (y, target) => {
