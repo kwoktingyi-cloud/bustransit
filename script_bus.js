@@ -4279,6 +4279,7 @@ async function loadHkFareDatabase() {
               if (loc && isFinite(loc.lat) && isFinite(loc.lng)) {
                 slimStops[sid] = {
                   name: (s.name && s.name.zh) ? s.name.zh : sid,
+                  name_en: (s.name && s.name.en) ? s.name.en : "",
                   lat: Number(loc.lat),
                   lon: Number(loc.lng)
                 };
@@ -5517,6 +5518,35 @@ var p2pModalSheetState = "full";
 var p2pIncludeMtr = true;
 var p2pPlaceSearchCache = new Map();
 
+function getP2PStopCoord(sInfo) {
+  if (!sInfo) return null;
+  const lat = sInfo.location ? parseFloat(sInfo.location.lat) : parseFloat(sInfo.lat);
+  const lon = sInfo.location ? parseFloat(sInfo.location.lng) : parseFloat(sInfo.lon != null ? sInfo.lon : sInfo.lng);
+  if (!isFinite(lat) || !isFinite(lon)) return null;
+  return { lat, lon };
+}
+
+function getP2PStopNameZh(sInfo, fallback = "") {
+  if (!sInfo) return fallback;
+  if (typeof sInfo.name === "string" && sInfo.name) return sInfo.name;
+  if (sInfo.name && typeof sInfo.name.zh === "string" && sInfo.name.zh) return sInfo.name.zh;
+  return fallback;
+}
+
+function getP2PStopNameEn(sInfo) {
+  if (!sInfo) return "";
+  if (typeof sInfo.name_en === "string") return sInfo.name_en;
+  if (sInfo.name && typeof sInfo.name.en === "string") return sInfo.name.en;
+  return "";
+}
+
+function getP2PRouteTextZh(val) {
+  if (!val) return "";
+  if (typeof val === "string") return val;
+  if (typeof val.zh === "string") return val.zh;
+  return "";
+}
+
 async function ensureP2PFullRouteStopDatabase() {
   if (p2pFullRouteDb) return p2pFullRouteDb;
   try {
@@ -6043,8 +6073,9 @@ function searchLocalHkStopsAndMtr(kw) {
 
   if (p2pFullRouteDb && p2pFullRouteDb.stopList) {
     for (const sInfo of Object.values(p2pFullRouteDb.stopList)) {
-      if (sInfo && sInfo.location && sInfo.name) {
-        addStopCandidate(sInfo.name.zh, sInfo.name.en, parseFloat(sInfo.location.lat), parseFloat(sInfo.location.lng));
+      const coord = getP2PStopCoord(sInfo);
+      if (coord) {
+        addStopCandidate(getP2PStopNameZh(sInfo), getP2PStopNameEn(sInfo), coord.lat, coord.lon);
       }
     }
   }
@@ -6338,12 +6369,12 @@ async function runP2P800mSearch() {
   const nearOrigStops = new Map();
   const nearDestStops = new Map();
   for (const [sid, sInfo] of Object.entries(db.stopList)) {
-    if (!sInfo || !sInfo.location) continue;
-    const lat = parseFloat(sInfo.location.lat), lon = parseFloat(sInfo.location.lng);
-    if (!isFinite(lat) || !isFinite(lon)) continue;
+    const coord = getP2PStopCoord(sInfo);
+    if (!coord) continue;
+    const { lat, lon } = coord;
     const dO = haversineDistanceMeters(p2pOrigin.lat, p2pOrigin.lon, lat, lon);
     const dD = haversineDistanceMeters(p2pDest.lat, p2pDest.lon, lat, lon);
-    const nameZh = stripBracketCode((sInfo.name && sInfo.name.zh) || sid);
+    const nameZh = stripBracketCode(getP2PStopNameZh(sInfo, sid));
     if (dO <= P2P_RADIUS_METERS) nearOrigStops.set(sid, { sid, name: nameZh, dist: Math.round(dO), lat, lon });
     if (dD <= P2P_RADIUS_METERS) nearDestStops.set(sid, { sid, name: nameZh, dist: Math.round(dD), lat, lon });
   }
@@ -6388,8 +6419,9 @@ async function runP2P800mSearch() {
     let accDist = 0, accRideMin = 0;
     for (let k = bestBoardIdx + 1; k <= bestAlightIdx; k++) {
       const s1 = db.stopList[stopArr[k - 1]], s2 = db.stopList[stopArr[k]];
-      if (s1 && s2 && s1.location && s2.location) {
-        const seg = haversineDistanceMeters(s1.location.lat, s1.location.lng, s2.location.lat, s2.location.lng);
+      const c1 = getP2PStopCoord(s1), c2 = getP2PStopCoord(s2);
+      if (c1 && c2) {
+        const seg = haversineDistanceMeters(c1.lat, c1.lon, c2.lat, c2.lon);
         accDist += seg;
         const vKmH = getSegmentEffectiveSpeedKmH(seg, new Date());
         accRideMin += (((seg * 1.25) / 1000) / Math.max(8, vKmH)) * 60 + 0.55;
@@ -6402,8 +6434,8 @@ async function runP2P800mSearch() {
     const fareVal = faresArr.length > 0 ? parseFloat(faresArr[Math.min(bestBoardIdx, faresArr.length - 1)]) : NaN;
     const walkOrigMin = Math.max(1, Math.round(calcWalkMinutes15x(bStop.dist)));
     const walkDestMin = Math.max(1, Math.round(calcWalkMinutes15x(aStop.dist)));
-    const destZh = stripBracketCode((rEntry.dest && rEntry.dest.zh) || "");
-    const origZh = stripBracketCode((rEntry.orig && rEntry.orig.zh) || "");
+    const destZh = stripBracketCode(getP2PRouteTextZh(rEntry.dest));
+    const origZh = stripBracketCode(getP2PRouteTextZh(rEntry.orig));
 
     const isJoint = cos.includes("kmb") && cos.includes("ctb");
     const coLabel = isJoint ? "九巴/城巴" : coMain === "kmb" ? "九巴" : coMain === "ctb" ? "城巴" : "專線小巴";
