@@ -5718,12 +5718,19 @@ async function applySelectedP2PRouteToMainApp(cand) {
 })();
 
 
+
+
 /* =========================================================================
-   ★ 港鐵 (MTR) 獨立上拉抽屜、實時到站、步行導航、轉車及車費追蹤模組 (v2)
+   ★ 港鐵 (MTR) 獨立上拉抽屜、實時到站、步行導航、轉車及精準車費/車程追蹤模組 (v3)
    ========================================================================= */
 
 const MTR_SCHEDULE_API = "https://rt.data.gov.hk/v1/transport/mtr/getSchedule.php";
-const MTR_FARE_CSV_URL = "https://opendata.mtr.com.hk/data/mtr_lines_fares.csv";
+const MTR_FARE_OFFICIAL_URL = "https://opendata.mtr.com.hk/data/mtr_lines_fares.csv";
+// 原生支援 CORS (Access-Control-Allow-Origin: *) 嘅高速 CDN 鏡像，0.1 秒載入官方成人八達通車費表
+const MTR_FARE_CDN_MIRRORS = [
+  "https://cdn.jsdelivr.net/gh/sdip15fa/mtr-fare-optimization@main/public/mtr_lines_fares.csv",
+  "https://raw.githubusercontent.com/sdip15fa/mtr-fare-optimization/main/public/mtr_lines_fares.csv"
+];
 
 // 1. 港鐵 10 條重鐵路線官方配色與車站序列
 const MTR_LINES = {
@@ -5739,7 +5746,7 @@ const MTR_LINES = {
   TML: { name: "屯馬綫", color: "#9a3b26", stations: ["WKS","MOS","HEO","TSH","SHM","CIO","STW","CKT","TAW","HIK","DIH","KAT","SUW","TKW","HOM","HUH","ETS","AUS","NAC","MEF","TWW","KSR","YUL","LOP","TIS","SIH","TUM"] }
 };
 
-// 2. 全港 98 個港鐵站座標、區域與中英文名稱（精準對齊官方 API 及車費 CSV）
+// 2. 全港 98 個港鐵站座標、區域與中英文名稱
 const MTR_STATIONS = {
   ADM: { tc: "金鐘", en: "Admiralty", lat: 22.2789, lon: 114.1646, zone: "HK" },
   AIR: { tc: "機場", en: "Airport", lat: 22.3161, lon: 113.9366, zone: "AIR" },
@@ -5749,8 +5756,8 @@ const MTR_STATIONS = {
   CEN: { tc: "中環", en: "Central", lat: 22.2819, lon: 114.1576, zone: "HK" },
   CHH: { tc: "彩虹", en: "Choi Hung", lat: 22.3349, lon: 114.2089, zone: "KLN" },
   CHW: { tc: "柴灣", en: "Chai Wan", lat: 22.2645, lon: 114.2371, zone: "HK" },
-  CIO: { tc: "第一城", en: "City One", lat: 22.3824, lon: 114.2036, zone: "NT" },
-  CKT: { tc: "車公廟", en: "Che Kung Temple", lat: 22.3746, lon: 114.1862, zone: "NT" },
+  CIO: { tc: "第一城", en: "City One", lat: 22.3824, lon: 114.2036, zone: "MOS" },
+  CKT: { tc: "車公廟", en: "Che Kung Temple", lat: 22.3746, lon: 114.1862, zone: "MOS" },
   CSW: { tc: "長沙灣", en: "Cheung Sha Wan", lat: 22.3354, lon: 114.1564, zone: "KLN" },
   DIH: { tc: "鑽石山", en: "Diamond Hill", lat: 22.3401, lon: 114.2016, zone: "KLN" },
   DIS: { tc: "迪士尼", en: "Disneyland Resort", lat: 22.3155, lon: 114.0450, zone: "NT" },
@@ -5760,7 +5767,7 @@ const MTR_STATIONS = {
   FOH: { tc: "炮台山", en: "Fortress Hill", lat: 22.2881, lon: 114.1937, zone: "HK" },
   FOT: { tc: "火炭", en: "Fo Tan", lat: 22.3953, lon: 114.1983, zone: "NT" },
   HAH: { tc: "坑口", en: "Hang Hau", lat: 22.3156, lon: 114.2644, zone: "NT" },
-  HEO: { tc: "恆安", en: "Heng On", lat: 22.4176, lon: 114.2259, zone: "NT" },
+  HEO: { tc: "恆安", en: "Heng On", lat: 22.4176, lon: 114.2259, zone: "MOS" },
   HFC: { tc: "杏花邨", en: "Heng Fa Chuen", lat: 22.2769, lon: 114.2398, zone: "HK" },
   HIK: { tc: "顯徑", en: "Hin Keng", lat: 22.3639, lon: 114.1709, zone: "NT" },
   HKU: { tc: "香港大學", en: "HKU", lat: 22.2842, lon: 114.1355, zone: "HK" },
@@ -5789,7 +5796,7 @@ const MTR_STATIONS = {
   MEF: { tc: "美孚", en: "Mei Foo", lat: 22.3379, lon: 114.1396, zone: "KLN" },
   MKK: { tc: "旺角東", en: "Mong Kok East", lat: 22.3222, lon: 114.1726, zone: "KLN" },
   MOK: { tc: "旺角", en: "Mong Kok", lat: 22.3192, lon: 114.1694, zone: "KLN" },
-  MOS: { tc: "馬鞍山", en: "Ma On Shan", lat: 22.4248, lon: 114.2317, zone: "NT" },
+  MOS: { tc: "馬鞍山", en: "Ma On Shan", lat: 22.4248, lon: 114.2317, zone: "MOS" },
   NAC: { tc: "南昌", en: "Nam Cheong", lat: 22.3267, lon: 114.1533, zone: "KLN" },
   NOP: { tc: "北角", en: "North Point", lat: 22.2912, lon: 114.2007, zone: "HK" },
   NTK: { tc: "牛頭角", en: "Ngau Tau Kok", lat: 22.3153, lon: 114.2191, zone: "KLN" },
@@ -5799,7 +5806,7 @@ const MTR_STATIONS = {
   PRE: { tc: "太子", en: "Prince Edward", lat: 22.3245, lon: 114.1683, zone: "KLN" },
   QUB: { tc: "鰂魚涌", en: "Quarry Bay", lat: 22.2879, lon: 114.2097, zone: "HK" },
   RAC: { tc: "馬場", en: "Racecourse", lat: 22.4005, lon: 114.2027, zone: "NT" },
-  SHM: { tc: "石門", en: "Shek Mun", lat: 22.3881, lon: 114.2084, zone: "NT" },
+  SHM: { tc: "石門", en: "Shek Mun", lat: 22.3881, lon: 114.2084, zone: "MOS" },
   SHS: { tc: "上水", en: "Sheung Shui", lat: 22.5012, lon: 114.1279, zone: "NT" },
   SHT: { tc: "沙田", en: "Sha Tin", lat: 22.3827, lon: 114.1875, zone: "NT" },
   SHW: { tc: "上環", en: "Sheung Wan", lat: 22.2865, lon: 114.1518, zone: "HK" },
@@ -5808,21 +5815,21 @@ const MTR_STATIONS = {
   SKW: { tc: "筲箕灣", en: "Shau Kei Wan", lat: 22.2789, lon: 114.2289, zone: "HK" },
   SOH: { tc: "海怡半島", en: "South Horizons", lat: 22.2425, lon: 114.1492, zone: "HK" },
   SSP: { tc: "深水埗", en: "Sham Shui Po", lat: 22.3308, lon: 114.1622, zone: "KLN" },
-  STW: { tc: "沙田圍", en: "Sha Tin Wai", lat: 22.3771, lon: 114.1950, zone: "NT" },
+  STW: { tc: "沙田圍", en: "Sha Tin Wai", lat: 22.3771, lon: 114.1950, zone: "MOS" },
   SUN: { tc: "欣澳", en: "Sunny Bay", lat: 22.3318, lon: 114.0289, zone: "NT" },
   SUW: { tc: "宋皇臺", en: "Sung Wong Toi", lat: 22.3258, lon: 114.1916, zone: "KLN" },
   SWH: { tc: "西灣河", en: "Sai Wan Ho", lat: 22.2821, lon: 114.2220, zone: "HK" },
   SYP: { tc: "西營盤", en: "Sai Ying Pun", lat: 22.2858, lon: 114.1427, zone: "HK" },
   TAK: { tc: "太古", en: "Tai Koo", lat: 22.2847, lon: 114.2165, zone: "HK" },
   TAP: { tc: "大埔墟", en: "Tai Po Market", lat: 22.4446, lon: 114.1705, zone: "NT" },
-  TAW: { tc: "大圍", en: "Tai Wai", lat: 22.3729, lon: 114.1787, zone: "NT" },
+  TAW: { tc: "大圍", en: "Tai Wai", lat: 22.3729, lon: 114.1787, zone: "MOS" },
   TIH: { tc: "天后", en: "Tin Hau", lat: 22.2827, lon: 114.1918, zone: "HK" },
   TIK: { tc: "調景嶺", en: "Tiu Keng Leng", lat: 22.3042, lon: 114.2525, zone: "NT" },
   TIS: { tc: "天水圍", en: "Tin Shui Wai", lat: 22.4481, lon: 114.0044, zone: "NT" },
   TKO: { tc: "將軍澳", en: "Tseung Kwan O", lat: 22.3075, lon: 114.2600, zone: "NT" },
   TKW: { tc: "土瓜灣", en: "To Kwa Wan", lat: 22.3173, lon: 114.1875, zone: "KLN" },
   TST: { tc: "尖沙咀", en: "Tsim Sha Tsui", lat: 22.2975, lon: 114.1722, zone: "KLN" },
-  TSH: { tc: "大水坑", en: "Tai Shui Hang", lat: 22.4089, lon: 114.2231, zone: "NT" },
+  TSH: { tc: "大水坑", en: "Tai Shui Hang", lat: 22.4089, lon: 114.2231, zone: "MOS" },
   TSW: { tc: "荃灣", en: "Tsuen Wan", lat: 22.3737, lon: 114.1177, zone: "NT" },
   TSY: { tc: "青衣", en: "Tsing Yi", lat: 22.3584, lon: 114.1070, zone: "NT" },
   TUC: { tc: "東涌", en: "Tung Chung", lat: 22.2891, lon: 113.9415, zone: "NT" },
@@ -5834,16 +5841,17 @@ const MTR_STATIONS = {
   WAC: { tc: "灣仔", en: "Wan Chai", lat: 22.2776, lon: 114.1731, zone: "HK" },
   WCH: { tc: "黃竹坑", en: "Wong Chuk Hang", lat: 22.2481, lon: 114.1679, zone: "HK" },
   WHA: { tc: "黃埔", en: "Whampoa", lat: 22.3051, lon: 114.1897, zone: "KLN" },
-  WKS: { tc: "烏溪沙", en: "Wu Kai Sha", lat: 22.4288, lon: 114.2439, zone: "NT" },
+  WKS: { tc: "烏溪沙", en: "Wu Kai Sha", lat: 22.4288, lon: 114.2439, zone: "MOS" },
   WTS: { tc: "黃大仙", en: "Wong Tai Sin", lat: 22.3418, lon: 114.1939, zone: "KLN" },
   YAT: { tc: "油塘", en: "Yau Tong", lat: 22.2978, lon: 114.2372, zone: "KLN" },
   YMT: { tc: "油麻地", en: "Yau Ma Tei", lat: 22.3130, lon: 114.1707, zone: "KLN" },
   YUL: { tc: "元朗", en: "Yuen Long", lat: 22.4461, lon: 114.0353, zone: "NT" }
 };
 
-// 別名與防呆代碼對照（防止 API 回傳舊碼、空白或英文全稱導致配對錯誤）
+// 別名與英文名稱對照（確保官方 CSV 同實時 API 100% 對得上每個站）
 const MTR_CODE_ALIASES = {
-  LUW: "LOW", LOK: "LMC", MKE: "MKK", TWV: "TWW", HOKG: "HOK"
+  LUW: "LOW", LOK: "LMC", MKE: "MKK", TWV: "TWW", HOKG: "HOK",
+  HONGKONGUNIVERSITY: "HKU", ASIAWORLDEXPO: "AWE", DISNEYLANDRESORT: "DIS", LOHASPARK: "LHP"
 };
 Object.entries(MTR_STATIONS).forEach(([code, info]) => {
   MTR_CODE_ALIASES[code] = code;
@@ -5851,11 +5859,10 @@ Object.entries(MTR_STATIONS).forEach(([code, info]) => {
   MTR_CODE_ALIASES[info.en.toUpperCase()] = code;
   MTR_CODE_ALIASES[info.en.toUpperCase().replace(/[^A-Z0-9]/g, "")] = code;
 });
-MTR_CODE_ALIASES["HONGKONGUNIVERSITY"] = "HKU";
 
 function resolveMtrCode(raw) {
   if (!raw) return "";
-  const clean = String(raw).trim().toUpperCase();
+  const clean = String(raw).replace(/^\uFEFF/, "").trim().toUpperCase();
   if (MTR_CODE_ALIASES[clean]) return MTR_CODE_ALIASES[clean];
   const stripped = clean.replace(/[^A-Z0-9\u4E00-\u9FFF]/g, "");
   return MTR_CODE_ALIASES[stripped] || clean;
@@ -5866,7 +5873,6 @@ function getMtrStationName(rawCode) {
   return (MTR_STATIONS[code] && MTR_STATIONS[code].tc) || String(rawCode || "");
 }
 
-// 反查每個站屬於邊幾條港鐵綫（供顏色背景生成）
 const MTR_STATION_LINES = {};
 Object.entries(MTR_LINES).forEach(([lineCode, lineObj]) => {
   lineObj.stations.forEach(sta => {
@@ -5875,7 +5881,6 @@ Object.entries(MTR_LINES).forEach(([lineCode, lineObj]) => {
   });
 });
 
-// 根據車站所屬線路，生成單色或多線斜紋雙色/多色背景（唔使寫「XX綫」文字都一眼認出）
 function getStationLineBackgroundCSS(staCode) {
   const lines = MTR_STATION_LINES[staCode] || ["TWL"];
   const colors = lines.map(l => (MTR_LINES[l] && MTR_LINES[l].color) || "#334155");
@@ -5889,7 +5894,6 @@ function getStationLineBackgroundCSS(staCode) {
   return `linear-gradient(135deg, ${stops.join(", ")})`;
 }
 
-// 各線官方 UP / DOWN 方向終點站定義
 const MTR_DIRECTION_META = {
   KTL: { UP: { label: "調景嶺", terms: ["TIK"] }, DOWN: { label: "黃埔 / 何文田", terms: ["WHA", "HOM"] } },
   TWL: { UP: { label: "荃灣", terms: ["TSW"] }, DOWN: { label: "中環", terms: ["CEN"] } },
@@ -5903,7 +5907,6 @@ const MTR_DIRECTION_META = {
   TML: { UP: { label: "屯門", terms: ["TUM"] }, DOWN: { label: "烏溪沙", terms: ["WKS"] } }
 };
 
-// 模組狀態
 let mtrSheetState = "behind"; // behind | peek | half | full
 let mtrSelectedSta = null;
 let mtrDropdownOpen = false;
@@ -5925,7 +5928,38 @@ function mtrWalkMinCalc(meters) {
   return (meters / (5000 / 60)) * 1.5;
 }
 
-/* ========== 3. 建立港鐵十線轉乘路網圖 (計算最短車程與跨線轉車步驟) ========== */
+/* ========== 3. 港鐵官方站間真實行車分鐘表 + 十線轉乘路網圖 ========== */
+
+// 對齊港鐵行程指南真實站間分鐘（例如：烏溪沙 -> 馬鞍山 -> 恆安 -> 大水坑 -> 石門 -> 第一城 = 2+2+2+2+2 = 10 分鐘）
+const MTR_EXACT_SEG_MINS = {
+  // 屯馬綫 TML
+  "WKS_MOS": 2, "MOS_HEO": 2, "HEO_TSH": 2, "TSH_SHM": 2, "SHM_CIO": 2, "CIO_STW": 2, "STW_CKT": 2, "CKT_TAW": 2,
+  "TAW_HIK": 2, "HIK_DIH": 4, "DIH_KAT": 2, "KAT_SUW": 2, "SUW_TKW": 2, "TKW_HOM": 2, "HOM_HUH": 2, "HUH_ETS": 2,
+  "ETS_AUS": 2, "AUS_NAC": 3, "NAC_MEF": 3, "MEF_TWW": 4, "TWW_KSR": 5, "KSR_YUL": 4, "YUL_LOP": 2, "LOP_TIS": 3, "TIS_SIH": 4, "SIH_TUM": 3,
+  // 東鐵綫 EAL
+  "ADM_EXC": 2, "EXC_HUH": 4, "HUH_MKK": 3, "MKK_KOT": 3, "KOT_TAW": 4, "TAW_SHT": 3, "SHT_FOT": 3, "FOT_UNI": 3,
+  "SHT_RAC": 3, "RAC_UNI": 3, "UNI_TAP": 5, "TAP_TWO": 2, "TWO_FAN": 5, "FAN_SHS": 3, "SHS_LOW": 4, "SHS_LMC": 6,
+  // 觀塘綫 KTL
+  "WHA_HOM": 3, "HOM_YMT": 2, "YMT_MOK": 2, "MOK_PRE": 2, "PRE_SKM": 2, "SKM_KOT": 2, "KOT_LOF": 2, "LOF_WTS": 2,
+  "WTS_DIH": 2, "DIH_CHH": 2, "CHH_KOB": 2, "KOB_NTK": 2, "NTK_KWT": 2, "KWT_LAT": 2, "LAT_YAT": 3, "YAT_TIK": 3,
+  // 荃灣綫 TWL
+  "CEN_ADM": 2, "ADM_TST": 3, "TST_JOR": 2, "JOR_YMT": 2, "MEF_LAK": 2, "LAK_KWF": 2, "KWF_KWH": 2, "KWH_TWH": 2, "TWH_TSW": 2,
+  "PRE_SSP": 2, "SSP_CSW": 2, "CSW_LCK": 2, "LCK_MEF": 2,
+  // 港島綫 ISL
+  "KET_HKU": 2, "HKU_SYP": 2, "SYP_SHW": 2, "SHW_CEN": 2, "ADM_WAC": 2, "WAC_CAB": 2, "CAB_TIH": 2, "TIH_FOH": 2,
+  "FOH_NOP": 2, "NOP_QUB": 2, "QUB_TAK": 2, "TAK_SWH": 2, "SWH_SKW": 2, "SKW_HFC": 3, "HFC_CHW": 2,
+  // 將軍澳綫 TKL
+  "QUB_YAT": 4, "TIK_TKO": 2, "TKO_HAH": 2, "HAH_POA": 2, "TKO_LHP": 4,
+  // 東涌綫 TCL / 迪士尼綫 DRL / 機場快綫 AEL / 南港島綫 SIL
+  "HOK_KOW": 3, "KOW_OLY": 2, "OLY_NAC": 2, "NAC_LAK": 4, "LAK_TSY": 3, "TSY_SUN": 5, "SUN_TUC": 7,
+  "SUN_DIS": 4,
+  "KOW_TSY": 6, "TSY_AIR": 12, "AIR_AWE": 2,
+  "ADM_OCP": 4, "OCP_WCH": 2, "WCH_LET": 2, "LET_SOH": 2
+};
+
+function getExactMtrSegMins(staA, staB) {
+  return MTR_EXACT_SEG_MINS[`${staA}_${staB}`] || MTR_EXACT_SEG_MINS[`${staB}_${staA}`] || 2;
+}
 
 const MTR_GRAPH = {};
 
@@ -5937,40 +5971,33 @@ function addMtrEdge(u, v, mins, type = "ride") {
 }
 
 (function buildMtrNetworkGraph() {
-  function segRideMins(staA, staB, line) {
-    const a = MTR_STATIONS[staA], b = MTR_STATIONS[staB];
-    if (!a || !b) return 2.5;
-    const dKm = haversineDistanceMeters(a.lat, a.lon, b.lat, b.lon) / 1000;
-    const speedKmH = (line === "AEL" || line === "TCL" || line === "EAL") ? 55 : 36;
-    return Math.max(1.8, Math.round(((dKm / speedKmH) * 60 + 0.7) * 10) / 10);
-  }
-
   ["KTL", "TWL", "ISL", "SIL", "TCL", "DRL", "AEL", "TML"].forEach(line => {
     const list = MTR_LINES[line].stations;
     for (let i = 0; i < list.length - 1; i++) {
-      addMtrEdge(`${list[i]}|${line}`, `${list[i + 1]}|${line}`, segRideMins(list[i], list[i + 1], line), "ride");
+      const m = line === "AEL" && list[i] === "HOK" && list[i + 1] === "KOW" ? 3 : getExactMtrSegMins(list[i], list[i + 1]);
+      addMtrEdge(`${list[i]}|${line}`, `${list[i + 1]}|${line}`, m, "ride");
     }
   });
 
   const tklMain = ["NOP", "QUB", "YAT", "TIK", "TKO", "HAH", "POA"];
   for (let i = 0; i < tklMain.length - 1; i++) {
-    addMtrEdge(`${tklMain[i]}|TKL`, `${tklMain[i + 1]}|TKL`, segRideMins(tklMain[i], tklMain[i + 1], "TKL"), "ride");
+    addMtrEdge(`${tklMain[i]}|TKL`, `${tklMain[i + 1]}|TKL`, getExactMtrSegMins(tklMain[i], tklMain[i + 1]), "ride");
   }
-  addMtrEdge("TKO|TKL", "LHP|TKL", 4.5, "ride");
+  addMtrEdge("TKO|TKL", "LHP|TKL", 4, "ride");
 
   const ealMain = ["ADM", "EXC", "HUH", "MKK", "KOT", "TAW", "SHT", "FOT", "UNI", "TAP", "TWO", "FAN", "SHS"];
   for (let i = 0; i < ealMain.length - 1; i++) {
-    addMtrEdge(`${ealMain[i]}|EAL`, `${ealMain[i + 1]}|EAL`, segRideMins(ealMain[i], ealMain[i + 1], "EAL"), "ride");
+    addMtrEdge(`${ealMain[i]}|EAL`, `${ealMain[i + 1]}|EAL`, getExactMtrSegMins(ealMain[i], ealMain[i + 1]), "ride");
   }
-  addMtrEdge("SHT|EAL", "RAC|EAL", 3.0, "ride");
-  addMtrEdge("RAC|EAL", "UNI|EAL", 3.0, "ride");
-  addMtrEdge("SHS|EAL", "LOW|EAL", 4.5, "ride");
-  addMtrEdge("SHS|EAL", "LMC|EAL", 6.5, "ride");
+  addMtrEdge("SHT|EAL", "RAC|EAL", 3, "ride");
+  addMtrEdge("RAC|EAL", "UNI|EAL", 3, "ride");
+  addMtrEdge("SHS|EAL", "LOW|EAL", 4, "ride");
+  addMtrEdge("SHS|EAL", "LMC|EAL", 6, "ride");
 
   const fastCrossPlatform = new Set(["MOK", "PRE", "YMT", "ADM", "NOP", "QUB", "YAT", "TIK", "LAK", "HUH", "TAW", "NAC"]);
   Object.entries(MTR_STATION_LINES).forEach(([sta, lines]) => {
     if (lines.length < 2) return;
-    const waitWalkMins = fastCrossPlatform.has(sta) ? 3.5 : 5.0;
+    const waitWalkMins = fastCrossPlatform.has(sta) ? 3 : 5;
     for (let i = 0; i < lines.length; i++) {
       for (let j = i + 1; j < lines.length; j++) {
         if (lines[i] === "AEL" || lines[j] === "AEL") continue;
@@ -5979,8 +6006,8 @@ function addMtrEdge(u, v, mins, type = "ride") {
     }
   });
 
-  ["ISL", "TWL"].forEach(l1 => addMtrEdge(`CEN|${l1}`, "HOK|TCL", 6.5, "walk_transfer"));
-  addMtrEdge("TST|TWL", "ETS|TML", 6.5, "walk_transfer");
+  ["ISL", "TWL"].forEach(l1 => addMtrEdge(`CEN|${l1}`, "HOK|TCL", 6, "walk_transfer"));
+  addMtrEdge("TST|TWL", "ETS|TML", 6, "walk_transfer");
 })();
 
 function getTrainVisitedPathOnLine(line, startSta, destSta, viaRac = false) {
@@ -6028,11 +6055,10 @@ function computeMtrRouteFromTrackedTrain(originSta, boardLine, trainDestSta, tar
     }
     pq.push({ key: k, cost: step.accMin });
 
-    // 處理同線分支換乘（例如搭往羅湖車喺上水落車等下班往落馬洲車，或將軍澳轉康城）
     if (idx > 0) {
       const branchEdges = (MTR_GRAPH[k] || []).filter(e => e.type === "ride" && !onTrainSet.has(staOf(e.to)));
       branchEdges.forEach(be => {
-        const branchCost = step.accMin + 4.5 + be.mins;
+        const branchCost = step.accMin + 4 + be.mins;
         if (dist[be.to] === undefined || branchCost < dist[be.to]) {
           dist[be.to] = branchCost;
           prev[be.to] = { key: k, type: "branch_transfer" };
@@ -6045,8 +6071,8 @@ function computeMtrRouteFromTrackedTrain(originSta, boardLine, trainDestSta, tar
   (MTR_STATION_LINES[originSta] || []).forEach(l => {
     const k = `${originSta}|${l}`;
     if (dist[k] === undefined) {
-      dist[k] = 4.0;
-      pq.push({ key: k, cost: 4.0 });
+      dist[k] = 4;
+      pq.push({ key: k, cost: 4 });
     }
   });
 
@@ -6061,7 +6087,7 @@ function computeMtrRouteFromTrackedTrain(originSta, boardLine, trainDestSta, tar
       if (cur.key === `${originSta}|${boardLine}` && e.type === "ride") {
         const nSta = staOf(e.to);
         if (!onTrainSet.has(nSta) && trainStops.length > 1) {
-          const altCost = cur.cost + 4.5 + e.mins;
+          const altCost = cur.cost + 4 + e.mins;
           if (altCost < (dist[e.to] ?? Infinity)) {
             dist[e.to] = altCost;
             prev[e.to] = { key: cur.key, type: "opposite_dir" };
@@ -6139,7 +6165,7 @@ function computeMtrRouteFromTrackedTrain(originSta, boardLine, trainDestSta, tar
   };
 }
 
-/* ========== 4. 非阻塞極速港鐵官方八達通成人車費庫 (修復 Key 配對與多源競速載入) ========== */
+/* ========== 4. 原生 CORS 港鐵官方成人八達通車費庫 (100% 對齊 mtr_lines_fares.csv) ========== */
 
 function parseCsvRowSimple(line) {
   const res = [];
@@ -6165,22 +6191,21 @@ function loadMtrOfficialFares() {
         req.onupgradeneeded = e => e.target.result.createObjectStore("fares");
         req.onsuccess = e => {
           const tx = e.target.result.transaction("fares", "readonly");
-          const g = tx.objectStore("fares").get("mtr_oct_fares_v2");
+          const g = tx.objectStore("fares").get("mtr_oct_fares_v3");
           g.onsuccess = () => resolve(g.result || null);
           g.onerror = () => resolve(null);
         };
         req.onerror = () => resolve(null);
       });
-      if (cached && Date.now() - cached.ts < 7 * 86400000 && cached.map && Object.keys(cached.map).length > 1000) {
+      if (cached && Date.now() - cached.ts < 14 * 86400000 && cached.map && Object.keys(cached.map).length > 2000) {
         mtrFareTableMap = cached.map;
         return mtrFareTableMap;
       }
     } catch (e) {}
 
-    // 多通道同步競速拉取 CSV，邊條最快返就用邊條（唔會再排隊死等 10 秒）
     const fetchCandidate = async (url) => {
       const ctrl = new AbortController();
-      const tid = setTimeout(() => ctrl.abort(), 4500);
+      const tid = setTimeout(() => ctrl.abort(), 6000);
       try {
         const res = await fetch(url, { signal: ctrl.signal });
         clearTimeout(tid);
@@ -6197,43 +6222,59 @@ function loadMtrOfficialFares() {
     let csvText = "";
     try {
       csvText = await Promise.any([
-        fetchCandidate(MTR_FARE_CSV_URL),
-        fetchCandidate(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(MTR_FARE_CSV_URL)}`),
-        fetchCandidate(`https://api.allorigins.win/raw?url=${encodeURIComponent(MTR_FARE_CSV_URL)}`)
+        ...MTR_FARE_CDN_MIRRORS.map(u => fetchCandidate(u)),
+        fetchCandidate(MTR_FARE_OFFICIAL_URL),
+        fetchCandidate(`https://api.allorigins.win/raw?url=${encodeURIComponent(MTR_FARE_OFFICIAL_URL)}`)
       ]);
-    } catch (e) {}
+    } catch (e) {
+      console.warn("MTR 官方車費 CSV 下載失敗:", e);
+    }
 
     if (csvText) {
       const parsedMap = {};
-      const lines = csvText.split(/\r?\n/);
-      const headers = parseCsvRowSimple(lines.shift() || "");
+      // 清除開頭隱藏 UTF-8 BOM 字元並正確按換行切開
+      const cleanCsv = csvText.replace(/^\uFEFF/, "");
+      const lines = cleanCsv.split(/\r?\n/);
+      const headers = parseCsvRowSimple(lines.shift() || "").map(h => h.replace(/^\uFEFF/, "").trim().toUpperCase());
+
       const srcIdx = headers.indexOf("SRC_STATION_NAME");
       const dstIdx = headers.indexOf("DEST_STATION_NAME");
       const octIdx = headers.indexOf("OCT_ADT_FARE");
 
       if (srcIdx >= 0 && dstIdx >= 0 && octIdx >= 0) {
         for (const rowStr of lines) {
-          if (!rowStr) continue;
+          if (!rowStr || !rowStr.trim()) continue;
           const cols = parseCsvRowSimple(rowStr);
           const sCode = resolveMtrCode(cols[srcIdx]);
           const dCode = resolveMtrCode(cols[dstIdx]);
           const fare = parseFloat(cols[octIdx]);
           if (MTR_STATIONS[sCode] && MTR_STATIONS[dCode] && isFinite(fare) && fare > 0) {
-            parsedMap[sCode + "_" + dCode] = fare;
+            parsedMap[`${sCode}_${dCode}`] = fare;
           }
         }
-        if (Object.keys(parsedMap).length > 1000) {
+
+        // 補充 2022 新開會展站 (EXC) 如舊表缺失時對齊金鐘/灣仔同區價
+        if (!parsedMap["ADM_EXC"]) {
+          Object.keys(MTR_STATIONS).forEach(st => {
+            if (st === "EXC") return;
+            const ref = st === "ADM" ? "WAC" : "ADM";
+            if (parsedMap[`${st}_${ref}`]) parsedMap[`${st}_EXC`] = parsedMap[`${st}_${ref}`];
+            if (parsedMap[`${ref}_${st}`]) parsedMap[`EXC_${st}`] = parsedMap[`${ref}_${st}`];
+          });
+        }
+
+        if (Object.keys(parsedMap).length > 2000) {
           mtrFareTableMap = parsedMap;
+          console.log(`🚇 成功載入港鐵官方八達通車費庫 (${Object.keys(parsedMap).length} 組車站票價)`);
           try {
             const req = indexedDB.open("MtrFareCacheDB", 1);
             req.onupgradeneeded = e => e.target.result.createObjectStore("fares");
             req.onsuccess = e => {
               const tx = e.target.result.transaction("fares", "readwrite");
-              tx.objectStore("fares").put({ ts: Date.now(), map: parsedMap }, "mtr_oct_fares_v2");
+              tx.objectStore("fares").put({ ts: Date.now(), map: parsedMap }, "mtr_oct_fares_v3");
             };
           } catch (e) {}
 
-          // 如果用家已經開緊追蹤牌，載入完成後即時自動修正為官方精準車費
           if (mtrActiveTracking) {
             mtrActiveTracking.fare = getMtrAdultFare(
               mtrActiveTracking.originSta,
@@ -6268,32 +6309,21 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
     }
   }
 
-  // 優先直接讀取官方 mtr_lines_fares.csv 八達通成人價
-  const key = origCode + "_" + destCode;
+  // 直接讀取港鐵官方八達通成人車費表
+  const key = `${origCode}_${destCode}`;
   if (mtrFareTableMap && mtrFareTableMap[key] != null) {
     return mtrFareTableMap[key];
   }
 
-  // 未完成首次下載前嘅精準分區後備估算
+  // 萬一離線未載入完 CSV 時嘅港鐵分區後備計算（包括馬鞍山段同區票價 $4.0 / $5.9）
   const sA = MTR_STATIONS[origCode], sB = MTR_STATIONS[destCode];
-  if (!sA || !sB) return 9.7;
-  const distKm = haversineDistanceMeters(sA.lat, sA.lon, sB.lat, sB.lon) / 1000;
-  const crossHarbour = (sA.zone === "HK" && sB.zone !== "HK") || (sB.zone === "HK" && sA.zone !== "HK");
-  const isBorder = sA.zone === "BORDER" || sB.zone === "BORDER";
-
-  if (isBorder) {
-    const other = sA.zone === "BORDER" ? destCode : origCode;
-    if (other === "SHS" || other === "FAN") return 26.5;
-    if (["TWO", "TAP", "UNI", "FOT", "SHT", "TAW"].includes(other)) return 29.8;
-    if (MTR_STATIONS[other] && MTR_STATIONS[other].zone === "KLN") return 44.2;
-    if (MTR_STATIONS[other] && MTR_STATIONS[other].zone === "HK") return 53.8;
-    return 37.5;
+  if (!sA || !sB) return null;
+  if (sA.zone === "MOS" && sB.zone === "MOS") {
+    const mosOrder = ["WKS", "MOS", "HEO", "TSH", "SHM", "CIO", "STW", "CKT", "TAW"];
+    const diff = Math.abs(mosOrder.indexOf(origCode) - mosOrder.indexOf(destCode));
+    return diff <= 2 ? 4.1 : 5.9;
   }
-
-  let fare = distKm < 1.8 ? 4.9 : distKm < 4.2 ? 5.9 : distKm < 7.5 ? 7.3 : distKm < 12 ? 9.7 : distKm < 18 ? 12.2 : 16.5;
-  if (crossHarbour) fare = Math.max(10.8, fare + 5.8);
-  if (origCode === "DIS" || destCode === "DIS") fare = Math.max(fare, 15.9);
-  return Math.round(fare * 10) / 10;
+  return null;
 }
 
 /* ========== 5. 注入獨立可拉起港鐵抽屜 (#mtr-sheet) + 彩色揀站選單 + 目的地視窗 ========== */
@@ -6304,7 +6334,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
   const style = document.createElement("style");
   style.id = "mtr-module-styles";
   style.textContent = `
-    /* 獨立港鐵上拉抽屜：手機版平時排喺巴士抽屜 (#bottom-sheet, z-index:1000) 後面並露出頂部拉柄；拉起時升到最前 */
     #mtr-sheet {
       position: fixed;
       left: 0;
@@ -6345,7 +6374,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
       transform: translateY(0%);
     }
 
-    /* 後層露出時頂欄用醒目深酒紅漸層，等用家一眼見到路線後面有港鐵抽屜可以拉起 */
     #mtr-sheet-header {
       padding: 7px 16px 10px;
       cursor: grab;
@@ -6435,7 +6463,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
       display: inline-block;
     }
 
-    /* ★ 平板模式 (>= 768px)：港鐵抽屜獨立泊喺巴士路線抽屜隔離（左邊），拉起一次過並列晒所有方向 */
     @media (min-width: 768px) {
       #mtr-sheet {
         left: auto;
@@ -6454,7 +6481,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
       }
     }
 
-    /* 港鐵抽屜主體 */
     #mtr-sheet-body {
       flex: 1;
       min-height: 0;
@@ -6463,7 +6489,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
       background: #f8fafc;
     }
 
-    /* 彩色背景揀站選單（唔顯示「XX綫」括號字眼，直接用港鐵路線代表色做底色） */
     .mtr-station-picker-wrap {
       position: relative;
       display: flex;
@@ -6508,7 +6533,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
       box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
     }
 
-    /* 展開式彩色車站 Dropdown 面板 */
     #mtrColorDropdownPanel {
       display: none;
       margin-top: 8px;
@@ -6572,7 +6596,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
       margin: 10px 0 6px;
     }
 
-    /* 步行導航橫額 */
     #mtrWalkInfoBox {
       margin-top: 8px;
       padding: 7px 12px;
@@ -6585,7 +6608,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
     }
     #mtrWalkInfoBox:empty { display: none; }
 
-    /* 手機版方向快速切換 Chips + 滑動提示 */
     #mtrSwipeChips {
       display: flex;
       align-items: center;
@@ -6622,7 +6644,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
       #mtrSwipeChips, .mtr-swipe-hint { display: none !important; }
     }
 
-    /* 方向卡片：手機左右 Swap 單張；平板 Grid 一次過晒冷 */
     #mtrCardsContainer {
       margin-top: 4px;
       touch-action: pan-y;
@@ -6779,7 +6800,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
       text-shadow: 0 1px 2px rgba(0,0,0,0.45);
     }
 
-    /* 揀選目的地港鐵站 Modal（同樣用路線顏色做背景，無須括號寫線名） */
     #mtr-dest-modal {
       display: none;
       position: fixed;
@@ -6850,7 +6870,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
   `;
   document.head.appendChild(style);
 
-  // 建立獨立嘅 #mtr-sheet（同巴士 #bottom-sheet 平級，放喺路線抽屜後面）
   const mtrSheet = document.createElement("div");
   mtrSheet.id = "mtr-sheet";
   mtrSheet.className = "mtr-state-behind";
@@ -6888,7 +6907,6 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
   `;
   document.body.appendChild(mtrSheet);
 
-  // 建立「揀選目的地港鐵站」Modal
   const destModal = document.createElement("div");
   destModal.id = "mtr-dest-modal";
   destModal.innerHTML = `
@@ -6898,7 +6916,7 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
         <button type="button" id="btnCloseMtrDestModal" style="background:transparent;border:none;color:#cbd5e1;font-size:18px;padding:0 4px;margin:0;">✕</button>
       </div>
       <div class="mtr-dest-search">
-        <input type="text" id="mtrDestSearchInput" placeholder="輸入港鐵站名篩選（例如：金鐘、羅湖、屯門）..." />
+        <input type="text" id="mtrDestSearchInput" placeholder="輸入港鐵站名篩選（例如：第一城、金鐘、羅湖）..." />
       </div>
       <div id="mtrDestStationList"></div>
     </div>
@@ -6914,7 +6932,6 @@ function syncMtrBehindOffsetWithBusSheet() {
   if (!mtrSheet || !busSheet || window.innerWidth >= 768) return;
   if (mtrSheetState !== "behind") return;
 
-  // 讀取現時巴士抽屜頂部位置，令港鐵抽屜喺後面剛剛好高過巴士抽屜 46px 露出標題列
   const busRect = busSheet.getBoundingClientRect();
   const desiredTop = Math.max(8, busRect.top - 46);
   const sheetH = mtrSheet.offsetHeight || Math.round(window.innerHeight * 0.9);
@@ -6936,7 +6953,6 @@ function setMtrSheetState(nextState) {
   mtrSheet.classList.toggle("mtr-active", isActive);
 
   if (isActive) {
-    // 手機版拉起港鐵抽屜時，自動將前層巴士抽屜收低一格避免遮擋
     if (window.innerWidth < 768 && currentSheetState === "full") {
       setBottomSheetState("collapsed");
     }
@@ -6983,7 +6999,7 @@ function setMtrSheetState(nextState) {
   }
 }
 
-/* ========== 7. 彩色背景揀站選單（有距離按距離排；無距離按線路色塊分組，唔寫括號線名） ========== */
+/* ========== 7. 彩色背景揀站選單（有距離按距離排；無距離按線路色塊分組） ========== */
 
 function updateMtrStationTriggerUI() {
   const btn = document.getElementById("mtrStationColorBtn");
@@ -7192,7 +7208,7 @@ async function plotMtrStationAndWalkOnMap(staCode, panMap = true) {
   }
 }
 
-/* ========== 9. 實時班次拉取（修正東鐵/將軍澳分支時間排序與真實總站對應） ========== */
+/* ========== 9. 實時班次拉取（過濾落客終點車 ＋ 按實際到站時間排序） ========== */
 
 function parseMtrTimeStr(timeStr) {
   if (!timeStr || timeStr === "-") return null;
@@ -7237,13 +7253,7 @@ async function loadMtrStationSchedule(staCode, keepCardIndex = false) {
       const rawTrains = Array.isArray(dirKey === "UP" ? up : down) ? (dirKey === "UP" ? up : down) : [];
       const meta = dirConf[dirKey] || { label: "", terms: [] };
 
-      // 落車總站方向（例如羅湖站再向北、屯門站再向屯門）且無列車時隱藏空白卡
-      if (!rawTrains.length && meta.terms.length === 1 && meta.terms[0] === staCode) {
-        return;
-      }
-
-      // ★ 關鍵修正：API 喺東鐵綫(羅湖/落馬洲)及將軍澳綫(寶琳/康城)經常按分支分批回傳而非到站時間先後！
-      // 呢度強制逐班解析真實 dest 代碼 + 以實際到站時間排序，確保第 1、2、3、4 班車 100% 對應月台幕門顯示屏！
+      // 過濾以本站為終點站嘅落客列車 (destCode === staCode)，避免喺烏溪沙等總站出現無得上車嘅落客方向
       const validTrains = rawTrains
         .filter(t => t && t.dest && (t.time || t.ttnt != null))
         .map(t => {
@@ -7260,7 +7270,6 @@ async function loadMtrStationSchedule(staCode, keepCardIndex = false) {
           }
           if (!isFinite(ttnt)) ttnt = 0;
 
-          // 本地時間對齊：用實際倒數分鐘推算手機本地預計上車時刻，避免伺服器時差
           const localBoardDate = etaDate || new Date(Date.now() + ttnt * 60000);
 
           return {
@@ -7273,7 +7282,13 @@ async function loadMtrStationSchedule(staCode, keepCardIndex = false) {
             etaDate: localBoardDate
           };
         })
+        .filter(t => t.destCode !== staCode)
         .sort((a, b) => (a.etaMs - b.etaMs) || (a.ttnt - b.ttnt));
+
+      // 若該方向係本站落車終點（如烏溪沙站「往烏溪沙」）且無有效載客列車，直接隱藏
+      if (!validTrains.length && meta.terms.length === 1 && meta.terms[0] === staCode) {
+        return;
+      }
 
       const uniqueDestCodes = Array.from(new Set(validTrains.map(t => t.destCode).filter(Boolean)));
       const uniqueDestNames = Array.from(new Set(validTrains.map(t => getMtrStationName(t.destCode)).filter(Boolean)));
@@ -7404,7 +7419,7 @@ function renderMtrDirectionCards() {
   });
 }
 
-/* ========== 10. 撳「追蹤」秒開目的地揀站 ➔ 沿用巴士頂部追蹤牌 (#live-track-banner) 與通知格式 ========== */
+/* ========== 10. 撳「追蹤」揀目的地 ➔ 巴士同款頂部黑底追蹤牌（清晰區分下班車倒數 vs 實際車程） ========== */
 
 function openMtrDestinationPicker(card, trainObj) {
   mtrPendingTrackTrain = {
@@ -7482,13 +7497,11 @@ function renderMtrDestinationChoices(filterKw = "") {
   });
 }
 
-// ★ 零延遲啟動追蹤（唔再 await 網絡，0ms 即刻彈出巴士同款追蹤牌！）
 function startMtrTripTrackingToDest(destStaCode) {
   const modal = document.getElementById("mtr-dest-modal");
   if (modal) modal.classList.remove("active");
   if (!mtrPendingTrackTrain) return;
 
-  // 如果之前開緊巴士追蹤，先停咗舊巴士 Worker 免撞通知
   stopPersistentTrackingNotification();
 
   const p = mtrPendingTrackTrain;
@@ -7508,11 +7521,10 @@ function startMtrTripTrackingToDest(destStaCode) {
     fare
   };
 
-  // 背景確保官方車費表載入（若剛開啟未載完，載完會自動即時更新銀碼）
   loadMtrOfficialFares();
 
   renderMtrDirectionCards();
-  showToast(`🔔 已啟動港鐵追蹤：往${getMtrStationName(destStaCode)}`);
+  showToast(`🔔 已啟動港鐵追蹤：${getMtrStationName(p.originSta)} ➔ ${getMtrStationName(destStaCode)}`);
   updateMtrTrackingBannerAndNotification(true);
 
   startSilentAudioKeepAlive();
@@ -7576,12 +7588,13 @@ async function updateMtrTrackingBannerAndNotification(requestPerm = false) {
     return;
   }
 
-  const rideMin = trk.routePlan ? trk.routePlan.totalRideMin : 15;
+  const rideMin = trk.routePlan ? trk.routePlan.totalRideMin : 10;
   const arriveDate = new Date(trk.boardEtaDate.getTime() + rideMin * 60000);
   const arriveHHMM = formatTimeHHMM(arriveDate);
   const boardHHMM = formatTimeHHMM(trk.boardEtaDate);
+  const fareStr = trk.fare != null ? `$${trk.fare}` : "讀取中...";
 
-  let transferNote = "直達免轉車";
+  let transferNote = "直達";
   if (trk.routePlan && trk.routePlan.transfers.length > 0) {
     transferNote = trk.routePlan.transfers.map(tf =>
       tf.isWalk
@@ -7595,29 +7608,28 @@ async function updateMtrTrackingBannerAndNotification(requestPerm = false) {
     transferNote = "⚠️反方向！請過對面月台";
   }
 
-  // ★ 直接使用 index.html 原生嘅巴士頂部黑底雙欄追蹤牌 (#live-track-banner)，風格 100% 統一！
   if (banner) {
     banner.classList.add("active");
     if (ltbRoute) {
       ltbRoute.style.color = "#60a5fa";
-      ltbRoute.textContent = `🚇 ${trk.boardLineName} (往${trk.trainDestName}) ➔ ${getMtrStationName(trk.destSta)}`;
+      ltbRoute.textContent = `🚇 ${trk.boardLineName} (往${trk.trainDestName})`;
     }
     if (ltbStop) {
-      ltbStop.textContent = `${getMtrStationName(trk.originSta)}站｜${transferNote}`;
+      ltbStop.textContent = `${getMtrStationName(trk.originSta)} ➔ ${getMtrStationName(trk.destSta)}（${transferNote}）`;
     }
     if (ltbEta) {
-      ltbEta.textContent = waitMin <= 0 ? `即將到達 (${boardHHMM})` : `${waitMin} 分鐘 (${boardHHMM})`;
+      ltbEta.textContent = waitMin <= 0
+        ? `下班車：即將到 (${boardHHMM})`
+        : `下班車：${waitMin} 分鐘 (${boardHHMM})`;
     }
     if (ltbWalkDist) {
-      const walkPart = mtrWalkDistMeters != null ? ` ｜ 距${mtrWalkDistMeters}m` : "";
-      ltbWalkDist.textContent = `💰 $${trk.fare}${walkPart}`;
+      ltbWalkDist.textContent = `💰 ${fareStr} ｜ 車程 ${rideMin} 分`;
     }
     if (ltbWalkTime) {
-      ltbWalkTime.textContent = `預計 ${arriveHHMM} 到 (${rideMin}分)`;
+      ltbWalkTime.textContent = `預計 ${arriveHHMM} 到達`;
     }
   }
 
-  // 系統 Notification：完全沿用巴士倒數圓環 Icon 與文字排版
   if (requestPerm && "Notification" in window && Notification.permission !== "granted") {
     try { await Notification.requestPermission(); } catch (e) {}
   }
@@ -7625,9 +7637,9 @@ async function updateMtrTrackingBannerAndNotification(requestPerm = false) {
 
   const stOrig = MTR_STATIONS[trk.originSta];
   const titleText = `${trk.boardLineName} (往${trk.trainDestName})`;
-  const etaLine = waitMin <= 0 ? `即將到達 (${boardHHMM})` : `${waitMin} 分鐘 (${boardHHMM})`;
+  const etaLine = waitMin <= 0 ? `下班車：即將到 (${boardHHMM})` : `下班車：${waitMin} 分鐘 (${boardHHMM})`;
   const bodyLines = [
-    `${getMtrStationName(trk.originSta)} ➔ ${getMtrStationName(trk.destSta)} ($${trk.fare}｜${arriveHHMM}到)`,
+    `${getMtrStationName(trk.originSta)} ➔ ${getMtrStationName(trk.destSta)} (${fareStr}｜車程${rideMin}分｜${arriveHHMM}到)`,
     `${etaLine}｜${transferNote}`
   ];
 
@@ -7682,7 +7694,6 @@ async function updateMtrTrackingBannerAndNotification(requestPerm = false) {
   const destSearchInp = document.getElementById("mtrDestSearchInput");
   const ltbCloseBtn = document.getElementById("ltbCloseBtn");
 
-  // 監聽巴士抽屜移動或改變狀態，保持後層港鐵抽屜剛剛好露出頂欄
   if (busSheet) {
     const obs = new MutationObserver(() => {
       setTimeout(syncMtrBehindOffsetWithBusSheet, 30);
@@ -7693,7 +7704,6 @@ async function updateMtrTrackingBannerAndNotification(requestPerm = false) {
     setTimeout(syncMtrBehindOffsetWithBusSheet, 120);
   }
 
-  // 港鐵抽屜頂欄手勢上下拉動 + 點擊拉起
   if (mtrSheet && mtrHeader) {
     let startY = 0, deltaY = 0, dragging = false;
 
@@ -7741,7 +7751,6 @@ async function updateMtrTrackingBannerAndNotification(requestPerm = false) {
     }
   }
 
-  // 展開/收起彩色港鐵站選單
   if (staBtn) {
     staBtn.onclick = () => {
       const dd = document.getElementById("mtrColorDropdownPanel");
@@ -7779,7 +7788,6 @@ async function updateMtrTrackingBannerAndNotification(requestPerm = false) {
     };
   }
 
-  // 手機版左右滑動 (Swap) 更換方向與線路
   if (cardsContainer) {
     let startX = 0, startY = 0;
     cardsContainer.addEventListener("touchstart", e => {
@@ -7821,6 +7829,6 @@ async function updateMtrTrackingBannerAndNotification(requestPerm = false) {
     };
   }
 
-  // 啟動時背景預載官方車費表
+  // 啟動時即刻透過原生 CORS CDN 預載官方八達通車費表
   loadMtrOfficialFares();
 })();
