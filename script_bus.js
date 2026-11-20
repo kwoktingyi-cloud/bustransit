@@ -5716,3 +5716,2111 @@ async function applySelectedP2PRouteToMainApp(cand) {
   bindPlaceAutocomplete("p2pOriginInput", "p2pOriginSuggest", "origin");
   bindPlaceAutocomplete("p2pDestInput", "p2pDestSuggest", "dest");
 })();
+
+
+/* =========================================================================
+   ★ 港鐵 (MTR) 獨立上拉抽屜、實時到站、步行導航、轉車及車費追蹤模組 (v2)
+   ========================================================================= */
+
+const MTR_SCHEDULE_API = "https://rt.data.gov.hk/v1/transport/mtr/getSchedule.php";
+const MTR_FARE_CSV_URL = "https://opendata.mtr.com.hk/data/mtr_lines_fares.csv";
+
+// 1. 港鐵 10 條重鐵路線官方配色與車站序列
+const MTR_LINES = {
+  KTL: { name: "觀塘綫", color: "#00ab4e", stations: ["WHA","HOM","YMT","MOK","PRE","SKM","KOT","LOF","WTS","DIH","CHH","KOB","NTK","KWT","LAT","YAT","TIK"] },
+  TWL: { name: "荃灣綫", color: "#e2231a", stations: ["CEN","ADM","TST","JOR","YMT","MOK","PRE","SSP","CSW","LCK","MEF","LAK","KWF","KWH","TWH","TSW"] },
+  ISL: { name: "港島綫", color: "#0071ce", stations: ["KET","HKU","SYP","SHW","CEN","ADM","WAC","CAB","TIH","FOH","NOP","QUB","TAK","SWH","SKW","HFC","CHW"] },
+  SIL: { name: "南港島綫", color: "#9ea700", stations: ["ADM","OCP","WCH","LET","SOH"] },
+  TKL: { name: "將軍澳綫", color: "#a35eb5", stations: ["NOP","QUB","YAT","TIK","TKO","HAH","POA","LHP"] },
+  TCL: { name: "東涌綫", color: "#f38b00", stations: ["HOK","KOW","OLY","NAC","LAK","TSY","SUN","TUC"] },
+  DRL: { name: "迪士尼綫", color: "#e65c9c", stations: ["SUN","DIS"] },
+  AEL: { name: "機場快綫", color: "#007078", stations: ["HOK","KOW","TSY","AIR","AWE"] },
+  EAL: { name: "東鐵綫", color: "#0284c7", stations: ["ADM","EXC","HUH","MKK","KOT","TAW","SHT","FOT","RAC","UNI","TAP","TWO","FAN","SHS","LOW","LMC"] },
+  TML: { name: "屯馬綫", color: "#9a3b26", stations: ["WKS","MOS","HEO","TSH","SHM","CIO","STW","CKT","TAW","HIK","DIH","KAT","SUW","TKW","HOM","HUH","ETS","AUS","NAC","MEF","TWW","KSR","YUL","LOP","TIS","SIH","TUM"] }
+};
+
+// 2. 全港 98 個港鐵站座標、區域與中英文名稱（精準對齊官方 API 及車費 CSV）
+const MTR_STATIONS = {
+  ADM: { tc: "金鐘", en: "Admiralty", lat: 22.2789, lon: 114.1646, zone: "HK" },
+  AIR: { tc: "機場", en: "Airport", lat: 22.3161, lon: 113.9366, zone: "AIR" },
+  AUS: { tc: "柯士甸", en: "Austin", lat: 22.3048, lon: 114.1664, zone: "KLN" },
+  AWE: { tc: "博覽館", en: "AsiaWorld-Expo", lat: 22.3216, lon: 113.9414, zone: "AIR" },
+  CAB: { tc: "銅鑼灣", en: "Causeway Bay", lat: 22.2804, lon: 114.1839, zone: "HK" },
+  CEN: { tc: "中環", en: "Central", lat: 22.2819, lon: 114.1576, zone: "HK" },
+  CHH: { tc: "彩虹", en: "Choi Hung", lat: 22.3349, lon: 114.2089, zone: "KLN" },
+  CHW: { tc: "柴灣", en: "Chai Wan", lat: 22.2645, lon: 114.2371, zone: "HK" },
+  CIO: { tc: "第一城", en: "City One", lat: 22.3824, lon: 114.2036, zone: "NT" },
+  CKT: { tc: "車公廟", en: "Che Kung Temple", lat: 22.3746, lon: 114.1862, zone: "NT" },
+  CSW: { tc: "長沙灣", en: "Cheung Sha Wan", lat: 22.3354, lon: 114.1564, zone: "KLN" },
+  DIH: { tc: "鑽石山", en: "Diamond Hill", lat: 22.3401, lon: 114.2016, zone: "KLN" },
+  DIS: { tc: "迪士尼", en: "Disneyland Resort", lat: 22.3155, lon: 114.0450, zone: "NT" },
+  ETS: { tc: "尖東", en: "East Tsim Sha Tsui", lat: 22.2956, lon: 114.1749, zone: "KLN" },
+  EXC: { tc: "會展", en: "Exhibition Centre", lat: 22.2817, lon: 114.1753, zone: "HK" },
+  FAN: { tc: "粉嶺", en: "Fanling", lat: 22.4921, lon: 114.1387, zone: "NT" },
+  FOH: { tc: "炮台山", en: "Fortress Hill", lat: 22.2881, lon: 114.1937, zone: "HK" },
+  FOT: { tc: "火炭", en: "Fo Tan", lat: 22.3953, lon: 114.1983, zone: "NT" },
+  HAH: { tc: "坑口", en: "Hang Hau", lat: 22.3156, lon: 114.2644, zone: "NT" },
+  HEO: { tc: "恆安", en: "Heng On", lat: 22.4176, lon: 114.2259, zone: "NT" },
+  HFC: { tc: "杏花邨", en: "Heng Fa Chuen", lat: 22.2769, lon: 114.2398, zone: "HK" },
+  HIK: { tc: "顯徑", en: "Hin Keng", lat: 22.3639, lon: 114.1709, zone: "NT" },
+  HKU: { tc: "香港大學", en: "HKU", lat: 22.2842, lon: 114.1355, zone: "HK" },
+  HOK: { tc: "香港", en: "Hong Kong", lat: 22.2849, lon: 114.1581, zone: "HK" },
+  HOM: { tc: "何文田", en: "Ho Man Tin", lat: 22.3094, lon: 114.1827, zone: "KLN" },
+  HUH: { tc: "紅磡", en: "Hung Hom", lat: 22.3029, lon: 114.1816, zone: "KLN" },
+  JOR: { tc: "佐敦", en: "Jordan", lat: 22.3049, lon: 114.1717, zone: "KLN" },
+  KAT: { tc: "啟德", en: "Kai Tak", lat: 22.3304, lon: 114.1995, zone: "KLN" },
+  KET: { tc: "堅尼地城", en: "Kennedy Town", lat: 22.2812, lon: 114.1287, zone: "HK" },
+  KOB: { tc: "九龍灣", en: "Kowloon Bay", lat: 22.3236, lon: 114.2142, zone: "KLN" },
+  KOT: { tc: "九龍塘", en: "Kowloon Tong", lat: 22.3369, lon: 114.1761, zone: "KLN" },
+  KOW: { tc: "九龍", en: "Kowloon", lat: 22.3048, lon: 114.1615, zone: "KLN" },
+  KSR: { tc: "錦上路", en: "Kam Sheung Road", lat: 22.4347, lon: 114.0634, zone: "NT" },
+  KWF: { tc: "葵芳", en: "Kwai Fong", lat: 22.3569, lon: 114.1269, zone: "NT" },
+  KWH: { tc: "葵興", en: "Kwai Hing", lat: 22.3632, lon: 114.1312, zone: "NT" },
+  KWT: { tc: "觀塘", en: "Kwun Tong", lat: 22.3122, lon: 114.2265, zone: "KLN" },
+  LAK: { tc: "荔景", en: "Lai King", lat: 22.3484, lon: 114.1261, zone: "NT" },
+  LAT: { tc: "藍田", en: "Lam Tin", lat: 22.3067, lon: 114.2330, zone: "KLN" },
+  LCK: { tc: "荔枝角", en: "Lai Chi Kok", lat: 22.3372, lon: 114.1483, zone: "KLN" },
+  LET: { tc: "利東", en: "Lei Tung", lat: 22.2422, lon: 114.1561, zone: "HK" },
+  LHP: { tc: "康城", en: "LOHAS Park", lat: 22.2957, lon: 114.2689, zone: "NT" },
+  LMC: { tc: "落馬洲", en: "Lok Ma Chau", lat: 22.5145, lon: 114.0657, zone: "BORDER" },
+  LOF: { tc: "樂富", en: "Lok Fu", lat: 22.3380, lon: 114.1870, zone: "KLN" },
+  LOP: { tc: "朗屏", en: "Long Ping", lat: 22.4477, lon: 114.0254, zone: "NT" },
+  LOW: { tc: "羅湖", en: "Lo Wu", lat: 22.5283, lon: 114.1133, zone: "BORDER" },
+  MEF: { tc: "美孚", en: "Mei Foo", lat: 22.3379, lon: 114.1396, zone: "KLN" },
+  MKK: { tc: "旺角東", en: "Mong Kok East", lat: 22.3222, lon: 114.1726, zone: "KLN" },
+  MOK: { tc: "旺角", en: "Mong Kok", lat: 22.3192, lon: 114.1694, zone: "KLN" },
+  MOS: { tc: "馬鞍山", en: "Ma On Shan", lat: 22.4248, lon: 114.2317, zone: "NT" },
+  NAC: { tc: "南昌", en: "Nam Cheong", lat: 22.3267, lon: 114.1533, zone: "KLN" },
+  NOP: { tc: "北角", en: "North Point", lat: 22.2912, lon: 114.2007, zone: "HK" },
+  NTK: { tc: "牛頭角", en: "Ngau Tau Kok", lat: 22.3153, lon: 114.2191, zone: "KLN" },
+  OCP: { tc: "海洋公園", en: "Ocean Park", lat: 22.2487, lon: 114.1743, zone: "HK" },
+  OLY: { tc: "奧運", en: "Olympic", lat: 22.3179, lon: 114.1602, zone: "KLN" },
+  POA: { tc: "寶琳", en: "Po Lam", lat: 22.3227, lon: 114.2580, zone: "NT" },
+  PRE: { tc: "太子", en: "Prince Edward", lat: 22.3245, lon: 114.1683, zone: "KLN" },
+  QUB: { tc: "鰂魚涌", en: "Quarry Bay", lat: 22.2879, lon: 114.2097, zone: "HK" },
+  RAC: { tc: "馬場", en: "Racecourse", lat: 22.4005, lon: 114.2027, zone: "NT" },
+  SHM: { tc: "石門", en: "Shek Mun", lat: 22.3881, lon: 114.2084, zone: "NT" },
+  SHS: { tc: "上水", en: "Sheung Shui", lat: 22.5012, lon: 114.1279, zone: "NT" },
+  SHT: { tc: "沙田", en: "Sha Tin", lat: 22.3827, lon: 114.1875, zone: "NT" },
+  SHW: { tc: "上環", en: "Sheung Wan", lat: 22.2865, lon: 114.1518, zone: "HK" },
+  SIH: { tc: "兆康", en: "Siu Hong", lat: 22.4119, lon: 113.9788, zone: "NT" },
+  SKM: { tc: "石硤尾", en: "Shek Kip Mei", lat: 22.3320, lon: 114.1687, zone: "KLN" },
+  SKW: { tc: "筲箕灣", en: "Shau Kei Wan", lat: 22.2789, lon: 114.2289, zone: "HK" },
+  SOH: { tc: "海怡半島", en: "South Horizons", lat: 22.2425, lon: 114.1492, zone: "HK" },
+  SSP: { tc: "深水埗", en: "Sham Shui Po", lat: 22.3308, lon: 114.1622, zone: "KLN" },
+  STW: { tc: "沙田圍", en: "Sha Tin Wai", lat: 22.3771, lon: 114.1950, zone: "NT" },
+  SUN: { tc: "欣澳", en: "Sunny Bay", lat: 22.3318, lon: 114.0289, zone: "NT" },
+  SUW: { tc: "宋皇臺", en: "Sung Wong Toi", lat: 22.3258, lon: 114.1916, zone: "KLN" },
+  SWH: { tc: "西灣河", en: "Sai Wan Ho", lat: 22.2821, lon: 114.2220, zone: "HK" },
+  SYP: { tc: "西營盤", en: "Sai Ying Pun", lat: 22.2858, lon: 114.1427, zone: "HK" },
+  TAK: { tc: "太古", en: "Tai Koo", lat: 22.2847, lon: 114.2165, zone: "HK" },
+  TAP: { tc: "大埔墟", en: "Tai Po Market", lat: 22.4446, lon: 114.1705, zone: "NT" },
+  TAW: { tc: "大圍", en: "Tai Wai", lat: 22.3729, lon: 114.1787, zone: "NT" },
+  TIH: { tc: "天后", en: "Tin Hau", lat: 22.2827, lon: 114.1918, zone: "HK" },
+  TIK: { tc: "調景嶺", en: "Tiu Keng Leng", lat: 22.3042, lon: 114.2525, zone: "NT" },
+  TIS: { tc: "天水圍", en: "Tin Shui Wai", lat: 22.4481, lon: 114.0044, zone: "NT" },
+  TKO: { tc: "將軍澳", en: "Tseung Kwan O", lat: 22.3075, lon: 114.2600, zone: "NT" },
+  TKW: { tc: "土瓜灣", en: "To Kwa Wan", lat: 22.3173, lon: 114.1875, zone: "KLN" },
+  TST: { tc: "尖沙咀", en: "Tsim Sha Tsui", lat: 22.2975, lon: 114.1722, zone: "KLN" },
+  TSH: { tc: "大水坑", en: "Tai Shui Hang", lat: 22.4089, lon: 114.2231, zone: "NT" },
+  TSW: { tc: "荃灣", en: "Tsuen Wan", lat: 22.3737, lon: 114.1177, zone: "NT" },
+  TSY: { tc: "青衣", en: "Tsing Yi", lat: 22.3584, lon: 114.1070, zone: "NT" },
+  TUC: { tc: "東涌", en: "Tung Chung", lat: 22.2891, lon: 113.9415, zone: "NT" },
+  TUM: { tc: "屯門", en: "Tuen Mun", lat: 22.3952, lon: 113.9731, zone: "NT" },
+  TWH: { tc: "大窩口", en: "Tai Wo Hau", lat: 22.3707, lon: 114.1250, zone: "NT" },
+  TWO: { tc: "太和", en: "Tai Wo", lat: 22.4510, lon: 114.1611, zone: "NT" },
+  TWW: { tc: "荃灣西", en: "Tsuen Wan West", lat: 22.3686, lon: 114.1098, zone: "NT" },
+  UNI: { tc: "大學", en: "University", lat: 22.4132, lon: 114.2102, zone: "NT" },
+  WAC: { tc: "灣仔", en: "Wan Chai", lat: 22.2776, lon: 114.1731, zone: "HK" },
+  WCH: { tc: "黃竹坑", en: "Wong Chuk Hang", lat: 22.2481, lon: 114.1679, zone: "HK" },
+  WHA: { tc: "黃埔", en: "Whampoa", lat: 22.3051, lon: 114.1897, zone: "KLN" },
+  WKS: { tc: "烏溪沙", en: "Wu Kai Sha", lat: 22.4288, lon: 114.2439, zone: "NT" },
+  WTS: { tc: "黃大仙", en: "Wong Tai Sin", lat: 22.3418, lon: 114.1939, zone: "KLN" },
+  YAT: { tc: "油塘", en: "Yau Tong", lat: 22.2978, lon: 114.2372, zone: "KLN" },
+  YMT: { tc: "油麻地", en: "Yau Ma Tei", lat: 22.3130, lon: 114.1707, zone: "KLN" },
+  YUL: { tc: "元朗", en: "Yuen Long", lat: 22.4461, lon: 114.0353, zone: "NT" }
+};
+
+// 別名與防呆代碼對照（防止 API 回傳舊碼、空白或英文全稱導致配對錯誤）
+const MTR_CODE_ALIASES = {
+  LUW: "LOW", LOK: "LMC", MKE: "MKK", TWV: "TWW", HOKG: "HOK"
+};
+Object.entries(MTR_STATIONS).forEach(([code, info]) => {
+  MTR_CODE_ALIASES[code] = code;
+  MTR_CODE_ALIASES[info.tc] = code;
+  MTR_CODE_ALIASES[info.en.toUpperCase()] = code;
+  MTR_CODE_ALIASES[info.en.toUpperCase().replace(/[^A-Z0-9]/g, "")] = code;
+});
+MTR_CODE_ALIASES["HONGKONGUNIVERSITY"] = "HKU";
+
+function resolveMtrCode(raw) {
+  if (!raw) return "";
+  const clean = String(raw).trim().toUpperCase();
+  if (MTR_CODE_ALIASES[clean]) return MTR_CODE_ALIASES[clean];
+  const stripped = clean.replace(/[^A-Z0-9\u4E00-\u9FFF]/g, "");
+  return MTR_CODE_ALIASES[stripped] || clean;
+}
+
+function getMtrStationName(rawCode) {
+  const code = resolveMtrCode(rawCode);
+  return (MTR_STATIONS[code] && MTR_STATIONS[code].tc) || String(rawCode || "");
+}
+
+// 反查每個站屬於邊幾條港鐵綫（供顏色背景生成）
+const MTR_STATION_LINES = {};
+Object.entries(MTR_LINES).forEach(([lineCode, lineObj]) => {
+  lineObj.stations.forEach(sta => {
+    if (!MTR_STATION_LINES[sta]) MTR_STATION_LINES[sta] = [];
+    if (!MTR_STATION_LINES[sta].includes(lineCode)) MTR_STATION_LINES[sta].push(lineCode);
+  });
+});
+
+// 根據車站所屬線路，生成單色或多線斜紋雙色/多色背景（唔使寫「XX綫」文字都一眼認出）
+function getStationLineBackgroundCSS(staCode) {
+  const lines = MTR_STATION_LINES[staCode] || ["TWL"];
+  const colors = lines.map(l => (MTR_LINES[l] && MTR_LINES[l].color) || "#334155");
+  if (colors.length === 1) return colors[0];
+  const step = 100 / colors.length;
+  const stops = colors.map((c, idx) => {
+    const s = (idx * step).toFixed(1);
+    const e = ((idx + 1) * step).toFixed(1);
+    return `${c} ${s}%, ${c} ${e}%`;
+  });
+  return `linear-gradient(135deg, ${stops.join(", ")})`;
+}
+
+// 各線官方 UP / DOWN 方向終點站定義
+const MTR_DIRECTION_META = {
+  KTL: { UP: { label: "調景嶺", terms: ["TIK"] }, DOWN: { label: "黃埔 / 何文田", terms: ["WHA", "HOM"] } },
+  TWL: { UP: { label: "荃灣", terms: ["TSW"] }, DOWN: { label: "中環", terms: ["CEN"] } },
+  ISL: { UP: { label: "柴灣", terms: ["CHW"] }, DOWN: { label: "堅尼地城", terms: ["KET"] } },
+  SIL: { UP: { label: "海怡半島", terms: ["SOH"] }, DOWN: { label: "金鐘", terms: ["ADM"] } },
+  TKL: { UP: { label: "寶琳 / 康城", terms: ["POA", "LHP"] }, DOWN: { label: "北角 / 調景嶺", terms: ["NOP", "TIK"] } },
+  TCL: { UP: { label: "東涌", terms: ["TUC"] }, DOWN: { label: "香港", terms: ["HOK"] } },
+  DRL: { UP: { label: "欣澳", terms: ["SUN"] }, DOWN: { label: "迪士尼", terms: ["DIS"] } },
+  AEL: { UP: { label: "機場 / 博覽館", terms: ["AWE", "AIR"] }, DOWN: { label: "香港", terms: ["HOK"] } },
+  EAL: { UP: { label: "羅湖 / 落馬洲", terms: ["LOW", "LMC"] }, DOWN: { label: "金鐘", terms: ["ADM"] } },
+  TML: { UP: { label: "屯門", terms: ["TUM"] }, DOWN: { label: "烏溪沙", terms: ["WKS"] } }
+};
+
+// 模組狀態
+let mtrSheetState = "behind"; // behind | peek | half | full
+let mtrSelectedSta = null;
+let mtrDropdownOpen = false;
+let mtrCardsData = [];
+let mtrActiveCardIdx = 0;
+let mtrRefreshTimer = null;
+let mtrStationMarker = null;
+let mtrWalkRouteLayer = null;
+let mtrWalkDistMeters = null;
+let mtrWalkMinutes = null;
+let mtrFareTableMap = null;
+let mtrFareLoadingPromise = null;
+let mtrPendingTrackTrain = null;
+let mtrActiveTracking = null;
+
+function mtrWalkMinCalc(meters) {
+  if (!isFinite(meters) || meters <= 0) return 0;
+  if (typeof calcWalkMinutes15x === "function") return calcWalkMinutes15x(meters);
+  return (meters / (5000 / 60)) * 1.5;
+}
+
+/* ========== 3. 建立港鐵十線轉乘路網圖 (計算最短車程與跨線轉車步驟) ========== */
+
+const MTR_GRAPH = {};
+
+function addMtrEdge(u, v, mins, type = "ride") {
+  if (!MTR_GRAPH[u]) MTR_GRAPH[u] = [];
+  if (!MTR_GRAPH[v]) MTR_GRAPH[v] = [];
+  MTR_GRAPH[u].push({ to: v, mins, type });
+  MTR_GRAPH[v].push({ to: u, mins, type });
+}
+
+(function buildMtrNetworkGraph() {
+  function segRideMins(staA, staB, line) {
+    const a = MTR_STATIONS[staA], b = MTR_STATIONS[staB];
+    if (!a || !b) return 2.5;
+    const dKm = haversineDistanceMeters(a.lat, a.lon, b.lat, b.lon) / 1000;
+    const speedKmH = (line === "AEL" || line === "TCL" || line === "EAL") ? 55 : 36;
+    return Math.max(1.8, Math.round(((dKm / speedKmH) * 60 + 0.7) * 10) / 10);
+  }
+
+  ["KTL", "TWL", "ISL", "SIL", "TCL", "DRL", "AEL", "TML"].forEach(line => {
+    const list = MTR_LINES[line].stations;
+    for (let i = 0; i < list.length - 1; i++) {
+      addMtrEdge(`${list[i]}|${line}`, `${list[i + 1]}|${line}`, segRideMins(list[i], list[i + 1], line), "ride");
+    }
+  });
+
+  const tklMain = ["NOP", "QUB", "YAT", "TIK", "TKO", "HAH", "POA"];
+  for (let i = 0; i < tklMain.length - 1; i++) {
+    addMtrEdge(`${tklMain[i]}|TKL`, `${tklMain[i + 1]}|TKL`, segRideMins(tklMain[i], tklMain[i + 1], "TKL"), "ride");
+  }
+  addMtrEdge("TKO|TKL", "LHP|TKL", 4.5, "ride");
+
+  const ealMain = ["ADM", "EXC", "HUH", "MKK", "KOT", "TAW", "SHT", "FOT", "UNI", "TAP", "TWO", "FAN", "SHS"];
+  for (let i = 0; i < ealMain.length - 1; i++) {
+    addMtrEdge(`${ealMain[i]}|EAL`, `${ealMain[i + 1]}|EAL`, segRideMins(ealMain[i], ealMain[i + 1], "EAL"), "ride");
+  }
+  addMtrEdge("SHT|EAL", "RAC|EAL", 3.0, "ride");
+  addMtrEdge("RAC|EAL", "UNI|EAL", 3.0, "ride");
+  addMtrEdge("SHS|EAL", "LOW|EAL", 4.5, "ride");
+  addMtrEdge("SHS|EAL", "LMC|EAL", 6.5, "ride");
+
+  const fastCrossPlatform = new Set(["MOK", "PRE", "YMT", "ADM", "NOP", "QUB", "YAT", "TIK", "LAK", "HUH", "TAW", "NAC"]);
+  Object.entries(MTR_STATION_LINES).forEach(([sta, lines]) => {
+    if (lines.length < 2) return;
+    const waitWalkMins = fastCrossPlatform.has(sta) ? 3.5 : 5.0;
+    for (let i = 0; i < lines.length; i++) {
+      for (let j = i + 1; j < lines.length; j++) {
+        if (lines[i] === "AEL" || lines[j] === "AEL") continue;
+        addMtrEdge(`${sta}|${lines[i]}`, `${sta}|${lines[j]}`, waitWalkMins, "transfer");
+      }
+    }
+  });
+
+  ["ISL", "TWL"].forEach(l1 => addMtrEdge(`CEN|${l1}`, "HOK|TCL", 6.5, "walk_transfer"));
+  addMtrEdge("TST|TWL", "ETS|TML", 6.5, "walk_transfer");
+})();
+
+function getTrainVisitedPathOnLine(line, startSta, destSta, viaRac = false) {
+  if (!startSta || !destSta || startSta === destSta) return [{ sta: startSta, accMin: 0 }];
+  const queue = [[{ sta: startSta, accMin: 0 }]];
+  const visited = new Set([startSta]);
+
+  while (queue.length > 0) {
+    const path = queue.shift();
+    const last = path[path.length - 1];
+    if (last.sta === destSta) return path;
+
+    const edges = MTR_GRAPH[`${last.sta}|${line}`] || [];
+    for (const e of edges) {
+      if (e.type !== "ride") continue;
+      const [nextSta, nextLine] = e.to.split("|");
+      if (nextLine !== line || visited.has(nextSta)) continue;
+      if (line === "EAL" && !viaRac && nextSta === "RAC" && destSta !== "RAC") continue;
+      if (line === "EAL" && viaRac && nextSta === "FOT" && destSta !== "FOT") continue;
+      visited.add(nextSta);
+      queue.push([...path, { sta: nextSta, accMin: last.accMin + e.mins }]);
+    }
+  }
+  return [{ sta: startSta, accMin: 0 }];
+}
+
+function computeMtrRouteFromTrackedTrain(originSta, boardLine, trainDestSta, targetSta, viaRac = false) {
+  if (originSta === targetSta) {
+    return { totalRideMin: 0, transfers: [], legs: [{ line: boardLine, from: originSta, to: targetSta }], oppositeDirWarn: false };
+  }
+
+  const staOf = key => key.split("|")[0];
+  const dist = {};
+  const prev = {};
+  const pq = [];
+
+  const trainStops = getTrainVisitedPathOnLine(boardLine, originSta, trainDestSta, viaRac);
+  const onTrainSet = new Set(trainStops.map(s => s.sta));
+
+  trainStops.forEach((step, idx) => {
+    const k = `${step.sta}|${boardLine}`;
+    dist[k] = step.accMin;
+    if (idx > 0) {
+      prev[k] = { key: `${trainStops[idx - 1].sta}|${boardLine}`, type: "ride" };
+    }
+    pq.push({ key: k, cost: step.accMin });
+
+    // 處理同線分支換乘（例如搭往羅湖車喺上水落車等下班往落馬洲車，或將軍澳轉康城）
+    if (idx > 0) {
+      const branchEdges = (MTR_GRAPH[k] || []).filter(e => e.type === "ride" && !onTrainSet.has(staOf(e.to)));
+      branchEdges.forEach(be => {
+        const branchCost = step.accMin + 4.5 + be.mins;
+        if (dist[be.to] === undefined || branchCost < dist[be.to]) {
+          dist[be.to] = branchCost;
+          prev[be.to] = { key: k, type: "branch_transfer" };
+          pq.push({ key: be.to, cost: branchCost });
+        }
+      });
+    }
+  });
+
+  (MTR_STATION_LINES[originSta] || []).forEach(l => {
+    const k = `${originSta}|${l}`;
+    if (dist[k] === undefined) {
+      dist[k] = 4.0;
+      pq.push({ key: k, cost: 4.0 });
+    }
+  });
+
+  while (pq.length > 0) {
+    pq.sort((a, b) => a.cost - b.cost);
+    const cur = pq.shift();
+    if (cur.cost > (dist[cur.key] ?? Infinity)) continue;
+    if (staOf(cur.key) === targetSta) break;
+
+    const edges = MTR_GRAPH[cur.key] || [];
+    for (const e of edges) {
+      if (cur.key === `${originSta}|${boardLine}` && e.type === "ride") {
+        const nSta = staOf(e.to);
+        if (!onTrainSet.has(nSta) && trainStops.length > 1) {
+          const altCost = cur.cost + 4.5 + e.mins;
+          if (altCost < (dist[e.to] ?? Infinity)) {
+            dist[e.to] = altCost;
+            prev[e.to] = { key: cur.key, type: "opposite_dir" };
+            pq.push({ key: e.to, cost: altCost });
+          }
+          continue;
+        }
+      }
+
+      const nextCost = cur.cost + e.mins;
+      if (nextCost < (dist[e.to] ?? Infinity)) {
+        dist[e.to] = nextCost;
+        prev[e.to] = { key: cur.key, type: e.type };
+        pq.push({ key: e.to, cost: nextCost });
+      }
+    }
+  }
+
+  let bestEndKey = null;
+  let bestCost = Infinity;
+  (MTR_STATION_LINES[targetSta] || []).forEach(l => {
+    const k = `${targetSta}|${l}`;
+    if (dist[k] !== undefined && dist[k] < bestCost) {
+      bestCost = dist[k];
+      bestEndKey = k;
+    }
+  });
+
+  if (!bestEndKey) return null;
+
+  const nodeChain = [];
+  let ptr = bestEndKey;
+  let oppositeDirWarn = false;
+  const branchTransferSet = new Set();
+
+  while (ptr) {
+    const [sta, line] = ptr.split("|");
+    nodeChain.unshift({ sta, line });
+    const p = prev[ptr];
+    if (p && p.type === "opposite_dir") oppositeDirWarn = true;
+    if (p && p.type === "branch_transfer") branchTransferSet.add(staOf(p.key));
+    ptr = p ? p.key : null;
+  }
+
+  const legs = [];
+  const transfers = [];
+  for (let i = 0; i < nodeChain.length; i++) {
+    const cur = nodeChain[i];
+    if (!legs.length) {
+      legs.push({ line: cur.line, from: cur.sta, to: cur.sta, stopsCount: 0 });
+    } else {
+      const lastLeg = legs[legs.length - 1];
+      if (cur.line === lastLeg.line && !branchTransferSet.has(lastLeg.to)) {
+        lastLeg.to = cur.sta;
+        lastLeg.stopsCount++;
+      } else {
+        transfers.push({
+          atSta: lastLeg.to,
+          toSta: cur.sta,
+          fromLine: lastLeg.line,
+          toLine: cur.line,
+          isWalk: lastLeg.to !== cur.sta,
+          isBranch: cur.line === lastLeg.line
+        });
+        legs.push({ line: cur.line, from: cur.sta, to: cur.sta, stopsCount: 0 });
+      }
+    }
+  }
+
+  return {
+    totalRideMin: Math.max(2, Math.round(bestCost)),
+    legs: legs.filter(l => l.from !== l.to),
+    transfers,
+    oppositeDirWarn
+  };
+}
+
+/* ========== 4. 非阻塞極速港鐵官方八達通成人車費庫 (修復 Key 配對與多源競速載入) ========== */
+
+function parseCsvRowSimple(line) {
+  const res = [];
+  let cur = "", inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') inQuotes = !inQuotes;
+    else if (ch === "," && !inQuotes) { res.push(cur.trim()); cur = ""; }
+    else cur += ch;
+  }
+  res.push(cur.trim());
+  return res;
+}
+
+function loadMtrOfficialFares() {
+  if (mtrFareTableMap) return Promise.resolve(mtrFareTableMap);
+  if (mtrFareLoadingPromise) return mtrFareLoadingPromise;
+
+  mtrFareLoadingPromise = (async () => {
+    try {
+      const cached = await new Promise(resolve => {
+        const req = indexedDB.open("MtrFareCacheDB", 1);
+        req.onupgradeneeded = e => e.target.result.createObjectStore("fares");
+        req.onsuccess = e => {
+          const tx = e.target.result.transaction("fares", "readonly");
+          const g = tx.objectStore("fares").get("mtr_oct_fares_v2");
+          g.onsuccess = () => resolve(g.result || null);
+          g.onerror = () => resolve(null);
+        };
+        req.onerror = () => resolve(null);
+      });
+      if (cached && Date.now() - cached.ts < 7 * 86400000 && cached.map && Object.keys(cached.map).length > 1000) {
+        mtrFareTableMap = cached.map;
+        return mtrFareTableMap;
+      }
+    } catch (e) {}
+
+    // 多通道同步競速拉取 CSV，邊條最快返就用邊條（唔會再排隊死等 10 秒）
+    const fetchCandidate = async (url) => {
+      const ctrl = new AbortController();
+      const tid = setTimeout(() => ctrl.abort(), 4500);
+      try {
+        const res = await fetch(url, { signal: ctrl.signal });
+        clearTimeout(tid);
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const txt = await res.text();
+        if (!txt || !txt.includes("OCT_ADT_FARE")) throw new Error("Invalid CSV");
+        return txt;
+      } catch (err) {
+        clearTimeout(tid);
+        throw err;
+      }
+    };
+
+    let csvText = "";
+    try {
+      csvText = await Promise.any([
+        fetchCandidate(MTR_FARE_CSV_URL),
+        fetchCandidate(`https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(MTR_FARE_CSV_URL)}`),
+        fetchCandidate(`https://api.allorigins.win/raw?url=${encodeURIComponent(MTR_FARE_CSV_URL)}`)
+      ]);
+    } catch (e) {}
+
+    if (csvText) {
+      const parsedMap = {};
+      const lines = csvText.split(/\r?\n/);
+      const headers = parseCsvRowSimple(lines.shift() || "");
+      const srcIdx = headers.indexOf("SRC_STATION_NAME");
+      const dstIdx = headers.indexOf("DEST_STATION_NAME");
+      const octIdx = headers.indexOf("OCT_ADT_FARE");
+
+      if (srcIdx >= 0 && dstIdx >= 0 && octIdx >= 0) {
+        for (const rowStr of lines) {
+          if (!rowStr) continue;
+          const cols = parseCsvRowSimple(rowStr);
+          const sCode = resolveMtrCode(cols[srcIdx]);
+          const dCode = resolveMtrCode(cols[dstIdx]);
+          const fare = parseFloat(cols[octIdx]);
+          if (MTR_STATIONS[sCode] && MTR_STATIONS[dCode] && isFinite(fare) && fare > 0) {
+            parsedMap[sCode + "_" + dCode] = fare;
+          }
+        }
+        if (Object.keys(parsedMap).length > 1000) {
+          mtrFareTableMap = parsedMap;
+          try {
+            const req = indexedDB.open("MtrFareCacheDB", 1);
+            req.onupgradeneeded = e => e.target.result.createObjectStore("fares");
+            req.onsuccess = e => {
+              const tx = e.target.result.transaction("fares", "readwrite");
+              tx.objectStore("fares").put({ ts: Date.now(), map: parsedMap }, "mtr_oct_fares_v2");
+            };
+          } catch (e) {}
+
+          // 如果用家已經開緊追蹤牌，載入完成後即時自動修正為官方精準車費
+          if (mtrActiveTracking) {
+            mtrActiveTracking.fare = getMtrAdultFare(
+              mtrActiveTracking.originSta,
+              mtrActiveTracking.destSta,
+              mtrActiveTracking.boardLine
+            );
+            updateMtrTrackingBannerAndNotification(false);
+          }
+          return mtrFareTableMap;
+        }
+      }
+    }
+    return null;
+  })();
+
+  return mtrFareLoadingPromise;
+}
+
+function getMtrAdultFare(origCode, destCode, boardLine = "") {
+  if (!origCode || !destCode || origCode === destCode) return 0;
+
+  // 機場快綫獨立票價表
+  const aelStations = new Set(["HOK", "KOW", "TSY", "AIR", "AWE"]);
+  if (boardLine === "AEL" || origCode === "AIR" || origCode === "AWE" || destCode === "AIR" || destCode === "AWE") {
+    if (aelStations.has(origCode) && aelStations.has(destCode)) {
+      const pair = [origCode, destCode].sort().join("_");
+      const aelFares = {
+        "AIR_AWE": 5.5, "AIR_HOK": 110, "AWE_HOK": 110,
+        "AIR_KOW": 100, "AWE_KOW": 100, "AIR_TSY": 65, "AWE_TSY": 65
+      };
+      if (aelFares[pair]) return aelFares[pair];
+    }
+  }
+
+  // 優先直接讀取官方 mtr_lines_fares.csv 八達通成人價
+  const key = origCode + "_" + destCode;
+  if (mtrFareTableMap && mtrFareTableMap[key] != null) {
+    return mtrFareTableMap[key];
+  }
+
+  // 未完成首次下載前嘅精準分區後備估算
+  const sA = MTR_STATIONS[origCode], sB = MTR_STATIONS[destCode];
+  if (!sA || !sB) return 9.7;
+  const distKm = haversineDistanceMeters(sA.lat, sA.lon, sB.lat, sB.lon) / 1000;
+  const crossHarbour = (sA.zone === "HK" && sB.zone !== "HK") || (sB.zone === "HK" && sA.zone !== "HK");
+  const isBorder = sA.zone === "BORDER" || sB.zone === "BORDER";
+
+  if (isBorder) {
+    const other = sA.zone === "BORDER" ? destCode : origCode;
+    if (other === "SHS" || other === "FAN") return 26.5;
+    if (["TWO", "TAP", "UNI", "FOT", "SHT", "TAW"].includes(other)) return 29.8;
+    if (MTR_STATIONS[other] && MTR_STATIONS[other].zone === "KLN") return 44.2;
+    if (MTR_STATIONS[other] && MTR_STATIONS[other].zone === "HK") return 53.8;
+    return 37.5;
+  }
+
+  let fare = distKm < 1.8 ? 4.9 : distKm < 4.2 ? 5.9 : distKm < 7.5 ? 7.3 : distKm < 12 ? 9.7 : distKm < 18 ? 12.2 : 16.5;
+  if (crossHarbour) fare = Math.max(10.8, fare + 5.8);
+  if (origCode === "DIS" || destCode === "DIS") fare = Math.max(fare, 15.9);
+  return Math.round(fare * 10) / 10;
+}
+
+/* ========== 5. 注入獨立可拉起港鐵抽屜 (#mtr-sheet) + 彩色揀站選單 + 目的地視窗 ========== */
+
+(function injectMtrSheetAndStyles() {
+  if (document.getElementById("mtr-module-styles")) return;
+
+  const style = document.createElement("style");
+  style.id = "mtr-module-styles";
+  style.textContent = `
+    /* 獨立港鐵上拉抽屜：手機版平時排喺巴士抽屜 (#bottom-sheet, z-index:1000) 後面並露出頂部拉柄；拉起時升到最前 */
+    #mtr-sheet {
+      position: fixed;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      height: 90vh;
+      max-height: 90vh;
+      background: rgba(255, 255, 255, 0.98);
+      backdrop-filter: blur(12px);
+      border-radius: 20px 20px 0 0;
+      box-shadow: 0 -8px 30px rgba(15, 23, 42, 0.22);
+      border: 1px solid rgba(190, 18, 60, 0.25);
+      display: flex;
+      flex-direction: column;
+      z-index: 998;
+      transform: translateY(var(--mtr-behind-y, calc(100% - 122px)));
+      transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease;
+      will-change: transform;
+    }
+    #mtr-sheet.mtr-dragging {
+      transition: none !important;
+    }
+    #mtr-sheet.mtr-active {
+      z-index: 1005;
+      border-color: #cbd5e1;
+      box-shadow: 0 -10px 36px rgba(15, 23, 42, 0.28);
+    }
+    #mtr-sheet.mtr-state-behind {
+      transform: translateY(var(--mtr-behind-y, calc(100% - 122px)));
+    }
+    #mtr-sheet.mtr-state-peek {
+      transform: translateY(54%);
+    }
+    #mtr-sheet.mtr-state-half {
+      transform: translateY(22%);
+    }
+    #mtr-sheet.mtr-state-full {
+      transform: translateY(0%);
+    }
+
+    /* 後層露出時頂欄用醒目深酒紅漸層，等用家一眼見到路線後面有港鐵抽屜可以拉起 */
+    #mtr-sheet-header {
+      padding: 7px 16px 10px;
+      cursor: grab;
+      user-select: none;
+      touch-action: none;
+      border-radius: 20px 20px 0 0;
+      flex-shrink: 0;
+      background: linear-gradient(90deg, #881337, #be123c);
+      color: #ffffff;
+      border-bottom: 1px solid rgba(255,255,255,0.15);
+      transition: background 0.22s ease, color 0.22s ease;
+    }
+    #mtr-sheet.mtr-active #mtr-sheet-header {
+      background: #ffffff;
+      color: #0f172a;
+      border-bottom: 1px solid #e2e8f0;
+    }
+    #mtr-sheet .mtr-pill {
+      width: 44px;
+      height: 5px;
+      background: rgba(255, 255, 255, 0.55);
+      border-radius: 999px;
+      margin: 0 auto 6px;
+    }
+    #mtr-sheet.mtr-active .mtr-pill {
+      background: #cbd5e1;
+    }
+    .mtr-header-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .mtr-header-brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 14.5px;
+      font-weight: 800;
+      min-width: 0;
+    }
+    #mtr-sheet.mtr-active .mtr-header-brand {
+      color: #9f1239;
+    }
+    .mtr-header-hint {
+      font-size: 11.5px;
+      font-weight: 700;
+      padding: 2px 9px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.2);
+      color: #fff1f2;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    #mtr-sheet.mtr-active .mtr-header-hint {
+      background: #ffe4e6;
+      color: #be123c;
+    }
+    .mtr-header-btns {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .btn-mtr-sheet-ctrl {
+      padding: 4px 10px;
+      font-size: 12px;
+      font-weight: 800;
+      border-radius: 999px;
+      border: none;
+      margin: 0;
+      cursor: pointer;
+      background: rgba(255,255,255,0.22);
+      color: #ffffff;
+    }
+    #mtr-sheet.mtr-active .btn-mtr-sheet-ctrl {
+      background: #ffe4e6;
+      color: #be123c;
+    }
+    #btnMtrHideToBack {
+      display: none;
+      background: #f1f5f9;
+      color: #475569;
+    }
+    #mtr-sheet.mtr-active #btnMtrHideToBack {
+      display: inline-block;
+    }
+
+    /* ★ 平板模式 (>= 768px)：港鐵抽屜獨立泊喺巴士路線抽屜隔離（左邊），拉起一次過並列晒所有方向 */
+    @media (min-width: 768px) {
+      #mtr-sheet {
+        left: auto;
+        right: 556px;
+        width: calc(100vw - 572px);
+        min-width: 400px;
+        max-width: 820px;
+        z-index: 1001;
+      }
+      #mtr-sheet.mtr-state-behind {
+        transform: translateY(calc(100% - 76px)) !important;
+      }
+      #mtr-sheet.mtr-active {
+        z-index: 1005;
+        width: min(820px, calc(100vw - 572px));
+      }
+    }
+
+    /* 港鐵抽屜主體 */
+    #mtr-sheet-body {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      padding: 12px 14px 55vh;
+      background: #f8fafc;
+    }
+
+    /* 彩色背景揀站選單（唔顯示「XX綫」括號字眼，直接用港鐵路線代表色做底色） */
+    .mtr-station-picker-wrap {
+      position: relative;
+      display: flex;
+      align-items: stretch;
+      gap: 8px;
+    }
+    #mtrStationColorBtn {
+      flex: 1;
+      min-width: 0;
+      padding: 9px 14px;
+      border-radius: 12px;
+      border: 2px solid rgba(255,255,255,0.85);
+      color: #ffffff;
+      font-size: 16px;
+      font-weight: 900;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      cursor: pointer;
+      margin: 0;
+      box-shadow: 0 3px 10px rgba(15, 23, 42, 0.16);
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+    }
+    .mtr-sta-btn-dist {
+      font-size: 12px;
+      font-weight: 800;
+      background: rgba(0, 0, 0, 0.28);
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+    .btn-mtr-nearest {
+      flex-shrink: 0;
+      padding: 0 12px;
+      font-size: 12.5px;
+      font-weight: 800;
+      border-radius: 12px;
+      background: #ffffff;
+      color: #be123c;
+      border: 1px solid #fda4af;
+      margin: 0;
+      box-shadow: 0 2px 6px rgba(15, 23, 42, 0.06);
+    }
+
+    /* 展開式彩色車站 Dropdown 面板 */
+    #mtrColorDropdownPanel {
+      display: none;
+      margin-top: 8px;
+      background: #ffffff;
+      border: 1px solid #cbd5e1;
+      border-radius: 14px;
+      padding: 10px;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18);
+      max-height: 48vh;
+      overflow-y: auto;
+    }
+    #mtrColorDropdownPanel.open {
+      display: block;
+    }
+    #mtrStaFilterInput {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      font-size: 13.5px;
+      margin-bottom: 8px;
+      outline: none;
+    }
+    .mtr-color-sta-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+      gap: 6px;
+    }
+    .mtr-color-sta-item {
+      padding: 8px 8px;
+      border-radius: 9px;
+      border: none;
+      color: #ffffff;
+      font-size: 13.5px;
+      font-weight: 900;
+      text-align: center;
+      cursor: pointer;
+      margin: 0;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.5);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 2px;
+      box-shadow: 0 2px 5px rgba(15, 23, 42, 0.12);
+    }
+    .mtr-color-sta-item.selected-sta {
+      outline: 3px solid #0f172a;
+      outline-offset: 1px;
+    }
+    .mtr-color-sta-sub {
+      font-size: 10.5px;
+      font-weight: 700;
+      background: rgba(0, 0, 0, 0.28);
+      padding: 1px 6px;
+      border-radius: 999px;
+    }
+    .mtr-line-color-divider {
+      height: 4px;
+      border-radius: 999px;
+      margin: 10px 0 6px;
+    }
+
+    /* 步行導航橫額 */
+    #mtrWalkInfoBox {
+      margin-top: 8px;
+      padding: 7px 12px;
+      background: #f3e8ff;
+      color: #6b21a8;
+      border-left: 3px solid #9333ea;
+      border-radius: 8px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    #mtrWalkInfoBox:empty { display: none; }
+
+    /* 手機版方向快速切換 Chips + 滑動提示 */
+    #mtrSwipeChips {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      overflow-x: auto;
+      padding: 8px 2px 4px;
+      scrollbar-width: none;
+    }
+    #mtrSwipeChips::-webkit-scrollbar { display: none; }
+    .mtr-dir-chip {
+      flex-shrink: 0;
+      padding: 4px 11px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      border: none;
+      background: #e2e8f0;
+      color: #475569;
+      cursor: pointer;
+      margin: 0;
+    }
+    .mtr-dir-chip.active {
+      color: #ffffff;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.2);
+    }
+    .mtr-swipe-hint {
+      font-size: 11px;
+      color: #64748b;
+      text-align: center;
+      margin: 2px 0 6px;
+      font-weight: 600;
+    }
+    @media (min-width: 768px) {
+      #mtrSwipeChips, .mtr-swipe-hint { display: none !important; }
+    }
+
+    /* 方向卡片：手機左右 Swap 單張；平板 Grid 一次過晒冷 */
+    #mtrCardsContainer {
+      margin-top: 4px;
+      touch-action: pan-y;
+    }
+    @media (min-width: 768px) {
+      #mtrCardsContainer {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+        gap: 12px;
+        margin-top: 10px;
+      }
+    }
+
+    .mtr-dir-card {
+      background: #ffffff;
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1px solid #e2e8f0;
+      box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06);
+    }
+    @media (max-width: 767px) {
+      .mtr-dir-card.mobile-hidden { display: none; }
+    }
+
+    .mtr-card-header {
+      padding: 12px 14px;
+      color: #ffffff;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+    }
+    .mtr-card-line-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .mtr-line-pill {
+      background: rgba(0,0,0,0.22);
+      padding: 2px 8px;
+      border-radius: 999px;
+    }
+    .mtr-card-big-dest {
+      font-size: 21px;
+      font-weight: 900;
+      letter-spacing: 0.3px;
+      line-height: 1.25;
+    }
+
+    .mtr-train-list {
+      padding: 6px 10px;
+    }
+    .mtr-train-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 9px 4px;
+      border-bottom: 1px dashed #e2e8f0;
+    }
+    .mtr-train-row:last-child { border-bottom: none; }
+    .mtr-train-row.tracked {
+      background: #dbeafe;
+      border-radius: 8px;
+      padding: 9px 8px;
+    }
+    .mtr-train-left {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      min-width: 0;
+    }
+    .mtr-seq-circle {
+      width: 22px;
+      height: 22px;
+      border-radius: 50%;
+      background: #f1f5f9;
+      color: #334155;
+      font-size: 11.5px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .mtr-train-dest-tag {
+      font-size: 14.5px;
+      font-weight: 800;
+      color: #0f172a;
+    }
+    .mtr-train-dest-tag.branch-a {
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: #e0f2fe;
+      color: #0369a1;
+      border: 1px solid #bae6fd;
+    }
+    .mtr-train-dest-tag.branch-b {
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: #dcfce7;
+      color: #15803d;
+      border: 1px solid #86efac;
+    }
+    .mtr-train-dest-tag.branch-short {
+      padding: 2px 8px;
+      border-radius: 6px;
+      background: #fef3c7;
+      color: #92400e;
+      border: 1px solid #fde68a;
+    }
+    .mtr-plat-badge {
+      font-size: 11px;
+      font-weight: 700;
+      color: #475569;
+      background: #f1f5f9;
+      border: 1px solid #cbd5e1;
+      padding: 1px 6px;
+      border-radius: 5px;
+      flex-shrink: 0;
+    }
+    .mtr-train-right {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+    .mtr-eta-text {
+      text-align: right;
+      font-size: 14px;
+      font-weight: 800;
+      color: #1565c0;
+    }
+    .mtr-eta-text.imminent {
+      color: #d32f2f;
+    }
+    .mtr-eta-hhmm {
+      display: block;
+      font-size: 11px;
+      font-weight: 600;
+      color: #64748b;
+    }
+
+    .mtr-map-pin {
+      color: #ffffff;
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 900;
+      border: 2px solid #ffffff;
+      box-shadow: 0 3px 8px rgba(0,0,0,0.4);
+      white-space: nowrap;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.45);
+    }
+
+    /* 揀選目的地港鐵站 Modal（同樣用路線顏色做背景，無須括號寫線名） */
+    #mtr-dest-modal {
+      display: none;
+      position: fixed;
+      inset: 0;
+      z-index: 9800;
+      background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(4px);
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    #mtr-dest-modal.active { display: flex; }
+    .mtr-dest-dialog {
+      width: 100%;
+      max-width: 480px;
+      max-height: 82vh;
+      background: #ffffff;
+      border-radius: 16px;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      box-shadow: 0 12px 36px rgba(0,0,0,0.35);
+    }
+    .mtr-dest-header {
+      padding: 12px 14px;
+      background: #0f172a;
+      color: #ffffff;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .mtr-dest-search {
+      padding: 10px 12px;
+      border-bottom: 1px solid #e2e8f0;
+      background: #f8fafc;
+    }
+    #mtrDestSearchInput {
+      width: 100%;
+      padding: 8px 10px;
+      border-radius: 8px;
+      border: 1px solid #cbd5e1;
+      font-size: 14px;
+      outline: none;
+    }
+    #mtrDestStationList {
+      flex: 1;
+      overflow-y: auto;
+      padding: 10px 12px;
+    }
+    .mtr-dest-color-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+    .mtr-dest-sta-btn {
+      padding: 8px 6px;
+      font-size: 13px;
+      font-weight: 900;
+      border-radius: 8px;
+      border: none;
+      color: #ffffff;
+      text-shadow: 0 1px 2px rgba(0,0,0,0.45);
+      margin: 0;
+      cursor: pointer;
+      text-align: center;
+    }
+  `;
+  document.head.appendChild(style);
+
+  // 建立獨立嘅 #mtr-sheet（同巴士 #bottom-sheet 平級，放喺路線抽屜後面）
+  const mtrSheet = document.createElement("div");
+  mtrSheet.id = "mtr-sheet";
+  mtrSheet.className = "mtr-state-behind";
+  mtrSheet.innerHTML = `
+    <div id="mtr-sheet-header">
+      <div class="mtr-pill"></div>
+      <div class="mtr-header-row">
+        <div class="mtr-header-brand">
+          <span>🚇 港鐵實時到站</span>
+          <span class="mtr-header-hint" id="mtrSheetHint">向上拉查看港鐵</span>
+        </div>
+        <div class="mtr-header-btns">
+          <button type="button" class="btn-mtr-sheet-ctrl" id="btnMtrSheetStep">拉起 ▲</button>
+          <button type="button" class="btn-mtr-sheet-ctrl" id="btnMtrHideToBack">收返後面 ▼</button>
+        </div>
+      </div>
+    </div>
+    <div id="mtr-sheet-body">
+      <div class="mtr-station-picker-wrap">
+        <button type="button" id="mtrStationColorBtn">
+          <span id="mtrStationBtnLabel">揀選港鐵站</span>
+          <span class="mtr-sta-btn-dist" id="mtrStationBtnDist">▼</span>
+        </button>
+        <button type="button" class="btn-mtr-nearest" id="btnMtrNearest">📍 最近站</button>
+      </div>
+      <div id="mtrColorDropdownPanel">
+        <input type="text" id="mtrStaFilterInput" placeholder="輸入港鐵站名快速搜尋..." />
+        <div id="mtrColorStaListInner"></div>
+      </div>
+      <div id="mtrWalkInfoBox"></div>
+      <div id="mtrSwipeChips"></div>
+      <div class="mtr-swipe-hint" id="mtrSwipeHint">👈 左右滑動更換方向及線路 👉</div>
+      <div id="mtrCardsContainer"></div>
+    </div>
+  `;
+  document.body.appendChild(mtrSheet);
+
+  // 建立「揀選目的地港鐵站」Modal
+  const destModal = document.createElement("div");
+  destModal.id = "mtr-dest-modal";
+  destModal.innerHTML = `
+    <div class="mtr-dest-dialog">
+      <div class="mtr-dest-header">
+        <strong id="mtrDestModalTitle" style="font-size:15px;">🚇 你想去邊個港鐵站？</strong>
+        <button type="button" id="btnCloseMtrDestModal" style="background:transparent;border:none;color:#cbd5e1;font-size:18px;padding:0 4px;margin:0;">✕</button>
+      </div>
+      <div class="mtr-dest-search">
+        <input type="text" id="mtrDestSearchInput" placeholder="輸入港鐵站名篩選（例如：金鐘、羅湖、屯門）..." />
+      </div>
+      <div id="mtrDestStationList"></div>
+    </div>
+  `;
+  document.body.appendChild(destModal);
+})();
+
+/* ========== 6. 自動計算後層微凸出高度 & 抽屜拉動控制 ========== */
+
+function syncMtrBehindOffsetWithBusSheet() {
+  const mtrSheet = document.getElementById("mtr-sheet");
+  const busSheet = document.getElementById("bottom-sheet");
+  if (!mtrSheet || !busSheet || window.innerWidth >= 768) return;
+  if (mtrSheetState !== "behind") return;
+
+  // 讀取現時巴士抽屜頂部位置，令港鐵抽屜喺後面剛剛好高過巴士抽屜 46px 露出標題列
+  const busRect = busSheet.getBoundingClientRect();
+  const desiredTop = Math.max(8, busRect.top - 46);
+  const sheetH = mtrSheet.offsetHeight || Math.round(window.innerHeight * 0.9);
+  const translatePx = Math.max(0, desiredTop - (window.innerHeight - sheetH));
+  mtrSheet.style.setProperty("--mtr-behind-y", `${Math.round(translatePx)}px`);
+}
+
+function setMtrSheetState(nextState) {
+  const mtrSheet = document.getElementById("mtr-sheet");
+  const stepBtn = document.getElementById("btnMtrSheetStep");
+  const hintEl = document.getElementById("mtrSheetHint");
+  if (!mtrSheet) return;
+
+  mtrSheetState = nextState;
+  mtrSheet.classList.remove("mtr-state-behind", "mtr-state-peek", "mtr-state-half", "mtr-state-full");
+  mtrSheet.classList.add(`mtr-state-${nextState}`);
+
+  const isActive = nextState !== "behind";
+  mtrSheet.classList.toggle("mtr-active", isActive);
+
+  if (isActive) {
+    // 手機版拉起港鐵抽屜時，自動將前層巴士抽屜收低一格避免遮擋
+    if (window.innerWidth < 768 && currentSheetState === "full") {
+      setBottomSheetState("collapsed");
+    }
+
+    if (!mtrSelectedSta) {
+      selectDefaultOrNearestMtrStation();
+    } else {
+      updateMtrStationTriggerUI();
+      plotMtrStationAndWalkOnMap(mtrSelectedSta, false);
+      loadMtrStationSchedule(mtrSelectedSta, true);
+    }
+
+    if (stepBtn) {
+      stepBtn.textContent = nextState === "full" ? "睇地圖 ▼" : nextState === "half" ? "全開 ▲" : "半開 ▲";
+    }
+    if (hintEl) {
+      hintEl.textContent = mtrSelectedSta ? `${getMtrStationName(mtrSelectedSta)}站` : "揀選港鐵站";
+    }
+
+    if (mtrRefreshTimer) clearInterval(mtrRefreshTimer);
+    mtrRefreshTimer = setInterval(() => {
+      if (mtrSheetState === "behind" || !mtrSelectedSta) return;
+      loadMtrStationSchedule(mtrSelectedSta, true);
+      plotMtrStationAndWalkOnMap(mtrSelectedSta, false);
+    }, 20000);
+  } else {
+    mtrDropdownOpen = false;
+    const dd = document.getElementById("mtrColorDropdownPanel");
+    if (dd) dd.classList.remove("open");
+
+    if (mtrRefreshTimer) {
+      clearInterval(mtrRefreshTimer);
+      mtrRefreshTimer = null;
+    }
+    clearMtrMapLayers();
+    if (originStopId && typeof drawUserWalkRouteToStop === "function") {
+      drawUserWalkRouteToStop(originStopId);
+    }
+
+    if (stepBtn) stepBtn.textContent = "拉起 ▲";
+    if (hintEl) hintEl.textContent = mtrSelectedSta ? `${getMtrStationName(mtrSelectedSta)}站 · 拉起查看` : "向上拉查看港鐵";
+    setTimeout(syncMtrBehindOffsetWithBusSheet, 40);
+    setTimeout(syncMtrBehindOffsetWithBusSheet, 340);
+  }
+}
+
+/* ========== 7. 彩色背景揀站選單（有距離按距離排；無距離按線路色塊分組，唔寫括號線名） ========== */
+
+function updateMtrStationTriggerUI() {
+  const btn = document.getElementById("mtrStationColorBtn");
+  const lbl = document.getElementById("mtrStationBtnLabel");
+  const distSpan = document.getElementById("mtrStationBtnDist");
+  const hintEl = document.getElementById("mtrSheetHint");
+  if (!btn || !lbl || !distSpan) return;
+
+  const code = mtrSelectedSta || "TAW";
+  const st = MTR_STATIONS[code];
+  btn.style.background = getStationLineBackgroundCSS(code);
+  lbl.textContent = `🚇 ${st ? st.tc : code}`;
+
+  if (st && userLat != null && userLon != null) {
+    const d = Math.round(haversineDistanceMeters(userLat, userLon, st.lat, st.lon));
+    distSpan.textContent = `${d >= 1000 ? (d / 1000).toFixed(1) + "km" : d + "m"} ▼`;
+  } else {
+    distSpan.textContent = "更換車站 ▼";
+  }
+
+  if (hintEl && mtrSheetState !== "behind") {
+    hintEl.textContent = `${st ? st.tc : code}站`;
+  }
+}
+
+function selectDefaultOrNearestMtrStation() {
+  if (userLat != null && userLon != null) {
+    let bestCode = "MOK", bestDist = Infinity;
+    Object.entries(MTR_STATIONS).forEach(([code, info]) => {
+      const d = haversineDistanceMeters(userLat, userLon, info.lat, info.lon);
+      if (d < bestDist) { bestDist = d; bestCode = code; }
+    });
+    mtrSelectedSta = bestCode;
+  } else if (!mtrSelectedSta) {
+    mtrSelectedSta = "MOK";
+  }
+  updateMtrStationTriggerUI();
+  plotMtrStationAndWalkOnMap(mtrSelectedSta, true);
+  loadMtrStationSchedule(mtrSelectedSta, false);
+}
+
+function renderMtrColorStationDropdown(filterKw = "") {
+  const listInner = document.getElementById("mtrColorStaListInner");
+  if (!listInner) return;
+  listInner.innerHTML = "";
+  const kw = String(filterKw || "").trim().toLowerCase();
+
+  const onPickStation = (code) => {
+    mtrSelectedSta = code;
+    mtrDropdownOpen = false;
+    const dd = document.getElementById("mtrColorDropdownPanel");
+    if (dd) dd.classList.remove("open");
+    updateMtrStationTriggerUI();
+    plotMtrStationAndWalkOnMap(code, true);
+    loadMtrStationSchedule(code, false);
+  };
+
+  if (userLat != null && userLon != null) {
+    const sorted = Object.entries(MTR_STATIONS)
+      .filter(([code, info]) => !kw || info.tc.includes(kw) || info.en.toLowerCase().includes(kw) || code.toLowerCase().includes(kw))
+      .map(([code, info]) => ({
+        code,
+        tc: info.tc,
+        dist: Math.round(haversineDistanceMeters(userLat, userLon, info.lat, info.lon))
+      }))
+      .sort((a, b) => a.dist - b.dist);
+
+    const grid = document.createElement("div");
+    grid.className = "mtr-color-sta-grid";
+    sorted.forEach(item => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mtr-color-sta-item" + (item.code === mtrSelectedSta ? " selected-sta" : "");
+      btn.style.background = getStationLineBackgroundCSS(item.code);
+      const distStr = item.dist >= 1000 ? `${(item.dist / 1000).toFixed(1)}km` : `${item.dist}m`;
+      btn.innerHTML = `<span>${item.tc}</span><span class="mtr-color-sta-sub">${distStr}</span>`;
+      btn.onclick = () => onPickStation(item.code);
+      grid.appendChild(btn);
+    });
+    listInner.appendChild(grid);
+  } else {
+    Object.entries(MTR_LINES).forEach(([lineCode, lineObj]) => {
+      const stations = lineObj.stations.filter(code => {
+        const info = MTR_STATIONS[code];
+        return info && (!kw || info.tc.includes(kw) || info.en.toLowerCase().includes(kw) || code.toLowerCase().includes(kw));
+      });
+      if (!stations.length) return;
+
+      const bar = document.createElement("div");
+      bar.className = "mtr-line-color-divider";
+      bar.style.background = lineObj.color;
+      listInner.appendChild(bar);
+
+      const grid = document.createElement("div");
+      grid.className = "mtr-color-sta-grid";
+      stations.forEach(code => {
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "mtr-color-sta-item" + (code === mtrSelectedSta ? " selected-sta" : "");
+        btn.style.background = getStationLineBackgroundCSS(code);
+        btn.innerHTML = `<span>${MTR_STATIONS[code].tc}</span>`;
+        btn.onclick = () => onPickStation(code);
+        grid.appendChild(btn);
+      });
+      listInner.appendChild(grid);
+    });
+  }
+}
+
+/* ========== 8. 地圖標記港鐵站 ＋ OSRM 步行導航（1.5 倍步速） ========== */
+
+function clearMtrMapLayers() {
+  if (mtrStationMarker && map && map.hasLayer(mtrStationMarker)) {
+    map.removeLayer(mtrStationMarker);
+    mtrStationMarker = null;
+  }
+  if (mtrWalkRouteLayer && map && map.hasLayer(mtrWalkRouteLayer)) {
+    map.removeLayer(mtrWalkRouteLayer);
+    mtrWalkRouteLayer = null;
+  }
+}
+
+async function plotMtrStationAndWalkOnMap(staCode, panMap = true) {
+  const walkBox = document.getElementById("mtrWalkInfoBox");
+  clearMtrMapLayers();
+
+  if (mtrSheetState === "behind" || !staCode || !MTR_STATIONS[staCode] || !map) {
+    if (walkBox) walkBox.textContent = "";
+    return;
+  }
+
+  const st = MTR_STATIONS[staCode];
+  const bgCss = getStationLineBackgroundCSS(staCode);
+  const primaryLine = (MTR_STATION_LINES[staCode] || ["TWL"])[0];
+  const lineHex = (MTR_LINES[primaryLine] && MTR_LINES[primaryLine].color) || "#be123c";
+
+  const icon = L.divIcon({
+    className: "",
+    html: `<div class="mtr-map-pin" style="background:${bgCss};">🚇 ${st.tc}站</div>`,
+    iconSize: L.point(92, 28),
+    iconAnchor: L.point(46, 14)
+  });
+
+  mtrStationMarker = L.marker([st.lat, st.lon], { icon, zIndexOffset: 2400 })
+    .addTo(map)
+    .bindPopup(`<b>🚇 港鐵${st.tc}站</b>`);
+
+  if (userLat == null || userLon == null) {
+    mtrWalkDistMeters = null;
+    mtrWalkMinutes = null;
+    if (walkBox) walkBox.textContent = `📍 開啟定位後可自動計算行去「${st.tc}站」仲有幾多米同幾多分鐘到`;
+    if (panMap) map.setView([st.lat, st.lon], 16);
+    return;
+  }
+
+  const straightDist = haversineDistanceMeters(userLat, userLon, st.lat, st.lon);
+  mtrWalkDistMeters = Math.round(straightDist * 1.2);
+  mtrWalkMinutes = mtrWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(mtrWalkMinCalc(mtrWalkDistMeters)));
+
+  if (walkBox) {
+    walkBox.textContent = `🚶 步行導航去「${st.tc}站」：計算路線中...`;
+  }
+
+  if (panMap) {
+    if (straightDist < 3500) {
+      const bottomPad = window.innerWidth < 768 ? Math.round(window.innerHeight * 0.56) : 80;
+      map.fitBounds(
+        L.latLngBounds([[userLat, userLon], [st.lat, st.lon]]),
+        { paddingTopLeft: L.point(36, 46), paddingBottomRight: L.point(36, bottomPad), maxZoom: 16 }
+      );
+    } else {
+      map.setView([st.lat, st.lon], 15);
+    }
+  }
+
+  if (straightDist >= 15 && straightDist < 15000) {
+    try {
+      const coordsStr = `${userLon.toFixed(6)},${userLat.toFixed(6)};${st.lon.toFixed(6)},${st.lat.toFixed(6)}`;
+      const res = await fetch(
+        `https://routing.openstreetmap.de/routed-foot/route/v1/foot/${coordsStr}?overview=full&geometries=geojson`,
+        { cache: "no-store" }
+      );
+      if (res.ok) {
+        const data = await res.json();
+        const firstRoute = data && data.routes ? data.routes[0] : null;
+        if (mtrSheetState !== "behind" && mtrSelectedSta === staCode && firstRoute && firstRoute.geometry) {
+          const coords = firstRoute.geometry.coordinates.map(([lon, lat]) => [lat, lon]);
+          mtrWalkRouteLayer = L.polyline(coords, {
+            color: lineHex,
+            weight: 5,
+            dashArray: "7, 8",
+            opacity: 0.9
+          }).addTo(map);
+
+          mtrWalkDistMeters = Math.round(firstRoute.distance || straightDist);
+          mtrWalkMinutes = mtrWalkDistMeters < 20 ? 0 : Math.max(1, Math.round(mtrWalkMinCalc(mtrWalkDistMeters)));
+        }
+      }
+    } catch (e) {}
+  }
+
+  if (walkBox && mtrSheetState !== "behind" && mtrSelectedSta === staCode) {
+    walkBox.textContent = mtrWalkDistMeters < 25
+      ? `🚶 你已到達「${st.tc}站」附近（仲有 ${mtrWalkDistMeters} 米，<1 分鐘到）`
+      : `🚶 步行導航去「${st.tc}站」：仲有 ${mtrWalkDistMeters} 米（約 ${mtrWalkMinutes} 分鐘到）`;
+  }
+}
+
+/* ========== 9. 實時班次拉取（修正東鐵/將軍澳分支時間排序與真實總站對應） ========== */
+
+function parseMtrTimeStr(timeStr) {
+  if (!timeStr || timeStr === "-") return null;
+  const iso = String(timeStr).trim().replace(" ", "T") + "+08:00";
+  const d = new Date(iso);
+  return isNaN(d.getTime()) ? null : d;
+}
+
+async function loadMtrStationSchedule(staCode, keepCardIndex = false) {
+  if (!staCode || !MTR_STATIONS[staCode]) return;
+  const container = document.getElementById("mtrCardsContainer");
+  const lines = MTR_STATION_LINES[staCode] || [];
+  if (!keepCardIndex) mtrActiveCardIdx = 0;
+
+  if (container && !keepCardIndex) {
+    container.innerHTML = `<div style="padding:26px;text-align:center;color:#64748b;font-weight:700;">⏳ 正在讀取「${getMtrStationName(staCode)}站」實時班次...</div>`;
+  }
+
+  const results = await Promise.all(
+    lines.map(async (lineCode) => {
+      try {
+        const res = await fetch(`${MTR_SCHEDULE_API}?line=${lineCode}&sta=${staCode}&lang=TC`, { cache: "no-store" });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        const json = await res.json();
+        const key = `${lineCode}-${staCode}`;
+        const stationNode = json && json.data && json.data[key] ? json.data[key] : {};
+        const sysClock = parseMtrTimeStr(stationNode.curr_time || json.curr_time) || new Date();
+        return { lineCode, up: stationNode.UP || [], down: stationNode.DOWN || [], isDelay: json.isdelay === "Y", sysClock };
+      } catch (e) {
+        return { lineCode, up: [], down: [], isDelay: false, sysClock: new Date() };
+      }
+    })
+  );
+
+  const cards = [];
+
+  results.forEach(({ lineCode, up, down, isDelay, sysClock }) => {
+    const lineMeta = MTR_LINES[lineCode];
+    const dirConf = MTR_DIRECTION_META[lineCode] || {};
+
+    ["UP", "DOWN"].forEach(dirKey => {
+      const rawTrains = Array.isArray(dirKey === "UP" ? up : down) ? (dirKey === "UP" ? up : down) : [];
+      const meta = dirConf[dirKey] || { label: "", terms: [] };
+
+      // 落車總站方向（例如羅湖站再向北、屯門站再向屯門）且無列車時隱藏空白卡
+      if (!rawTrains.length && meta.terms.length === 1 && meta.terms[0] === staCode) {
+        return;
+      }
+
+      // ★ 關鍵修正：API 喺東鐵綫(羅湖/落馬洲)及將軍澳綫(寶琳/康城)經常按分支分批回傳而非到站時間先後！
+      // 呢度強制逐班解析真實 dest 代碼 + 以實際到站時間排序，確保第 1、2、3、4 班車 100% 對應月台幕門顯示屏！
+      const validTrains = rawTrains
+        .filter(t => t && t.dest && (t.time || t.ttnt != null))
+        .map(t => {
+          const destCode = resolveMtrCode(t.dest);
+          const viaRac = String(t.route || "").trim().toUpperCase() === "RAC";
+          const etaDate = parseMtrTimeStr(t.time);
+
+          let ttnt = NaN;
+          if (t.ttnt !== undefined && t.ttnt !== null && String(t.ttnt).trim() !== "") {
+            ttnt = parseInt(String(t.ttnt).trim(), 10);
+          }
+          if (!isFinite(ttnt) && etaDate) {
+            ttnt = Math.max(0, Math.round((etaDate.getTime() - sysClock.getTime()) / 60000));
+          }
+          if (!isFinite(ttnt)) ttnt = 0;
+
+          // 本地時間對齊：用實際倒數分鐘推算手機本地預計上車時刻，避免伺服器時差
+          const localBoardDate = etaDate || new Date(Date.now() + ttnt * 60000);
+
+          return {
+            destCode,
+            destName: getMtrStationName(destCode) + (viaRac ? " (經馬場)" : ""),
+            viaRac,
+            plat: String(t.plat || "1").trim(),
+            ttnt: Math.max(0, ttnt),
+            etaMs: etaDate ? etaDate.getTime() : (Date.now() + ttnt * 60000),
+            etaDate: localBoardDate
+          };
+        })
+        .sort((a, b) => (a.etaMs - b.etaMs) || (a.ttnt - b.ttnt));
+
+      const uniqueDestCodes = Array.from(new Set(validTrains.map(t => t.destCode).filter(Boolean)));
+      const uniqueDestNames = Array.from(new Set(validTrains.map(t => getMtrStationName(t.destCode)).filter(Boolean)));
+      const headerDestText = uniqueDestNames.length > 0 ? uniqueDestNames.join(" / ") : meta.label;
+
+      cards.push({
+        id: `${lineCode}_${dirKey}`,
+        lineCode,
+        lineName: lineMeta.name,
+        color: lineMeta.color,
+        dirKey,
+        mainTerms: meta.terms,
+        headerDestText,
+        uniqueDestCodes,
+        isDelay,
+        trains: validTrains
+      });
+    });
+  });
+
+  mtrCardsData = cards;
+  if (mtrActiveCardIdx >= mtrCardsData.length) mtrActiveCardIdx = 0;
+
+  renderMtrDirectionCards();
+  refreshActiveMtrTrackingState();
+}
+
+function getBranchBadgeClass(card, destCode) {
+  if (card.uniqueDestCodes.length <= 1 && card.mainTerms.includes(destCode)) return "";
+  if (destCode === "LMC" || destCode === "LHP" || destCode === "HOM" || destCode === "AIR") return "branch-b";
+  if (!card.mainTerms.includes(destCode)) return "branch-short";
+  return "branch-a";
+}
+
+function renderMtrDirectionCards() {
+  const chipsDiv = document.getElementById("mtrSwipeChips");
+  const hintDiv = document.getElementById("mtrSwipeHint");
+  const container = document.getElementById("mtrCardsContainer");
+  if (!container) return;
+
+  if (chipsDiv) chipsDiv.innerHTML = "";
+  container.innerHTML = "";
+
+  if (!mtrCardsData.length) {
+    if (hintDiv) hintDiv.style.display = "none";
+    container.innerHTML = `<div style="padding:26px;text-align:center;color:#64748b;">暫時無此站列車到站資料。</div>`;
+    return;
+  }
+
+  if (hintDiv) hintDiv.style.display = mtrCardsData.length > 1 ? "" : "none";
+
+  mtrCardsData.forEach((card, idx) => {
+    if (chipsDiv) {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "mtr-dir-chip" + (idx === mtrActiveCardIdx ? " active" : "");
+      if (idx === mtrActiveCardIdx) chip.style.backgroundColor = card.color;
+      chip.textContent = `往${card.headerDestText}`;
+      chip.onclick = () => {
+        mtrActiveCardIdx = idx;
+        renderMtrDirectionCards();
+      };
+      chipsDiv.appendChild(chip);
+    }
+
+    const cardEl = document.createElement("div");
+    cardEl.className = "mtr-dir-card" + (idx !== mtrActiveCardIdx ? " mobile-hidden" : "");
+
+    const headerEl = document.createElement("div");
+    headerEl.className = "mtr-card-header";
+    headerEl.style.background = card.color;
+    headerEl.innerHTML = `
+      <div class="mtr-card-line-row">
+        <span class="mtr-line-pill">${card.lineName}</span>
+        <span>${card.isDelay ? "⚠️ 服務受阻" : `${idx + 1} / ${mtrCardsData.length}`}</span>
+      </div>
+      <div class="mtr-card-big-dest">往 ${card.headerDestText}</div>
+    `;
+    cardEl.appendChild(headerEl);
+
+    const listEl = document.createElement("div");
+    listEl.className = "mtr-train-list";
+
+    if (!card.trains.length) {
+      listEl.innerHTML = `<div style="padding:18px 8px;text-align:center;color:#94a3b8;font-weight:600;font-size:13px;">暫時無即將到站班次</div>`;
+    } else {
+      card.trains.forEach((t, tIdx) => {
+        const isTrackedThis = Boolean(
+          mtrActiveTracking &&
+          mtrActiveTracking.originSta === mtrSelectedSta &&
+          mtrActiveTracking.boardLine === card.lineCode &&
+          mtrActiveTracking.dirKey === card.dirKey &&
+          mtrActiveTracking.trainDestCode === t.destCode &&
+          t.etaDate &&
+          Math.abs(t.etaDate - mtrActiveTracking.boardEtaDate) <= 90000
+        );
+
+        const row = document.createElement("div");
+        row.className = "mtr-train-row" + (isTrackedThis ? " tracked" : "");
+
+        const etaLabel = t.ttnt <= 0 ? "即將到達" : `${t.ttnt} 分鐘`;
+        const hhmm = t.etaDate ? formatTimeHHMM(t.etaDate) : "";
+        const branchCls = getBranchBadgeClass(card, t.destCode);
+
+        row.innerHTML = `
+          <div class="mtr-train-left">
+            <span class="mtr-seq-circle">${tIdx + 1}</span>
+            <span class="mtr-train-dest-tag ${branchCls}">往 ${t.destName}</span>
+            <span class="mtr-plat-badge">${t.plat}號月台</span>
+          </div>
+          <div class="mtr-train-right">
+            <div class="mtr-eta-text ${t.ttnt <= 1 ? "imminent" : ""}">
+              ${etaLabel}
+              ${hhmm ? `<span class="mtr-eta-hhmm">${hhmm}</span>` : ""}
+            </div>
+            <button type="button" class="btn-track ${isTrackedThis ? "active" : ""}">追蹤</button>
+          </div>
+        `;
+
+        const trackBtn = row.querySelector(".btn-track");
+        trackBtn.onclick = () => openMtrDestinationPicker(card, t);
+        listEl.appendChild(row);
+      });
+    }
+
+    cardEl.appendChild(listEl);
+    container.appendChild(cardEl);
+  });
+}
+
+/* ========== 10. 撳「追蹤」秒開目的地揀站 ➔ 沿用巴士頂部追蹤牌 (#live-track-banner) 與通知格式 ========== */
+
+function openMtrDestinationPicker(card, trainObj) {
+  mtrPendingTrackTrain = {
+    originSta: mtrSelectedSta,
+    boardLine: card.lineCode,
+    boardLineName: card.lineName,
+    boardColor: card.color,
+    dirKey: card.dirKey,
+    trainDestCode: trainObj.destCode,
+    trainDestName: trainObj.destName,
+    viaRac: trainObj.viaRac,
+    boardEtaDate: trainObj.etaDate || new Date(Date.now() + trainObj.ttnt * 60000)
+  };
+
+  const modal = document.getElementById("mtr-dest-modal");
+  const titleEl = document.getElementById("mtrDestModalTitle");
+  const searchInp = document.getElementById("mtrDestSearchInput");
+
+  if (titleEl) {
+    titleEl.textContent = `🚇 由「${getMtrStationName(mtrSelectedSta)}」去邊個站？`;
+  }
+  if (searchInp) searchInp.value = "";
+  renderMtrDestinationChoices("");
+  if (modal) modal.classList.add("active");
+}
+
+function renderMtrDestinationChoices(filterKw = "") {
+  const listDiv = document.getElementById("mtrDestStationList");
+  if (!listDiv) return;
+  listDiv.innerHTML = "";
+  const kw = String(filterKw || "").trim().toLowerCase();
+
+  const lineOrder = Object.keys(MTR_LINES).sort((a, b) => {
+    if (mtrPendingTrackTrain) {
+      if (a === mtrPendingTrackTrain.boardLine) return -1;
+      if (b === mtrPendingTrackTrain.boardLine) return 1;
+    }
+    return 0;
+  });
+
+  const seenInFilter = new Set();
+
+  lineOrder.forEach(lineCode => {
+    const lineObj = MTR_LINES[lineCode];
+    const matchedStations = lineObj.stations.filter(sta => {
+      if (mtrPendingTrackTrain && sta === mtrPendingTrackTrain.originSta) return false;
+      if (kw && seenInFilter.has(sta)) return false;
+      const info = MTR_STATIONS[sta];
+      const ok = info && (!kw || info.tc.includes(kw) || info.en.toLowerCase().includes(kw) || sta.toLowerCase().includes(kw));
+      if (ok && kw) seenInFilter.add(sta);
+      return ok;
+    });
+
+    if (!matchedStations.length) return;
+
+    const bar = document.createElement("div");
+    bar.className = "mtr-line-color-divider";
+    bar.style.background = lineObj.color;
+    listDiv.appendChild(bar);
+
+    const grid = document.createElement("div");
+    grid.className = "mtr-dest-color-grid";
+
+    matchedStations.forEach(sta => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "mtr-dest-sta-btn";
+      btn.style.background = kw ? getStationLineBackgroundCSS(sta) : lineObj.color;
+      btn.textContent = getMtrStationName(sta);
+      btn.onclick = () => startMtrTripTrackingToDest(sta);
+      grid.appendChild(btn);
+    });
+
+    listDiv.appendChild(grid);
+  });
+}
+
+// ★ 零延遲啟動追蹤（唔再 await 網絡，0ms 即刻彈出巴士同款追蹤牌！）
+function startMtrTripTrackingToDest(destStaCode) {
+  const modal = document.getElementById("mtr-dest-modal");
+  if (modal) modal.classList.remove("active");
+  if (!mtrPendingTrackTrain) return;
+
+  // 如果之前開緊巴士追蹤，先停咗舊巴士 Worker 免撞通知
+  stopPersistentTrackingNotification();
+
+  const p = mtrPendingTrackTrain;
+  const routePlan = computeMtrRouteFromTrackedTrain(
+    p.originSta,
+    p.boardLine,
+    p.trainDestCode,
+    destStaCode,
+    p.viaRac
+  );
+  const fare = getMtrAdultFare(p.originSta, destStaCode, p.boardLine);
+
+  mtrActiveTracking = {
+    ...p,
+    destSta: destStaCode,
+    routePlan,
+    fare
+  };
+
+  // 背景確保官方車費表載入（若剛開啟未載完，載完會自動即時更新銀碼）
+  loadMtrOfficialFares();
+
+  renderMtrDirectionCards();
+  showToast(`🔔 已啟動港鐵追蹤：往${getMtrStationName(destStaCode)}`);
+  updateMtrTrackingBannerAndNotification(true);
+
+  startSilentAudioKeepAlive();
+  startWorkerInterval(() => {
+    if (mtrActiveTracking) updateMtrTrackingBannerAndNotification(false);
+  }, 30000);
+}
+
+function stopMtrTripTracking() {
+  mtrActiveTracking = null;
+  const banner = document.getElementById("live-track-banner");
+  if (banner) banner.classList.remove("active");
+  stopPersistentTrackingNotification();
+  renderMtrDirectionCards();
+}
+
+function refreshActiveMtrTrackingState() {
+  if (!mtrActiveTracking) return;
+  const matchCard = mtrCardsData.find(c =>
+    mtrActiveTracking.originSta === mtrSelectedSta &&
+    c.lineCode === mtrActiveTracking.boardLine &&
+    c.dirKey === mtrActiveTracking.dirKey
+  );
+  if (matchCard && matchCard.trains.length) {
+    let closest = null, bestDiff = Infinity;
+    matchCard.trains.forEach(t => {
+      if (t.destCode === mtrActiveTracking.trainDestCode && t.etaDate) {
+        const diff = Math.abs(t.etaDate - mtrActiveTracking.boardEtaDate);
+        if (diff < bestDiff && diff <= 180000) {
+          bestDiff = diff;
+          closest = t;
+        }
+      }
+    });
+    if (closest && closest.etaDate) {
+      mtrActiveTracking.boardEtaDate = closest.etaDate;
+    }
+  }
+  updateMtrTrackingBannerAndNotification(false);
+}
+
+async function updateMtrTrackingBannerAndNotification(requestPerm = false) {
+  const banner = document.getElementById("live-track-banner");
+  const ltbRoute = document.getElementById("ltbRoute");
+  const ltbStop = document.getElementById("ltbStop");
+  const ltbEta = document.getElementById("ltbEta");
+  const ltbWalkDist = document.getElementById("ltbWalkDist");
+  const ltbWalkTime = document.getElementById("ltbWalkTime");
+
+  if (!mtrActiveTracking) {
+    if (banner && !selectedEtaTime) banner.classList.remove("active");
+    return;
+  }
+
+  const trk = mtrActiveTracking;
+  trk.fare = getMtrAdultFare(trk.originSta, trk.destSta, trk.boardLine);
+
+  const waitMin = Math.round((trk.boardEtaDate - new Date()) / 60000);
+  if (waitMin < -1) {
+    stopMtrTripTracking();
+    return;
+  }
+
+  const rideMin = trk.routePlan ? trk.routePlan.totalRideMin : 15;
+  const arriveDate = new Date(trk.boardEtaDate.getTime() + rideMin * 60000);
+  const arriveHHMM = formatTimeHHMM(arriveDate);
+  const boardHHMM = formatTimeHHMM(trk.boardEtaDate);
+
+  let transferNote = "直達免轉車";
+  if (trk.routePlan && trk.routePlan.transfers.length > 0) {
+    transferNote = trk.routePlan.transfers.map(tf =>
+      tf.isWalk
+        ? `${getMtrStationName(tf.atSta)}行去${getMtrStationName(tf.toSta)}轉${MTR_LINES[tf.toLine].name}`
+        : tf.isBranch
+          ? `${getMtrStationName(tf.atSta)}轉同線分支車`
+          : `${getMtrStationName(tf.atSta)}轉${MTR_LINES[tf.toLine].name}`
+    ).join(" ➔ ");
+  }
+  if (trk.routePlan && trk.routePlan.oppositeDirWarn) {
+    transferNote = "⚠️反方向！請過對面月台";
+  }
+
+  // ★ 直接使用 index.html 原生嘅巴士頂部黑底雙欄追蹤牌 (#live-track-banner)，風格 100% 統一！
+  if (banner) {
+    banner.classList.add("active");
+    if (ltbRoute) {
+      ltbRoute.style.color = "#60a5fa";
+      ltbRoute.textContent = `🚇 ${trk.boardLineName} (往${trk.trainDestName}) ➔ ${getMtrStationName(trk.destSta)}`;
+    }
+    if (ltbStop) {
+      ltbStop.textContent = `${getMtrStationName(trk.originSta)}站｜${transferNote}`;
+    }
+    if (ltbEta) {
+      ltbEta.textContent = waitMin <= 0 ? `即將到達 (${boardHHMM})` : `${waitMin} 分鐘 (${boardHHMM})`;
+    }
+    if (ltbWalkDist) {
+      const walkPart = mtrWalkDistMeters != null ? ` ｜ 距${mtrWalkDistMeters}m` : "";
+      ltbWalkDist.textContent = `💰 $${trk.fare}${walkPart}`;
+    }
+    if (ltbWalkTime) {
+      ltbWalkTime.textContent = `預計 ${arriveHHMM} 到 (${rideMin}分)`;
+    }
+  }
+
+  // 系統 Notification：完全沿用巴士倒數圓環 Icon 與文字排版
+  if (requestPerm && "Notification" in window && Notification.permission !== "granted") {
+    try { await Notification.requestPermission(); } catch (e) {}
+  }
+  if (!("Notification" in window) || Notification.permission !== "granted") return;
+
+  const stOrig = MTR_STATIONS[trk.originSta];
+  const titleText = `${trk.boardLineName} (往${trk.trainDestName})`;
+  const etaLine = waitMin <= 0 ? `即將到達 (${boardHHMM})` : `${waitMin} 分鐘 (${boardHHMM})`;
+  const bodyLines = [
+    `${getMtrStationName(trk.originSta)} ➔ ${getMtrStationName(trk.destSta)} ($${trk.fare}｜${arriveHHMM}到)`,
+    `${etaLine}｜${transferNote}`
+  ];
+
+  if (mtrWalkDistMeters != null && mtrWalkMinutes != null) {
+    bodyLines.push(
+      mtrWalkDistMeters < 20
+        ? `已到達車站附近 (${mtrWalkDistMeters}米)`
+        : `距離${mtrWalkDistMeters}米 (${mtrWalkMinutes}分鐘)`
+    );
+  }
+  if (stOrig) {
+    bodyLines.push(`座標: ${stOrig.lat.toFixed(6)}, ${stOrig.lon.toFixed(6)}`);
+  }
+
+  const badgeIconUrl = typeof createCountdownBadgeIcon === "function"
+    ? createCountdownBadgeIcon(Math.max(0, waitMin), trk.boardLine, boardHHMM)
+    : undefined;
+
+  const options = {
+    body: bodyLines.join("\n"),
+    icon: badgeIconUrl,
+    tag: "bus-eta-tracker",
+    renotify: true,
+    requireInteraction: true
+  };
+
+  try {
+    if ("serviceWorker" in navigator) {
+      const reg = await navigator.serviceWorker.getRegistration();
+      if (reg && reg.showNotification) {
+        await reg.showNotification(titleText, options);
+        return;
+      }
+    }
+    activeBusNotification = new Notification(titleText, options);
+  } catch (e) {}
+}
+
+/* ========== 11. 綁定抽屜上下拉手勢、卡片左右 Swap 及連動事件 ========== */
+
+(function bindMtrModuleEvents() {
+  const mtrSheet = document.getElementById("mtr-sheet");
+  const mtrHeader = document.getElementById("mtr-sheet-header");
+  const busSheet = document.getElementById("bottom-sheet");
+  const btnStep = document.getElementById("btnMtrSheetStep");
+  const btnHideBack = document.getElementById("btnMtrHideToBack");
+  const staBtn = document.getElementById("mtrStationColorBtn");
+  const staFilter = document.getElementById("mtrStaFilterInput");
+  const btnNearest = document.getElementById("btnMtrNearest");
+  const cardsContainer = document.getElementById("mtrCardsContainer");
+  const btnCloseDest = document.getElementById("btnCloseMtrDestModal");
+  const destSearchInp = document.getElementById("mtrDestSearchInput");
+  const ltbCloseBtn = document.getElementById("ltbCloseBtn");
+
+  // 監聽巴士抽屜移動或改變狀態，保持後層港鐵抽屜剛剛好露出頂欄
+  if (busSheet) {
+    const obs = new MutationObserver(() => {
+      setTimeout(syncMtrBehindOffsetWithBusSheet, 30);
+      setTimeout(syncMtrBehindOffsetWithBusSheet, 350);
+    });
+    obs.observe(busSheet, { attributes: true, attributeFilter: ["class", "style"] });
+    window.addEventListener("resize", syncMtrBehindOffsetWithBusSheet);
+    setTimeout(syncMtrBehindOffsetWithBusSheet, 120);
+  }
+
+  // 港鐵抽屜頂欄手勢上下拉動 + 點擊拉起
+  if (mtrSheet && mtrHeader) {
+    let startY = 0, deltaY = 0, dragging = false;
+
+    const stepUp = () => {
+      if (mtrSheetState === "behind") setMtrSheetState("half");
+      else if (mtrSheetState === "peek") setMtrSheetState("half");
+      else setMtrSheetState("full");
+    };
+    const stepDown = () => {
+      if (mtrSheetState === "full") setMtrSheetState("half");
+      else if (mtrSheetState === "half") setMtrSheetState("peek");
+      else setMtrSheetState("behind");
+    };
+
+    const onStart = y => { startY = y; deltaY = 0; dragging = true; mtrSheet.classList.add("mtr-dragging"); };
+    const onMove = y => { if (dragging) deltaY = y - startY; };
+    const onEnd = () => {
+      if (!dragging) return;
+      dragging = false;
+      mtrSheet.classList.remove("mtr-dragging");
+      if (deltaY < -28) stepUp();
+      else if (deltaY > 28) stepDown();
+      else if (mtrSheetState === "behind") setMtrSheetState("half");
+    };
+
+    mtrHeader.addEventListener("touchstart", e => onStart(e.touches[0].clientY), { passive: true });
+    mtrHeader.addEventListener("touchmove", e => onMove(e.touches[0].clientY), { passive: true });
+    mtrHeader.addEventListener("touchend", onEnd);
+    mtrHeader.addEventListener("mousedown", e => onStart(e.clientY));
+    window.addEventListener("mousemove", e => onMove(e.clientY));
+    window.addEventListener("mouseup", onEnd);
+
+    if (btnStep) {
+      btnStep.onclick = (e) => {
+        e.stopPropagation();
+        if (mtrSheetState === "full") setMtrSheetState("peek");
+        else stepUp();
+      };
+    }
+    if (btnHideBack) {
+      btnHideBack.onclick = (e) => {
+        e.stopPropagation();
+        setMtrSheetState("behind");
+      };
+    }
+  }
+
+  // 展開/收起彩色港鐵站選單
+  if (staBtn) {
+    staBtn.onclick = () => {
+      const dd = document.getElementById("mtrColorDropdownPanel");
+      if (!dd) return;
+      mtrDropdownOpen = !mtrDropdownOpen;
+      dd.classList.toggle("open", mtrDropdownOpen);
+      if (mtrDropdownOpen) {
+        if (staFilter) staFilter.value = "";
+        renderMtrColorStationDropdown("");
+      }
+    };
+  }
+  if (staFilter) {
+    staFilter.addEventListener("input", () => renderMtrColorStationDropdown(staFilter.value));
+  }
+
+  if (btnNearest) {
+    btnNearest.onclick = () => {
+      if (!navigator.geolocation) {
+        selectDefaultOrNearestMtrStation();
+        return;
+      }
+      showToast("📍 正在定位最近港鐵站...");
+      navigator.geolocation.getCurrentPosition(
+        pos => {
+          userLat = pos.coords.latitude;
+          userLon = pos.coords.longitude;
+          renderUserLocationSpot();
+          selectDefaultOrNearestMtrStation();
+          showToast(`🚇 最近港鐵站：${getMtrStationName(mtrSelectedSta)}站`);
+        },
+        () => showToast("⚠️ 無法取得目前位置，請檢查定位權限"),
+        { enableHighAccuracy: true, timeout: 6000 }
+      );
+    };
+  }
+
+  // 手機版左右滑動 (Swap) 更換方向與線路
+  if (cardsContainer) {
+    let startX = 0, startY = 0;
+    cardsContainer.addEventListener("touchstart", e => {
+      if (!e.touches || !e.touches.length) return;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+    }, { passive: true });
+
+    cardsContainer.addEventListener("touchend", e => {
+      if (window.innerWidth >= 768 || mtrCardsData.length <= 1) return;
+      if (!e.changedTouches || !e.changedTouches.length) return;
+      const dx = e.changedTouches[0].clientX - startX;
+      const dy = e.changedTouches[0].clientY - startY;
+      if (Math.abs(dx) > 42 && Math.abs(dx) > Math.abs(dy) * 1.25) {
+        e.stopPropagation();
+        mtrActiveCardIdx = dx < 0
+          ? (mtrActiveCardIdx + 1) % mtrCardsData.length
+          : (mtrActiveCardIdx - 1 + mtrCardsData.length) % mtrCardsData.length;
+        renderMtrDirectionCards();
+      }
+    }, { passive: true });
+  }
+
+  if (btnCloseDest) {
+    btnCloseDest.onclick = () => {
+      const m = document.getElementById("mtr-dest-modal");
+      if (m) m.classList.remove("active");
+    };
+  }
+  if (destSearchInp) {
+    destSearchInp.addEventListener("input", () => renderMtrDestinationChoices(destSearchInp.value));
+  }
+  if (ltbCloseBtn) {
+    const prevClose = ltbCloseBtn.onclick;
+    ltbCloseBtn.onclick = (e) => {
+      if (mtrActiveTracking) stopMtrTripTracking();
+      else if (typeof prevClose === "function") prevClose(e);
+      else stopPersistentTrackingNotification();
+    };
+  }
+
+  // 啟動時背景預載官方車費表
+  loadMtrOfficialFares();
+})();
