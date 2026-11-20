@@ -4526,17 +4526,16 @@ loadHkFareDatabase();
 
 
 /* =========================================================================
-   ★ 全合一升級模組 (v7.2 修正版)：
-   1) 修復 entry.dest.substring is not a function（恢復所有巴士／小巴站點與地圖標記顯示）
-   2) 地圖港鐵站改為同巴士站一樣嘅 24x24px 圓形圖示（按路線配色，撳落去彈站名）
-   3) 修復倉頡/速成組字 (isComposing) + 0ms 本地 6000 站檢索 + 政府 OGCIO 官方地址庫
-   4) 修復專線小巴 file:// 直連 + 通知欄顯示座標 + 全域 1.5 倍步行時間
-   5) 800m 點對點導航（巴士 + 小巴 + 港鐵）+ 港鐵獨立後層抽屜 (#mtr-sheet)
+   ★ 全合一升級模組 (v7.3 修正版)：
+   1) 修復香港政府官方地址查詢新域名 (https://www.als.gov.hk/lookup)
+   2) 強制清除 index.html 殘留舊導航視窗再重建，確保導航頁每粒 Button 都撳到
+   3) 搜尋同時檢索全港巴士/小巴站 + 港鐵站並分開配額，唔再只出港鐵站
+   4) 地圖港鐵站改為 24x24px 圓形（同巴士站一樣大細）＋ 白色港鐵 Logo SVG（走「鐵」字）
+   5) 修復 entry.dest.substring 報錯 + 專線小巴直連 + 1.5 倍步速 + 通知顯示座標
    ========================================================================= */
 
 /* ---------- Part A：修復 findFaresArrayForRouteStops 報錯、GMB 直連與 1.5x 步速 ---------- */
 
-// 修復 entry.dest 係物件 { zh, en } 時呼叫 .substring() 導致巴士及小巴站點全部無法顯示嘅 Bug
 findFaresArrayForRouteStops = function (routeObj, stopsArray) {
   if (!hkFareRouteList || !routeObj || !stopsArray || !stopsArray.length) return null;
 
@@ -4605,7 +4604,6 @@ fetchGmbApi = async function (url, useCache = true) {
 
   let data = null;
 
-  // 1) data.etagmb.gov.hk 原生支援 CORS (*)，無論 http/https 定 file:// 一律優先直連
   try {
     const ctrl1 = new AbortController();
     const t1 = setTimeout(() => ctrl1.abort(), 4500);
@@ -4614,7 +4612,6 @@ fetchGmbApi = async function (url, useCache = true) {
     if (r1.ok) data = await r1.json();
   } catch (e) {}
 
-  // 2) 後備通道（3.5 秒上限）
   if (!data) {
     try {
       const ctrl2 = new AbortController();
@@ -4748,7 +4745,6 @@ refreshWalkDistanceForOrigin = async function () {
   }
 };
 
-// 巴士追蹤通知底部加上「座標: lat, lon」並同步更新頂部 #live-track-banner
 const _baseUpdateBusNoti = updatePersistentTrackingNotification;
 updatePersistentTrackingNotification = async function () {
   if (!selectedEtaTime || !currentRoute || !originStopId) {
@@ -4814,6 +4810,8 @@ updatePersistentTrackingNotification = async function () {
 
 var MTR_SCHEDULE_API = "https://rt.data.gov.hk/v1/transport/mtr/getSchedule.php";
 var MTR_FARE_OFFICIAL_URL = "https://opendata.mtr.com.hk/data/mtr_lines_fares.csv";
+
+var MTR_LOGO_SVG = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="#ffffff" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M5.5 7.2C8.8 5.2 15.2 5.2 18.5 7.2"/><path d="M5.5 16.8C8.8 18.8 15.2 18.8 18.5 16.8"/><line x1="12" y1="6" x2="12" y2="18"/><line x1="6.8" y1="12" x2="17.2" y2="12"/></svg>`;
 
 var MTR_LINES = {
   KTL: { name: "觀塘綫", shortName: "觀塘", color: "#00ab4e", stations: ["WHA","HOM","YMT","MOK","PRE","SKM","KOT","LOF","WTS","DIH","CHH","KOB","NTK","KWT","LAT","YAT","TIK"] },
@@ -5504,7 +5502,7 @@ function getMtrAdultFare(origCode, destCode, boardLine = "") {
 }
 
 
-/* ---------- Part C：介面樣式與 HTML 掛載 ---------- */
+/* ---------- Part C：強制重建最新介面樣式與 HTML（解決舊版殘留視窗導致按鈕撳唔到） ---------- */
 
 var P2P_RADIUS_METERS = 800;
 var p2pOrigin = null;
@@ -5567,227 +5565,222 @@ async function ensureP2PFullRouteStopDatabase() {
 }
 
 (function injectUnifiedP2PAndMtrUI() {
-  if (!document.getElementById("unified-v7-styles")) {
-    const style = document.createElement("style");
-    style.id = "unified-v7-styles";
-    style.textContent = `
-      #p2p-nav-modal {
-        display: none; position: fixed; left: 0; right: 0; top: 10vh; bottom: 0; height: 90vh;
-        z-index: 9200; background: #f8fafc; flex-direction: column; overflow: hidden;
-        border-radius: 20px 20px 0 0; box-shadow: 0 -8px 32px rgba(15, 23, 42, 0.35);
-        border-top: 1px solid rgba(255,255,255,0.25);
-        transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
-      }
-      #p2p-nav-modal.active { display: flex; }
-      #p2p-nav-modal.p2p-sheet-peek { transform: translateY(48vh); }
-      #p2p-nav-modal.p2p-sheet-min { transform: translateY(calc(90vh - 64px)); }
-      #p2p-nav-modal.p2p-sheet-peek .p2p-search-panel,
-      #p2p-nav-modal.p2p-sheet-min .p2p-search-panel { display: none; }
+  // 先清除任何由舊版 index.html 殘留嘅同名元素，避免舊按鈕 ID 同新版衝突
+  ["unified-v7-styles", "p2p-nav-modal", "p2pMapPickBanner", "mtr-sheet", "mtr-dest-modal"].forEach(id => {
+    const oldEl = document.getElementById(id);
+    if (oldEl) oldEl.remove();
+  });
 
-      .p2p-top-bar {
-        background: #0f172a; color: #fff; padding: 8px 14px 10px;
-        border-radius: 20px 20px 0 0; cursor: grab; user-select: none; touch-action: none; flex-shrink: 0;
-      }
-      .p2p-drag-pill { width: 42px; height: 5px; background: #64748b; border-radius: 999px; margin: 0 auto 7px; }
-      .p2p-top-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-      .p2p-top-btns { display: flex; gap: 6px; align-items: center; }
-      .btn-p2p-top { padding: 4px 10px; font-size: 12px; font-weight: 700; border-radius: 999px; border: none; margin: 0; cursor: pointer; }
-      #btnP2PMapToggle { background: #1e293b; color: #93c5fd; border: 1px solid #334155; }
-      #btnCloseP2P { background: #ef4444; color: #fff; }
+  const style = document.createElement("style");
+  style.id = "unified-v7-styles";
+  style.textContent = `
+    #p2p-nav-modal {
+      display: none; position: fixed; left: 0; right: 0; top: 10vh; bottom: 0; height: 90vh;
+      z-index: 9200; background: #f8fafc; flex-direction: column; overflow: hidden;
+      border-radius: 20px 20px 0 0; box-shadow: 0 -8px 32px rgba(15, 23, 42, 0.35);
+      border-top: 1px solid rgba(255,255,255,0.25);
+      transition: transform 0.3s cubic-bezier(0.22, 1, 0.36, 1);
+    }
+    #p2p-nav-modal.active { display: flex; }
+    #p2p-nav-modal.p2p-sheet-peek { transform: translateY(48vh); }
+    #p2p-nav-modal.p2p-sheet-min { transform: translateY(calc(90vh - 64px)); }
+    #p2p-nav-modal.p2p-sheet-peek .p2p-search-panel,
+    #p2p-nav-modal.p2p-sheet-min .p2p-search-panel { display: none; }
 
-      .p2p-search-panel { padding: 10px 12px; background: #fff; border-bottom: 1px solid #e2e8f0; flex-shrink: 0; }
-      .p2p-input-row { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; position: relative; }
-      .p2p-label { font-size: 12.5px; font-weight: 800; width: 42px; flex-shrink: 0; }
-      .p2p-input-wrap { flex: 1; position: relative; min-width: 0; }
-      .p2p-input { width: 100%; padding: 7px 10px; font-size: 13.5px; border: 1px solid #cbd5e1; border-radius: 8px; outline: none; }
-      .p2p-suggest-box {
-        display: none; position: absolute; left: 0; right: 0; top: 100%; margin-top: 3px;
-        background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; max-height: 220px;
-        overflow-y: auto; z-index: 9500; box-shadow: 0 8px 22px rgba(0,0,0,0.18);
-      }
-      .p2p-suggest-box.open { display: block; }
-      .p2p-suggest-item { padding: 8px 10px; font-size: 13px; border-bottom: 1px solid #f1f5f9; cursor: pointer; }
-      .p2p-suggest-item:hover { background: #eff6ff; }
-      .p2p-mini-btn { padding: 6px 8px; font-size: 11.5px; font-weight: 700; border-radius: 8px; margin: 0; flex-shrink: 0; }
-      .p2p-go-btn {
-        width: 100%; padding: 9px; font-size: 14px; font-weight: 800; border-radius: 10px;
-        background: #1565c0; color: #fff; border: none; margin: 2px 0 0; cursor: pointer;
-      }
+    .p2p-top-bar {
+      background: #0f172a; color: #fff; padding: 8px 14px 10px;
+      border-radius: 20px 20px 0 0; cursor: grab; user-select: none; touch-action: none; flex-shrink: 0;
+    }
+    .p2p-drag-pill { width: 42px; height: 5px; background: #64748b; border-radius: 999px; margin: 0 auto 7px; }
+    .p2p-top-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .p2p-top-btns { display: flex; gap: 6px; align-items: center; }
+    .btn-p2p-top { padding: 4px 10px; font-size: 12px; font-weight: 700; border-radius: 999px; border: none; margin: 0; cursor: pointer; }
+    #btnP2PMapToggle { background: #1e293b; color: #93c5fd; border: 1px solid #334155; }
+    #btnCloseP2P { background: #ef4444; color: #fff; }
 
-      .p2p-sort-bar {
-        display: flex; align-items: center; gap: 5px; padding: 7px 10px;
-        background: #f1f5f9; border-bottom: 1px solid #e2e8f0; overflow-x: auto; flex-shrink: 0;
-      }
-      .p2p-sort-btn {
-        padding: 4px 10px; font-size: 12px; font-weight: 700; border-radius: 999px;
-        border: 1px solid #cbd5e1; background: #fff; color: #475569; margin: 0; flex-shrink: 0;
-      }
-      .p2p-sort-btn.active { background: #1565c0; color: #fff; border-color: #1565c0; }
-      #p2pMtrToggleBtn {
-        padding: 4px 10px; font-size: 12px; border-radius: 999px; margin: 0 0 0 auto;
-        font-weight: 800; border: 1px solid #fda4af; background: #be123c; color: #ffffff; cursor: pointer; flex-shrink: 0;
-      }
-      #p2pMtrToggleBtn.mtr-off { background: #f1f5f9; color: #64748b; border-color: #cbd5e1; }
+    .p2p-search-panel { padding: 10px 12px; background: #fff; border-bottom: 1px solid #e2e8f0; flex-shrink: 0; }
+    .p2p-input-row { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; position: relative; }
+    .p2p-label { font-size: 12.5px; font-weight: 800; width: 42px; flex-shrink: 0; }
+    .p2p-input-wrap { flex: 1; position: relative; min-width: 0; }
+    .p2p-input { width: 100%; padding: 7px 10px; font-size: 13.5px; border: 1px solid #cbd5e1; border-radius: 8px; outline: none; }
+    .p2p-suggest-box {
+      display: none; position: absolute; left: 0; right: 0; top: 100%; margin-top: 3px;
+      background: #fff; border: 1px solid #cbd5e1; border-radius: 8px; max-height: 240px;
+      overflow-y: auto; z-index: 9500; box-shadow: 0 8px 22px rgba(0,0,0,0.18);
+    }
+    .p2p-suggest-box.open { display: block; }
+    .p2p-suggest-item { padding: 8px 10px; font-size: 13px; border-bottom: 1px solid #f1f5f9; cursor: pointer; }
+    .p2p-suggest-item:hover { background: #eff6ff; }
+    .p2p-mini-btn { padding: 6px 8px; font-size: 11.5px; font-weight: 700; border-radius: 8px; margin: 0; flex-shrink: 0; }
+    .p2p-go-btn {
+      width: 100%; padding: 9px; font-size: 14px; font-weight: 800; border-radius: 10px;
+      background: #1565c0; color: #fff; border: none; margin: 2px 0 0; cursor: pointer;
+    }
 
-      #p2pStatusBar { padding: 6px 12px; font-size: 12px; font-weight: 700; color: #475569; background: #fffbeb; border-bottom: 1px solid #fde68a; flex-shrink: 0; }
-      .p2p-table-wrap { flex: 1; min-height: 0; overflow: auto; background: #fff; padding-bottom: 40px; }
-      .p2p-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
-      .p2p-table th {
-        position: sticky; top: 0; background: #f8fafc; color: #334155; font-weight: 800;
-        padding: 8px 6px; border-bottom: 2px solid #cbd5e1; text-align: left; z-index: 10; font-size: 11.5px;
-      }
-      .p2p-table td { padding: 9px 6px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
-      .p2p-row { cursor: pointer; transition: background 0.12s; }
-      .p2p-row:hover { background: #eff6ff; }
-      .p2p-row.p2p-row-no-eta { opacity: 0.45; filter: grayscale(0.9); background: #f8fafc; }
-      .p2p-here-tag {
-        display: inline-block; font-size: 10px; font-weight: 800; color: #15803d;
-        background: #dcfce7; border: 1px solid #86efac; border-radius: 4px; padding: 0 4px; margin-left: 3px;
-      }
-      @media (max-width: 767px) { .p2p-desktop-only { display: none !important; } }
+    .p2p-sort-bar {
+      display: flex; align-items: center; gap: 5px; padding: 7px 10px;
+      background: #f1f5f9; border-bottom: 1px solid #e2e8f0; overflow-x: auto; flex-shrink: 0;
+    }
+    .p2p-sort-btn {
+      padding: 4px 10px; font-size: 12px; font-weight: 700; border-radius: 999px;
+      border: 1px solid #cbd5e1; background: #fff; color: #475569; margin: 0; flex-shrink: 0;
+    }
+    .p2p-sort-btn.active { background: #1565c0; color: #fff; border-color: #1565c0; }
+    #p2pMtrToggleBtn {
+      padding: 4px 10px; font-size: 12px; border-radius: 999px; margin: 0 0 0 auto;
+      font-weight: 800; border: 1px solid #fda4af; background: #be123c; color: #ffffff; cursor: pointer; flex-shrink: 0;
+    }
+    #p2pMtrToggleBtn.mtr-off { background: #f1f5f9; color: #64748b; border-color: #cbd5e1; }
 
-      #p2pMapPickBanner {
-        display: none; position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
-        z-index: 9600; background: #0f172a; color: #fff; padding: 9px 16px; border-radius: 999px;
-        font-size: 13px; font-weight: 700; box-shadow: 0 6px 20px rgba(0,0,0,0.35); align-items: center; gap: 10px;
-      }
-      #p2pMapPickBanner.active { display: flex; }
+    #p2pStatusBar { padding: 6px 12px; font-size: 12px; font-weight: 700; color: #475569; background: #fffbeb; border-bottom: 1px solid #fde68a; flex-shrink: 0; }
+    .p2p-table-wrap { flex: 1; min-height: 0; overflow: auto; background: #fff; padding-bottom: 40px; }
+    .p2p-table { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+    .p2p-table th {
+      position: sticky; top: 0; background: #f8fafc; color: #334155; font-weight: 800;
+      padding: 8px 6px; border-bottom: 2px solid #cbd5e1; text-align: left; z-index: 10; font-size: 11.5px;
+    }
+    .p2p-table td { padding: 9px 6px; border-bottom: 1px solid #f1f5f9; vertical-align: middle; }
+    .p2p-row { cursor: pointer; transition: background 0.12s; }
+    .p2p-row:hover { background: #eff6ff; }
+    .p2p-row.p2p-row-no-eta { opacity: 0.45; filter: grayscale(0.9); background: #f8fafc; }
+    .p2p-here-tag {
+      display: inline-block; font-size: 10px; font-weight: 800; color: #15803d;
+      background: #dcfce7; border: 1px solid #86efac; border-radius: 4px; padding: 0 4px; margin-left: 3px;
+    }
+    @media (max-width: 767px) { .p2p-desktop-only { display: none !important; } }
 
+    #p2pMapPickBanner {
+      display: none; position: fixed; top: 14px; left: 50%; transform: translateX(-50%);
+      z-index: 9600; background: #0f172a; color: #fff; padding: 9px 16px; border-radius: 999px;
+      font-size: 13px; font-weight: 700; box-shadow: 0 6px 20px rgba(0,0,0,0.35); align-items: center; gap: 10px;
+    }
+    #p2pMapPickBanner.active { display: flex; }
+
+    #mtr-sheet {
+      position: fixed; left: 0; right: 0; bottom: 0; height: 90vh; max-height: 90vh;
+      background: rgba(255, 255, 255, 0.98); backdrop-filter: blur(12px);
+      border-radius: 20px 20px 0 0; box-shadow: 0 -8px 30px rgba(15, 23, 42, 0.22);
+      border: 1px solid rgba(190, 18, 60, 0.25); display: flex; flex-direction: column; z-index: 998;
+      transform: translateY(var(--mtr-behind-y, calc(100% - 122px)));
+      transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease; will-change: transform;
+    }
+    #mtr-sheet.mtr-dragging { transition: none !important; }
+    #mtr-sheet.mtr-active { z-index: 1005; border-color: #cbd5e1; box-shadow: 0 -10px 36px rgba(15, 23, 42, 0.28); }
+    #mtr-sheet.mtr-state-behind { transform: translateY(var(--mtr-behind-y, calc(100% - 122px))); }
+    #mtr-sheet.mtr-state-peek { transform: translateY(54%); }
+    #mtr-sheet.mtr-state-half { transform: translateY(22%); }
+    #mtr-sheet.mtr-state-full { transform: translateY(0%); }
+
+    #mtr-sheet-header {
+      padding: 7px 16px 10px; cursor: grab; user-select: none; touch-action: none;
+      border-radius: 20px 20px 0 0; flex-shrink: 0;
+      background: linear-gradient(90deg, #881337, #be123c); color: #ffffff;
+      border-bottom: 1px solid rgba(255,255,255,0.15);
+    }
+    #mtr-sheet.mtr-active #mtr-sheet-header { background: #ffffff; color: #0f172a; border-bottom: 1px solid #e2e8f0; }
+    #mtr-sheet .mtr-pill { width: 44px; height: 5px; background: rgba(255,255,255,0.55); border-radius: 999px; margin: 0 auto 6px; }
+    #mtr-sheet.mtr-active .mtr-pill { background: #cbd5e1; }
+    .mtr-header-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+    .mtr-header-brand { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 800; min-width: 0; }
+    #mtr-sheet.mtr-active .mtr-header-brand { color: #9f1239; }
+    .mtr-header-hint {
+      font-size: 11.5px; font-weight: 700; padding: 2px 9px; border-radius: 999px;
+      background: rgba(255,255,255,0.2); color: #fff1f2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    #mtr-sheet.mtr-active .mtr-header-hint { background: #ffe4e6; color: #be123c; }
+    .mtr-header-btns { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .btn-mtr-sheet-ctrl {
+      padding: 4px 10px; font-size: 12px; font-weight: 800; border-radius: 999px;
+      border: none; margin: 0; cursor: pointer; background: rgba(255,255,255,0.22); color: #ffffff;
+    }
+    #mtr-sheet.mtr-active .btn-mtr-sheet-ctrl { background: #ffe4e6; color: #be123c; }
+    #btnMtrHideToBack { display: none; background: #f1f5f9; color: #475569; }
+    #mtr-sheet.mtr-active #btnMtrHideToBack { display: inline-block; }
+
+    @media (min-width: 768px) {
       #mtr-sheet {
-        position: fixed; left: 0; right: 0; bottom: 0; height: 90vh; max-height: 90vh;
-        background: rgba(255, 255, 255, 0.98); backdrop-filter: blur(12px);
-        border-radius: 20px 20px 0 0; box-shadow: 0 -8px 30px rgba(15, 23, 42, 0.22);
-        border: 1px solid rgba(190, 18, 60, 0.25); display: flex; flex-direction: column; z-index: 998;
-        transform: translateY(var(--mtr-behind-y, calc(100% - 122px)));
-        transition: transform 0.32s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease; will-change: transform;
+        left: auto; right: 556px; width: calc(100vw - 572px); min-width: 400px; max-width: 820px; z-index: 1001;
       }
-      #mtr-sheet.mtr-dragging { transition: none !important; }
-      #mtr-sheet.mtr-active { z-index: 1005; border-color: #cbd5e1; box-shadow: 0 -10px 36px rgba(15, 23, 42, 0.28); }
-      #mtr-sheet.mtr-state-behind { transform: translateY(var(--mtr-behind-y, calc(100% - 122px))); }
-      #mtr-sheet.mtr-state-peek { transform: translateY(54%); }
-      #mtr-sheet.mtr-state-half { transform: translateY(22%); }
-      #mtr-sheet.mtr-state-full { transform: translateY(0%); }
+      #mtr-sheet.mtr-state-behind { transform: translateY(calc(100% - 76px)) !important; }
+      #mtr-sheet.mtr-active { z-index: 1005; width: min(820px, calc(100vw - 572px)); }
+    }
 
-      #mtr-sheet-header {
-        padding: 7px 16px 10px; cursor: grab; user-select: none; touch-action: none;
-        border-radius: 20px 20px 0 0; flex-shrink: 0;
-        background: linear-gradient(90deg, #881337, #be123c); color: #ffffff;
-        border-bottom: 1px solid rgba(255,255,255,0.15);
-      }
-      #mtr-sheet.mtr-active #mtr-sheet-header { background: #ffffff; color: #0f172a; border-bottom: 1px solid #e2e8f0; }
-      #mtr-sheet .mtr-pill { width: 44px; height: 5px; background: rgba(255,255,255,0.55); border-radius: 999px; margin: 0 auto 6px; }
-      #mtr-sheet.mtr-active .mtr-pill { background: #cbd5e1; }
-      .mtr-header-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-      .mtr-header-brand { display: flex; align-items: center; gap: 8px; font-size: 14.5px; font-weight: 800; min-width: 0; }
-      #mtr-sheet.mtr-active .mtr-header-brand { color: #9f1239; }
-      .mtr-header-hint {
-        font-size: 11.5px; font-weight: 700; padding: 2px 9px; border-radius: 999px;
-        background: rgba(255,255,255,0.2); color: #fff1f2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-      }
-      #mtr-sheet.mtr-active .mtr-header-hint { background: #ffe4e6; color: #be123c; }
-      .mtr-header-btns { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-      .btn-mtr-sheet-ctrl {
-        padding: 4px 10px; font-size: 12px; font-weight: 800; border-radius: 999px;
-        border: none; margin: 0; cursor: pointer; background: rgba(255,255,255,0.22); color: #ffffff;
-      }
-      #mtr-sheet.mtr-active .btn-mtr-sheet-ctrl { background: #ffe4e6; color: #be123c; }
-      #btnMtrHideToBack { display: none; background: #f1f5f9; color: #475569; }
-      #mtr-sheet.mtr-active #btnMtrHideToBack { display: inline-block; }
+    #mtr-sheet-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 55vh; background: #f8fafc; }
+    .mtr-station-picker-wrap { position: relative; display: flex; align-items: stretch; gap: 8px; }
+    #mtrStationColorBtn {
+      flex: 1; min-width: 0; padding: 9px 14px; border-radius: 12px; border: 2px solid rgba(255,255,255,0.85);
+      color: #ffffff; font-size: 16px; font-weight: 900; display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; cursor: pointer; margin: 0; box-shadow: 0 3px 10px rgba(15, 23, 42, 0.16); text-shadow: 0 1px 3px rgba(0,0,0,0.45);
+    }
+    .mtr-sta-btn-dist { font-size: 12px; font-weight: 800; background: rgba(0,0,0,0.28); padding: 2px 8px; border-radius: 999px; }
+    .btn-mtr-nearest {
+      flex-shrink: 0; padding: 0 12px; font-size: 12.5px; font-weight: 800; border-radius: 12px;
+      background: #ffffff; color: #be123c; border: 1px solid #fda4af; margin: 0;
+    }
+    #mtrColorDropdownPanel {
+      display: none; margin-top: 8px; background: #ffffff; border: 1px solid #cbd5e1;
+      border-radius: 14px; padding: 10px; box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18); max-height: 48vh; overflow-y: auto;
+    }
+    #mtrColorDropdownPanel.open { display: block; }
+    #mtrStaFilterInput { width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 13.5px; margin-bottom: 8px; outline: none; }
+    .mtr-color-sta-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 6px; }
+    .mtr-color-sta-item {
+      padding: 8px 8px; border-radius: 9px; border: none; color: #ffffff; font-size: 13.5px; font-weight: 900;
+      text-align: center; cursor: pointer; margin: 0; text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+      display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+    }
+    .mtr-color-sta-item.selected-sta { outline: 3px solid #0f172a; outline-offset: 1px; }
+    .mtr-color-sta-sub { font-size: 10.5px; font-weight: 700; background: rgba(0,0,0,0.28); padding: 1px 6px; border-radius: 999px; }
+    .mtr-line-color-divider { height: 4px; border-radius: 999px; margin: 10px 0 6px; }
 
-      @media (min-width: 768px) {
-        #mtr-sheet {
-          left: auto; right: 556px; width: calc(100vw - 572px); min-width: 400px; max-width: 820px; z-index: 1001;
-        }
-        #mtr-sheet.mtr-state-behind { transform: translateY(calc(100% - 76px)) !important; }
-        #mtr-sheet.mtr-active { z-index: 1005; width: min(820px, calc(100vw - 572px)); }
-      }
+    #mtrWalkInfoBox { margin-top: 8px; padding: 7px 12px; background: #f3e8ff; color: #6b21a8; border-left: 3px solid #9333ea; border-radius: 8px; font-size: 12px; font-weight: 700; }
+    #mtrWalkInfoBox:empty { display: none; }
+    #mtrSwipeChips { display: flex; align-items: center; gap: 6px; overflow-x: auto; padding: 8px 2px 4px; scrollbar-width: none; }
+    #mtrSwipeChips::-webkit-scrollbar { display: none; }
+    .mtr-dir-chip { flex-shrink: 0; padding: 4px 11px; border-radius: 999px; font-size: 12px; font-weight: 800; border: none; background: #e2e8f0; color: #475569; cursor: pointer; margin: 0; }
+    .mtr-dir-chip.active { color: #ffffff; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
+    .mtr-swipe-hint { font-size: 11px; color: #64748b; text-align: center; margin: 2px 0 6px; font-weight: 600; }
+    @media (min-width: 768px) {
+      #mtrSwipeChips, .mtr-swipe-hint { display: none !important; }
+      #mtrCardsContainer { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; margin-top: 10px; }
+    }
+    #mtrCardsContainer { margin-top: 4px; touch-action: pan-y; }
+    .mtr-dir-card { background: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06); }
+    @media (max-width: 767px) { .mtr-dir-card.mobile-hidden { display: none; } }
+    .mtr-card-header { padding: 12px 14px; color: #ffffff; display: flex; flex-direction: column; gap: 3px; }
+    .mtr-card-line-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 800; }
+    .mtr-line-pill { background: rgba(0,0,0,0.22); padding: 2px 8px; border-radius: 999px; }
+    .mtr-card-big-dest { font-size: 21px; font-weight: 900; line-height: 1.25; }
+    .mtr-train-list { padding: 6px 10px; }
+    .mtr-train-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 4px; border-bottom: 1px dashed #e2e8f0; }
+    .mtr-train-row:last-child { border-bottom: none; }
+    .mtr-train-row.tracked { background: #dbeafe; border-radius: 8px; padding: 9px 8px; }
+    .mtr-train-left { display: flex; align-items: center; gap: 7px; min-width: 0; }
+    .mtr-seq-circle { width: 22px; height: 22px; border-radius: 50%; background: #f1f5f9; color: #334155; font-size: 11.5px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+    .mtr-train-dest-tag { font-size: 14.5px; font-weight: 800; color: #0f172a; }
+    .mtr-train-dest-tag.branch-a { padding: 2px 8px; border-radius: 6px; background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; }
+    .mtr-train-dest-tag.branch-b { padding: 2px 8px; border-radius: 6px; background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
+    .mtr-train-dest-tag.branch-short { padding: 2px 8px; border-radius: 6px; background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
+    .mtr-plat-badge { font-size: 11px; font-weight: 700; color: #475569; background: #f1f5f9; border: 1px solid #cbd5e1; padding: 1px 6px; border-radius: 5px; flex-shrink: 0; }
+    .mtr-train-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
+    .mtr-eta-text { text-align: right; font-size: 14px; font-weight: 800; color: #1565c0; }
+    .mtr-eta-text.imminent { color: #d32f2f; }
+    .mtr-eta-hhmm { display: block; font-size: 11px; font-weight: 600; color: #64748b; }
 
-      #mtr-sheet-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px 55vh; background: #f8fafc; }
-      .mtr-station-picker-wrap { position: relative; display: flex; align-items: stretch; gap: 8px; }
-      #mtrStationColorBtn {
-        flex: 1; min-width: 0; padding: 9px 14px; border-radius: 12px; border: 2px solid rgba(255,255,255,0.85);
-        color: #ffffff; font-size: 16px; font-weight: 900; display: flex; align-items: center; justify-content: space-between;
-        gap: 8px; cursor: pointer; margin: 0; box-shadow: 0 3px 10px rgba(15, 23, 42, 0.16); text-shadow: 0 1px 3px rgba(0,0,0,0.45);
-      }
-      .mtr-sta-btn-dist { font-size: 12px; font-weight: 800; background: rgba(0,0,0,0.28); padding: 2px 8px; border-radius: 999px; }
-      .btn-mtr-nearest {
-        flex-shrink: 0; padding: 0 12px; font-size: 12.5px; font-weight: 800; border-radius: 12px;
-        background: #ffffff; color: #be123c; border: 1px solid #fda4af; margin: 0;
-      }
-      #mtrColorDropdownPanel {
-        display: none; margin-top: 8px; background: #ffffff; border: 1px solid #cbd5e1;
-        border-radius: 14px; padding: 10px; box-shadow: 0 10px 28px rgba(15, 23, 42, 0.18); max-height: 48vh; overflow-y: auto;
-      }
-      #mtrColorDropdownPanel.open { display: block; }
-      #mtrStaFilterInput { width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 13.5px; margin-bottom: 8px; outline: none; }
-      .mtr-color-sta-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 6px; }
-      .mtr-color-sta-item {
-        padding: 8px 8px; border-radius: 9px; border: none; color: #ffffff; font-size: 13.5px; font-weight: 900;
-        text-align: center; cursor: pointer; margin: 0; text-shadow: 0 1px 3px rgba(0,0,0,0.5);
-        display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
-      }
-      .mtr-color-sta-item.selected-sta { outline: 3px solid #0f172a; outline-offset: 1px; }
-      .mtr-color-sta-sub { font-size: 10.5px; font-weight: 700; background: rgba(0,0,0,0.28); padding: 1px 6px; border-radius: 999px; }
-      .mtr-line-color-divider { height: 4px; border-radius: 999px; margin: 10px 0 6px; }
-
-      #mtrWalkInfoBox { margin-top: 8px; padding: 7px 12px; background: #f3e8ff; color: #6b21a8; border-left: 3px solid #9333ea; border-radius: 8px; font-size: 12px; font-weight: 700; }
-      #mtrWalkInfoBox:empty { display: none; }
-      #mtrSwipeChips { display: flex; align-items: center; gap: 6px; overflow-x: auto; padding: 8px 2px 4px; scrollbar-width: none; }
-      #mtrSwipeChips::-webkit-scrollbar { display: none; }
-      .mtr-dir-chip { flex-shrink: 0; padding: 4px 11px; border-radius: 999px; font-size: 12px; font-weight: 800; border: none; background: #e2e8f0; color: #475569; cursor: pointer; margin: 0; }
-      .mtr-dir-chip.active { color: #ffffff; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
-      .mtr-swipe-hint { font-size: 11px; color: #64748b; text-align: center; margin: 2px 0 6px; font-weight: 600; }
-      @media (min-width: 768px) {
-        #mtrSwipeChips, .mtr-swipe-hint { display: none !important; }
-        #mtrCardsContainer { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 12px; margin-top: 10px; }
-      }
-      #mtrCardsContainer { margin-top: 4px; touch-action: pan-y; }
-      .mtr-dir-card { background: #ffffff; border-radius: 14px; overflow: hidden; border: 1px solid #e2e8f0; box-shadow: 0 3px 10px rgba(15, 23, 42, 0.06); }
-      @media (max-width: 767px) { .mtr-dir-card.mobile-hidden { display: none; } }
-      .mtr-card-header { padding: 12px 14px; color: #ffffff; display: flex; flex-direction: column; gap: 3px; }
-      .mtr-card-line-row { display: flex; align-items: center; justify-content: space-between; font-size: 12px; font-weight: 800; }
-      .mtr-line-pill { background: rgba(0,0,0,0.22); padding: 2px 8px; border-radius: 999px; }
-      .mtr-card-big-dest { font-size: 21px; font-weight: 900; line-height: 1.25; }
-      .mtr-train-list { padding: 6px 10px; }
-      .mtr-train-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 4px; border-bottom: 1px dashed #e2e8f0; }
-      .mtr-train-row:last-child { border-bottom: none; }
-      .mtr-train-row.tracked { background: #dbeafe; border-radius: 8px; padding: 9px 8px; }
-      .mtr-train-left { display: flex; align-items: center; gap: 7px; min-width: 0; }
-      .mtr-seq-circle { width: 22px; height: 22px; border-radius: 50%; background: #f1f5f9; color: #334155; font-size: 11.5px; font-weight: 800; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
-      .mtr-train-dest-tag { font-size: 14.5px; font-weight: 800; color: #0f172a; }
-      .mtr-train-dest-tag.branch-a { padding: 2px 8px; border-radius: 6px; background: #e0f2fe; color: #0369a1; border: 1px solid #bae6fd; }
-      .mtr-train-dest-tag.branch-b { padding: 2px 8px; border-radius: 6px; background: #dcfce7; color: #15803d; border: 1px solid #86efac; }
-      .mtr-train-dest-tag.branch-short { padding: 2px 8px; border-radius: 6px; background: #fef3c7; color: #92400e; border: 1px solid #fde68a; }
-      .mtr-plat-badge { font-size: 11px; font-weight: 700; color: #475569; background: #f1f5f9; border: 1px solid #cbd5e1; padding: 1px 6px; border-radius: 5px; flex-shrink: 0; }
-      .mtr-train-right { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
-      .mtr-eta-text { text-align: right; font-size: 14px; font-weight: 800; color: #1565c0; }
-      .mtr-eta-text.imminent { color: #d32f2f; }
-      .mtr-eta-hhmm { display: block; font-size: 11px; font-weight: 600; color: #64748b; }
-
-      /* 同巴士站 .stop-label 一致嘅 24x24px 圓形港鐵站地圖標記 */
-      .mtr-map-pin {
-        width: 24px !important; height: 24px !important; border-radius: 50%;
-        color: #ffffff; font-size: 11px; font-weight: 900; line-height: 20px;
-        border: 2px solid #ffffff; box-shadow: 0 2px 5px rgba(0,0,0,0.45);
-        display: flex; align-items: center; justify-content: center;
-        text-shadow: 0 1px 2px rgba(0,0,0,0.45);
-      }
-
-      #mtr-dest-modal {
-        display: none; position: fixed; inset: 0; z-index: 9800; background: rgba(15, 23, 42, 0.6);
-        backdrop-filter: blur(4px); align-items: center; justify-content: center; padding: 16px;
-      }
-      #mtr-dest-modal.active { display: flex; }
-      .mtr-dest-dialog { width: 100%; max-width: 480px; max-height: 82vh; background: #ffffff; border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 12px 36px rgba(0,0,0,0.35); }
-      .mtr-dest-header { padding: 12px 14px; background: #0f172a; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
-      .mtr-dest-search { padding: 10px 12px; border-bottom: 1px solid #e2e8f0; background: #f8fafc; }
-      #mtrDestSearchInput { width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 14px; outline: none; }
-      #mtrDestStationList { flex: 1; overflow-y: auto; padding: 10px 12px; }
-      .mtr-dest-color-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; margin-bottom: 10px; }
-      .mtr-dest-sta-btn { padding: 8px 6px; font-size: 13px; font-weight: 900; border-radius: 8px; border: none; color: #ffffff; text-shadow: 0 1px 2px rgba(0,0,0,0.45); margin: 0; cursor: pointer; text-align: center; }
-    `;
-    document.head.appendChild(style);
-  }
+    #mtr-dest-modal {
+      display: none; position: fixed; inset: 0; z-index: 9800; background: rgba(15, 23, 42, 0.6);
+      backdrop-filter: blur(4px); align-items: center; justify-content: center; padding: 16px;
+    }
+    #mtr-dest-modal.active { display: flex; }
+    .mtr-dest-dialog { width: 100%; max-width: 480px; max-height: 82vh; background: #ffffff; border-radius: 16px; display: flex; flex-direction: column; overflow: hidden; box-shadow: 0 12px 36px rgba(0,0,0,0.35); }
+    .mtr-dest-header { padding: 12px 14px; background: #0f172a; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
+    .mtr-dest-search { padding: 10px 12px; border-bottom: 1px solid #e2e8f0; background: #f8fafc; }
+    #mtrDestSearchInput { width: 100%; padding: 8px 10px; border-radius: 8px; border: 1px solid #cbd5e1; font-size: 14px; outline: none; }
+    #mtrDestStationList { flex: 1; overflow-y: auto; padding: 10px 12px; }
+    .mtr-dest-color-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 6px; margin-bottom: 10px; }
+    .mtr-dest-sta-btn { padding: 8px 6px; font-size: 13px; font-weight: 900; border-radius: 8px; border: none; color: #ffffff; text-shadow: 0 1px 2px rgba(0,0,0,0.45); margin: 0; cursor: pointer; text-align: center; }
+  `;
+  document.head.appendChild(style);
 
   const headerBar = document.querySelector("#step1-section .route-header-bar");
   let btnOpen = document.getElementById("btnOpenP2PNav");
@@ -5801,142 +5794,134 @@ async function ensureP2PFullRouteStopDatabase() {
   }
 
   document.querySelectorAll("button").forEach(b => {
-    if (b.id === "btnOpenP2PNav" || (b.textContent && b.textContent.includes("點對點導航"))) {
+    if (b.id === "btnOpenP2PNav" || (b.textContent && b.textContent.includes("導航") && !b.id.startsWith("btnP2P"))) {
       b.onclick = (e) => { e.stopPropagation(); openP2PModal(); };
     }
   });
 
-  if (!document.getElementById("p2p-nav-modal")) {
-    const p2pModal = document.createElement("div");
-    p2pModal.id = "p2p-nav-modal";
-    p2pModal.innerHTML = `
-      <div class="p2p-top-bar" id="p2pDragHeader">
-        <div class="p2p-drag-pill"></div>
-        <div class="p2p-top-row">
-          <strong style="font-size:15px;">🧭 800m 點對點直達導航（巴士/小巴/港鐵）</strong>
-          <div class="p2p-top-btns">
-            <button type="button" class="btn-p2p-top" id="btnP2PMapToggle">🗺️ 睇地圖 ▼</button>
-            <button type="button" class="btn-p2p-top" id="btnCloseP2P">✕ 關閉</button>
-          </div>
+  const p2pModal = document.createElement("div");
+  p2pModal.id = "p2p-nav-modal";
+  p2pModal.innerHTML = `
+    <div class="p2p-top-bar" id="p2pDragHeader">
+      <div class="p2p-drag-pill"></div>
+      <div class="p2p-top-row">
+        <strong style="font-size:15px;">🧭 800m 點對點直達導航（巴士/小巴/港鐵）</strong>
+        <div class="p2p-top-btns">
+          <button type="button" class="btn-p2p-top" id="btnP2PMapToggle">🗺️ 睇地圖 ▼</button>
+          <button type="button" class="btn-p2p-top" id="btnCloseP2P">✕ 關閉</button>
         </div>
       </div>
-      <div class="p2p-search-panel">
-        <div class="p2p-input-row">
-          <span class="p2p-label" style="color:#15803d;">🟢 出發</span>
-          <div class="p2p-input-wrap">
-            <input type="text" class="p2p-input" id="p2pOriginInput" placeholder="輸入屋苑、大廈、地標或車站..." autocomplete="off" />
-            <div class="p2p-suggest-box" id="p2pOriginSuggest"></div>
-          </div>
-          <button type="button" class="p2p-mini-btn" id="btnP2PUseGps">📍 現時</button>
-          <button type="button" class="p2p-mini-btn" id="btnP2PPickOrig">🗺️ 篤點</button>
+    </div>
+    <div class="p2p-search-panel">
+      <div class="p2p-input-row">
+        <span class="p2p-label" style="color:#15803d;">🟢 出發</span>
+        <div class="p2p-input-wrap">
+          <input type="text" class="p2p-input" id="p2pOriginInput" placeholder="輸入屋苑、巴士站、地標或港鐵站..." autocomplete="off" />
+          <div class="p2p-suggest-box" id="p2pOriginSuggest"></div>
         </div>
-        <div class="p2p-input-row">
-          <span class="p2p-label" style="color:#b91c1c;">🔴 終點</span>
-          <div class="p2p-input-wrap">
-            <input type="text" class="p2p-input" id="p2pDestInput" placeholder="輸入目的地（如：愉田苑、第一城、旺角）..." autocomplete="off" />
-            <div class="p2p-suggest-box" id="p2pDestSuggest"></div>
-          </div>
-          <button type="button" class="p2p-mini-btn" id="btnP2PSwap">⇅ 對調</button>
-          <button type="button" class="p2p-mini-btn" id="btnP2PPickDest">🗺️ 篤點</button>
+        <button type="button" class="p2p-mini-btn" id="btnP2PUseGps">📍 現時</button>
+        <button type="button" class="p2p-mini-btn" id="btnP2PPickOrig">🗺️ 篤點</button>
+      </div>
+      <div class="p2p-input-row">
+        <span class="p2p-label" style="color:#b91c1c;">🔴 終點</span>
+        <div class="p2p-input-wrap">
+          <input type="text" class="p2p-input" id="p2pDestInput" placeholder="輸入目的地（如：愉田苑、第一城、旺角）..." autocomplete="off" />
+          <div class="p2p-suggest-box" id="p2pDestSuggest"></div>
         </div>
-        <button type="button" class="p2p-go-btn" id="btnP2PSearchGo">🔍 搜尋 800m 內直達巴士 / 小巴 / 港鐵</button>
+        <button type="button" class="p2p-mini-btn" id="btnP2PSwap">⇅ 對調</button>
+        <button type="button" class="p2p-mini-btn" id="btnP2PPickDest">🗺️ 篤點</button>
       </div>
-      <div class="p2p-sort-bar">
-        <button type="button" class="p2p-sort-btn active" data-sort="best">🌟 最佳選擇</button>
-        <button type="button" class="p2p-sort-btn" data-sort="arrive">🏁 到達時間</button>
-        <button type="button" class="p2p-sort-btn" data-sort="fare">💰 價錢</button>
-        <button type="button" class="p2p-sort-btn" data-sort="board">🚌 上車時間</button>
-        <button type="button" class="p2p-sort-btn" data-sort="walk">🚶 步行</button>
-        <button type="button" id="p2pMtrToggleBtn">🚇 港鐵：開</button>
-      </div>
-      <div id="p2pStatusBar">請設定出發地及目的地，然後撳「搜尋」。</div>
-      <div class="p2p-table-wrap">
-        <table class="p2p-table">
-          <thead>
-            <tr>
-              <th>路線</th>
-              <th>上車站</th>
-              <th class="p2p-desktop-only">下車站</th>
-              <th class="p2p-desktop-only">步行</th>
-              <th>價錢</th>
-              <th>下班車</th>
-              <th>預計到達時間</th>
-            </tr>
-          </thead>
-          <tbody id="p2pResultsBody"></tbody>
-        </table>
-      </div>
-    `;
-    document.body.appendChild(p2pModal);
-  }
+      <button type="button" class="p2p-go-btn" id="btnP2PSearchGo">🔍 搜尋 800m 內直達巴士 / 小巴 / 港鐵</button>
+    </div>
+    <div class="p2p-sort-bar">
+      <button type="button" class="p2p-sort-btn active" data-sort="best">🌟 最佳選擇</button>
+      <button type="button" class="p2p-sort-btn" data-sort="arrive">🏁 到達時間</button>
+      <button type="button" class="p2p-sort-btn" data-sort="fare">💰 價錢</button>
+      <button type="button" class="p2p-sort-btn" data-sort="board">🚌 上車時間</button>
+      <button type="button" class="p2p-sort-btn" data-sort="walk">🚶 步行</button>
+      <button type="button" id="p2pMtrToggleBtn">🚇 港鐵：開</button>
+    </div>
+    <div id="p2pStatusBar">請設定出發地及目的地，然後撳「搜尋」。</div>
+    <div class="p2p-table-wrap">
+      <table class="p2p-table">
+        <thead>
+          <tr>
+            <th>路線</th>
+            <th>上車站</th>
+            <th class="p2p-desktop-only">下車站</th>
+            <th class="p2p-desktop-only">步行</th>
+            <th>價錢</th>
+            <th>下班車</th>
+            <th>預計到達時間</th>
+          </tr>
+        </thead>
+        <tbody id="p2pResultsBody"></tbody>
+      </table>
+    </div>
+  `;
+  document.body.appendChild(p2pModal);
 
-  if (!document.getElementById("p2pMapPickBanner")) {
-    const pickBanner = document.createElement("div");
-    pickBanner.id = "p2pMapPickBanner";
-    pickBanner.innerHTML = `<span id="p2pMapPickText">請喺地圖撳一下揀選位置</span><button type="button" id="btnCancelMapPick" style="padding:3px 9px;font-size:12px;border-radius:999px;background:#ef4444;color:#fff;border:none;margin:0;">取消</button>`;
-    document.body.appendChild(pickBanner);
-  }
+  const pickBanner = document.createElement("div");
+  pickBanner.id = "p2pMapPickBanner";
+  pickBanner.innerHTML = `<span id="p2pMapPickText">請喺地圖撳一下揀選位置</span><button type="button" id="btnCancelMapPick" style="padding:3px 9px;font-size:12px;border-radius:999px;background:#ef4444;color:#fff;border:none;margin:0;">取消</button>`;
+  document.body.appendChild(pickBanner);
 
-  if (!document.getElementById("mtr-sheet")) {
-    const mtrSheet = document.createElement("div");
-    mtrSheet.id = "mtr-sheet";
-    mtrSheet.className = "mtr-state-behind";
-    mtrSheet.innerHTML = `
-      <div id="mtr-sheet-header">
-        <div class="mtr-pill"></div>
-        <div class="mtr-header-row">
-          <div class="mtr-header-brand">
-            <span>🚇 港鐵實時到站</span>
-            <span class="mtr-header-hint" id="mtrSheetHint">向上拉查看港鐵</span>
-          </div>
-          <div class="mtr-header-btns">
-            <button type="button" class="btn-mtr-sheet-ctrl" id="btnMtrSheetStep">拉起 ▲</button>
-            <button type="button" class="btn-mtr-sheet-ctrl" id="btnMtrHideToBack">收返後面 ▼</button>
-          </div>
+  const mtrSheet = document.createElement("div");
+  mtrSheet.id = "mtr-sheet";
+  mtrSheet.className = "mtr-state-behind";
+  mtrSheet.innerHTML = `
+    <div id="mtr-sheet-header">
+      <div class="mtr-pill"></div>
+      <div class="mtr-header-row">
+        <div class="mtr-header-brand">
+          <span>🚇 港鐵實時到站</span>
+          <span class="mtr-header-hint" id="mtrSheetHint">向上拉查看港鐵</span>
+        </div>
+        <div class="mtr-header-btns">
+          <button type="button" class="btn-mtr-sheet-ctrl" id="btnMtrSheetStep">拉起 ▲</button>
+          <button type="button" class="btn-mtr-sheet-ctrl" id="btnMtrHideToBack">收返後面 ▼</button>
         </div>
       </div>
-      <div id="mtr-sheet-body">
-        <div class="mtr-station-picker-wrap">
-          <button type="button" id="mtrStationColorBtn">
-            <span id="mtrStationBtnLabel">揀選港鐵站</span>
-            <span class="mtr-sta-btn-dist" id="mtrStationBtnDist">▼</span>
-          </button>
-          <button type="button" class="btn-mtr-nearest" id="btnMtrNearest">📍 最近站</button>
-        </div>
-        <div id="mtrColorDropdownPanel">
-          <input type="text" id="mtrStaFilterInput" placeholder="輸入港鐵站名快速搜尋..." />
-          <div id="mtrColorStaListInner"></div>
-        </div>
-        <div id="mtrWalkInfoBox"></div>
-        <div id="mtrSwipeChips"></div>
-        <div class="mtr-swipe-hint" id="mtrSwipeHint">👈 左右滑動更換方向及線路 👉</div>
-        <div id="mtrCardsContainer"></div>
+    </div>
+    <div id="mtr-sheet-body">
+      <div class="mtr-station-picker-wrap">
+        <button type="button" id="mtrStationColorBtn">
+          <span id="mtrStationBtnLabel">揀選港鐵站</span>
+          <span class="mtr-sta-btn-dist" id="mtrStationBtnDist">▼</span>
+        </button>
+        <button type="button" class="btn-mtr-nearest" id="btnMtrNearest">📍 最近站</button>
       </div>
-    `;
-    document.body.appendChild(mtrSheet);
-  }
+      <div id="mtrColorDropdownPanel">
+        <input type="text" id="mtrStaFilterInput" placeholder="輸入港鐵站名快速搜尋..." />
+        <div id="mtrColorStaListInner"></div>
+      </div>
+      <div id="mtrWalkInfoBox"></div>
+      <div id="mtrSwipeChips"></div>
+      <div class="mtr-swipe-hint" id="mtrSwipeHint">👈 左右滑動更換方向及線路 👉</div>
+      <div id="mtrCardsContainer"></div>
+    </div>
+  `;
+  document.body.appendChild(mtrSheet);
 
-  if (!document.getElementById("mtr-dest-modal")) {
-    const destModal = document.createElement("div");
-    destModal.id = "mtr-dest-modal";
-    destModal.innerHTML = `
-      <div class="mtr-dest-dialog">
-        <div class="mtr-dest-header">
-          <strong id="mtrDestModalTitle" style="font-size:15px;">🚇 你想去邊個港鐵站？</strong>
-          <button type="button" id="btnCloseMtrDestModal" style="background:transparent;border:none;color:#cbd5e1;font-size:18px;padding:0 4px;margin:0;">✕</button>
-        </div>
-        <div class="mtr-dest-search">
-          <input type="text" id="mtrDestSearchInput" placeholder="輸入港鐵站名篩選（例如：第一城、金鐘、羅湖）..." />
-        </div>
-        <div id="mtrDestStationList"></div>
+  const destModal = document.createElement("div");
+  destModal.id = "mtr-dest-modal";
+  destModal.innerHTML = `
+    <div class="mtr-dest-dialog">
+      <div class="mtr-dest-header">
+        <strong id="mtrDestModalTitle" style="font-size:15px;">🚇 你想去邊個港鐵站？</strong>
+        <button type="button" id="btnCloseMtrDestModal" style="background:transparent;border:none;color:#cbd5e1;font-size:18px;padding:0 4px;margin:0;">✕</button>
       </div>
-    `;
-    document.body.appendChild(destModal);
-  }
+      <div class="mtr-dest-search">
+        <input type="text" id="mtrDestSearchInput" placeholder="輸入港鐵站名篩選（例如：第一城、金鐘、羅湖）..." />
+      </div>
+      <div id="mtrDestStationList"></div>
+    </div>
+  `;
+  document.body.appendChild(destModal);
 })();
 
 
-/* ---------- Part D：零封鎖香港地點搜尋（0ms 本地 6000 站 + 政府 OGCIO ALS API + 中文組字保護） ---------- */
+/* ---------- Part D：香港地點搜尋（0ms 本地巴士/小巴/港鐵分開配額 + 政府新域名 www.als.gov.hk） ---------- */
 
 function setP2PModalSheetState(st) {
   const modal = document.getElementById("p2p-nav-modal");
@@ -6025,18 +6010,20 @@ function closeP2PModal() {
   });
 }
 
+// 同時檢索港鐵站（最多 3 個）＋ 全港巴士/小巴站（最多 7 個），確保巴士站一定會顯示
 function searchLocalHkStopsAndMtr(kw) {
   const kwLower = kw.toLowerCase();
-  const list = [];
-  const seen = new Set();
+  const mtrHits = [];
+  const busHits = [];
+  const seenMtr = new Set();
+  const seenBus = new Set();
 
   Object.values(MTR_STATIONS).forEach(st => {
     if (st.tc.includes(kw) || st.en.toLowerCase().includes(kwLower)) {
-      const key = `MTR_${st.tc}`;
-      if (!seen.has(key)) {
-        seen.add(key);
+      if (!seenMtr.has(st.tc)) {
+        seenMtr.add(st.tc);
         const rank = st.tc === kw ? 0 : st.tc.startsWith(kw) ? 1 : 2;
-        list.push({ name: `港鐵${st.tc}站`, address: "🚇 港鐵站", lat: st.lat, lon: st.lon, rank });
+        mtrHits.push({ name: `港鐵${st.tc}站`, address: "🚇 港鐵站", lat: st.lat, lon: st.lon, rank });
       }
     }
   });
@@ -6047,10 +6034,10 @@ function searchLocalHkStopsAndMtr(kw) {
     if (!zh || !isFinite(lat) || !isFinite(lon)) return;
     if (zh.includes(kw) || en.toLowerCase().includes(kwLower)) {
       const key = `${zh}_${lat.toFixed(2)}_${lon.toFixed(2)}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      const rank = zh === kw ? 0 : zh.startsWith(kw) ? 1 : 3;
-      list.push({ name: zh, address: "🚏 巴士 / 小巴站位置", lat, lon, rank });
+      if (seenBus.has(key)) return;
+      seenBus.add(key);
+      const rank = zh === kw ? 0 : zh.startsWith(kw) ? 1 : 2;
+      busHits.push({ name: zh, address: "🚏 巴士 / 小巴站", lat, lon, rank });
     }
   };
 
@@ -6060,20 +6047,24 @@ function searchLocalHkStopsAndMtr(kw) {
         addStopCandidate(sInfo.name.zh, sInfo.name.en, parseFloat(sInfo.location.lat), parseFloat(sInfo.location.lng));
       }
     }
-  } else if (allStopsMap && allStopsMap.size > 0) {
+  }
+  if (allStopsMap && allStopsMap.size > 0) {
     allStopsMap.forEach(s => addStopCandidate(s.name_tc, s.name_en, parseFloat(s.lat), parseFloat(s.long)));
   }
 
-  list.sort((a, b) => a.rank - b.rank || a.name.length - b.name.length);
-  return list.slice(0, 6);
+  mtrHits.sort((a, b) => a.rank - b.rank || a.name.length - b.name.length);
+  busHits.sort((a, b) => a.rank - b.rank || a.name.length - b.name.length);
+
+  return [...mtrHits.slice(0, 3), ...busHits.slice(0, 7)];
 }
 
-async function searchOgcioOfficialAddress(kw, abortSignal) {
+// 香港政府數字辦官方地址查詢 API 新域名（www.als.gov.hk）
+async function searchHkGovOfficialAddress(kw, abortSignal) {
   if (p2pPlaceSearchCache.has(kw)) return p2pPlaceSearchCache.get(kw);
   const out = [];
   try {
     const res = await fetch(
-      `https://www.als.ogcio.gov.hk/lookup?q=${encodeURIComponent(kw)}&n=8`,
+      `https://www.als.gov.hk/lookup?q=${encodeURIComponent(kw)}&n=8`,
       { headers: { "Accept": "application/json", "Accept-Language": "zh-Hant,en" }, signal: abortSignal }
     );
     if (res.ok) {
@@ -6119,7 +6110,7 @@ function renderPlaceSuggestDropdown(suggestEl, items, onPicked) {
     suggestEl.classList.remove("open");
     return;
   }
-  items.slice(0, 8).forEach(p => {
+  items.slice(0, 10).forEach(p => {
     const row = document.createElement("div");
     row.className = "p2p-suggest-item";
     row.innerHTML = `<div style="font-weight:800;color:#0f172a;">${p.name}</div>${p.address ? `<div style="font-size:11px;color:#64748b;">${p.address}</div>` : ""}`;
@@ -6169,7 +6160,7 @@ function bindPlaceInputAutocomplete(inputId, suggestId, isOrigin) {
       if (composing) return;
       const ctrl = new AbortController();
       activeCtrl = ctrl;
-      const remoteHits = await searchOgcioOfficialAddress(val, ctrl.signal);
+      const remoteHits = await searchHkGovOfficialAddress(val, ctrl.signal);
       if (ctrl.signal.aborted) return;
 
       const merged = [...localHits];
@@ -6714,7 +6705,7 @@ async function applyP2PSelectedRoute(item) {
 }
 
 
-/* ---------- Part F：港鐵獨立抽屜控制、全彩揀站、實時班次與追蹤 ---------- */
+/* ---------- Part F：港鐵獨立抽屜控制、全彩揀站、實時班次與 24x24px 港鐵 Logo 地圖標記 ---------- */
 
 function syncMtrBehindOffset() {
   const mtrSheet = document.getElementById("mtr-sheet");
@@ -6874,10 +6865,10 @@ async function plotMtrStationAndWalkOnMap(staCode, centerMap = false) {
   const st = MTR_STATIONS[staCode];
   if (!map || !st) return;
 
-  // 24x24px 圓形標記（與巴士站 .stop-label 一致，唔會遮擋地圖）
+  // 鎖死 24x24px 圓形（同巴士站 .stop-label 一樣大細）＋ 白色港鐵 Logo SVG（走「鐵」字）
   const pinIcon = L.divIcon({
     className: "",
-    html: `<div class="mtr-map-pin" style="background:${getStationLineBackgroundCSS(staCode)};">鐵</div>`,
+    html: `<div style="width:24px;height:24px;border-radius:50%;background:${getStationLineBackgroundCSS(staCode)};border:2px solid #ffffff;box-shadow:0 2px 5px rgba(0,0,0,0.45);display:flex;align-items:center;justify-content:center;">${MTR_LOGO_SVG}</div>`,
     iconSize: L.point(24, 24), iconAnchor: L.point(12, 12)
   });
   mtrStationMarker = L.marker([st.lat, st.lon], { icon: pinIcon, zIndexOffset: 2500 })
@@ -7364,7 +7355,6 @@ function stopMtrTrackingAll() {
     };
   }
 
-  // 港鐵獨立抽屜事件
   const mtrSheet = document.getElementById("mtr-sheet");
   const mtrHeader = document.getElementById("mtr-sheet-header");
   const btnStep = document.getElementById("btnMtrSheetStep");
@@ -7437,7 +7427,7 @@ function stopMtrTrackingAll() {
           const near = findNearestMtrStaCode(pos.coords.latitude, pos.coords.longitude);
           selectMtrStation(near, true);
           showToast(`📍 最近港鐵站：${getMtrStationName(near)}站`);
-        }, () => showToast("⚠️ 本地檔案無法使用定位，請直接撳站名揀站"));
+        }, () => showToast("⚠️ 無法取得定位，請直接撳站名揀站"));
       }
     };
   }
