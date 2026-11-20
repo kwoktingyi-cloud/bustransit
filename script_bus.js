@@ -4525,16 +4525,71 @@ if (typeof createTwoLineRouteItemDOM === "function") {
 loadHkFareDatabase();
 
 
-
 /* =========================================================================
-   ★ 全合一升級模組 (v7)：
-   1) 修復倉頡/速成組字 (isComposing) 亂射 API + 0ms 本地全港 6000 站檢索 + 政府 OGCIO 官方地址庫 (零 Nominatim 429)
-   2) 修復專線小巴 file:// 直連（避開 allorigins 522 死機）+ 通知欄顯示座標
-   3) 全域 1.5 倍步行時間 + 800m 點對點導航（巴士 + 小巴 + 港鐵、頂留 10% 地圖、最佳選擇排序）
-   4) 港鐵獨立後層可拉起抽屜 (#mtr-sheet) + 全彩揀站 + 實時班次/轉車/八達通車費追蹤
+   ★ 全合一升級模組 (v7.2 修正版)：
+   1) 修復 entry.dest.substring is not a function（恢復所有巴士／小巴站點與地圖標記顯示）
+   2) 地圖港鐵站改為同巴士站一樣嘅 24x24px 圓形圖示（按路線配色，撳落去彈站名）
+   3) 修復倉頡/速成組字 (isComposing) + 0ms 本地 6000 站檢索 + 政府 OGCIO 官方地址庫
+   4) 修復專線小巴 file:// 直連 + 通知欄顯示座標 + 全域 1.5 倍步行時間
+   5) 800m 點對點導航（巴士 + 小巴 + 港鐵）+ 港鐵獨立後層抽屜 (#mtr-sheet)
    ========================================================================= */
 
-/* ---------- Part A：修復 GMB 直連（避開 allorigins 522）與全域 1.5x 步速 ---------- */
+/* ---------- Part A：修復 findFaresArrayForRouteStops 報錯、GMB 直連與 1.5x 步速 ---------- */
+
+// 修復 entry.dest 係物件 { zh, en } 時呼叫 .substring() 導致巴士及小巴站點全部無法顯示嘅 Bug
+findFaresArrayForRouteStops = function (routeObj, stopsArray) {
+  if (!hkFareRouteList || !routeObj || !stopsArray || !stopsArray.length) return null;
+
+  const targetRouteCode = String(routeObj.route || "").toUpperCase();
+  const isGmb = isGmbCompany(routeObj.company);
+  const coKey = isGmb ? "gmb" : (routeObj.company === "CTB" ? "ctb" : "kmb");
+
+  const currentStopIds = stopsArray.map(s => String(s.stop_id || "").replace(/^GMB_/, ""));
+  const currentStopSet = new Set(currentStopIds);
+
+  let bestEntry = null;
+  let bestScore = -1;
+
+  for (const entry of Object.values(hkFareRouteList)) {
+    if (!entry) continue;
+    if (String(entry.route || "").toUpperCase() !== targetRouteCode) continue;
+    const cos = Array.isArray(entry.co) ? entry.co : [];
+    if (!cos.includes(coKey) && !(coKey !== "gmb" && (cos.includes("kmb") || cos.includes("ctb")))) continue;
+
+    let score = 0;
+    if (isGmb && routeObj.gmbRouteId && String(entry.gtfsId || "") === String(routeObj.gmbRouteId)) {
+      score += 50;
+    }
+
+    const stopsObj = entry.stops || {};
+    const entryStops = stopsObj[coKey] || stopsObj.kmb || stopsObj.ctb || stopsObj.gmb || [];
+    let matchCount = 0;
+    entryStops.forEach(sid => {
+      if (currentStopSet.has(String(sid))) matchCount++;
+    });
+    score += matchCount * 10;
+
+    if (entryStops.length >= 2 && currentStopIds.length >= 2) {
+      if (String(entryStops[0]) === currentStopIds[0]) score += 25;
+      if (String(entryStops[entryStops.length - 1]) === currentStopIds[currentStopIds.length - 1]) score += 25;
+    }
+
+    const destStr = typeof entry.dest === "string"
+      ? entry.dest
+      : (entry.dest && typeof entry.dest.zh === "string" ? entry.dest.zh : "");
+    const lastStopName = stripBracketCode(stopsArray[stopsArray.length - 1].name_tc || "");
+    if (lastStopName && destStr && lastStopName.includes(destStr.substring(0, 2))) {
+      score += 15;
+    }
+
+    if (score > bestScore && score > 0) {
+      bestScore = score;
+      bestEntry = entry;
+    }
+  }
+
+  return bestEntry && Array.isArray(bestEntry.fares) ? bestEntry.fares : null;
+};
 
 fetchGmbApi = async function (url, useCache = true) {
   const cacheKey = "gmb_api_" + url;
@@ -5097,7 +5152,7 @@ function computeGeneralMtrShortestRoute(originSta, targetSta) {
 
     const edges = MTR_GRAPH[cur.key] || [];
     for (const e of edges) {
-      const nextLine = e.to.split("|");
+      const nextLine = e.to.split("|")[1];
       if (nextLine === "AEL" && targetSta !== "AIR" && targetSta !== "AWE" && originSta !== "AIR" && originSta !== "AWE") continue;
       if (e.to === "RAC|EAL" && targetSta !== "RAC" && originSta !== "RAC") continue;
       const nextCost = cur.cost + e.mins;
@@ -5708,7 +5763,15 @@ async function ensureP2PFullRouteStopDatabase() {
       .mtr-eta-text { text-align: right; font-size: 14px; font-weight: 800; color: #1565c0; }
       .mtr-eta-text.imminent { color: #d32f2f; }
       .mtr-eta-hhmm { display: block; font-size: 11px; font-weight: 600; color: #64748b; }
-      .mtr-map-pin { color: #ffffff; padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 900; border: 2px solid #ffffff; box-shadow: 0 3px 8px rgba(0,0,0,0.4); white-space: nowrap; text-shadow: 0 1px 2px rgba(0,0,0,0.45); }
+
+      /* 同巴士站 .stop-label 一致嘅 24x24px 圓形港鐵站地圖標記 */
+      .mtr-map-pin {
+        width: 24px !important; height: 24px !important; border-radius: 50%;
+        color: #ffffff; font-size: 11px; font-weight: 900; line-height: 20px;
+        border: 2px solid #ffffff; box-shadow: 0 2px 5px rgba(0,0,0,0.45);
+        display: flex; align-items: center; justify-content: center;
+        text-shadow: 0 1px 2px rgba(0,0,0,0.45);
+      }
 
       #mtr-dest-modal {
         display: none; position: fixed; inset: 0; z-index: 9800; background: rgba(15, 23, 42, 0.6);
@@ -5962,7 +6025,6 @@ function closeP2PModal() {
   });
 }
 
-// 0ms 本地站點配對（涵蓋全港 98 港鐵站 + 6,000+ 巴士/小巴站名如愉田苑、第一城等）
 function searchLocalHkStopsAndMtr(kw) {
   const kwLower = kw.toLowerCase();
   const list = [];
@@ -6006,7 +6068,6 @@ function searchLocalHkStopsAndMtr(kw) {
   return list.slice(0, 6);
 }
 
-// 政府資科辦官方香港地址查詢服務 (www.als.ogcio.gov.hk/lookup) — 原生 JSON + WGS84 座標 + CORS (*)
 async function searchOgcioOfficialAddress(kw, abortSignal) {
   if (p2pPlaceSearchCache.has(kw)) return p2pPlaceSearchCache.get(kw);
   const out = [];
@@ -6098,13 +6159,11 @@ function bindPlaceInputAutocomplete(inputId, suggestId, isOrigin) {
       return;
     }
 
-    // 第 1 步：0ms 即時顯示本地港鐵站及巴士/小巴站結果
     const localHits = searchLocalHkStopsAndMtr(val);
     if (localHits.length > 0) {
       renderPlaceSuggestDropdown(suggestEl, localHits, pickItem);
     }
 
-    // 第 2 步：停手 450ms 後先向政府 OGCIO ALS 查詢詳細大廈街道地址
     if (val.length < 2) return;
     timer = setTimeout(async () => {
       if (composing) return;
@@ -6342,7 +6401,7 @@ async function runP2P800mSearch() {
         const seg = haversineDistanceMeters(s1.location.lat, s1.location.lng, s2.location.lat, s2.location.lng);
         accDist += seg;
         const vKmH = getSegmentEffectiveSpeedKmH(seg, new Date());
-        accRideMin += ((seg / 1000) / Math.max(8, vKmH)) * 60;
+        accRideMin += (((seg * 1.25) / 1000) / Math.max(8, vKmH)) * 60 + 0.55;
       } else {
         accRideMin += 2.2;
       }
@@ -6815,12 +6874,15 @@ async function plotMtrStationAndWalkOnMap(staCode, centerMap = false) {
   const st = MTR_STATIONS[staCode];
   if (!map || !st) return;
 
+  // 24x24px 圓形標記（與巴士站 .stop-label 一致，唔會遮擋地圖）
   const pinIcon = L.divIcon({
     className: "",
-    html: `<div class="mtr-map-pin" style="background:${getStationLineBackgroundCSS(staCode)};">🚇 ${st.tc}站</div>`,
-    iconSize: L.point(92, 28), iconAnchor: L.point(46, 14)
+    html: `<div class="mtr-map-pin" style="background:${getStationLineBackgroundCSS(staCode)};">鐵</div>`,
+    iconSize: L.point(24, 24), iconAnchor: L.point(12, 12)
   });
-  mtrStationMarker = L.marker([st.lat, st.lon], { icon: pinIcon, zIndexOffset: 2500 }).addTo(map);
+  mtrStationMarker = L.marker([st.lat, st.lon], { icon: pinIcon, zIndexOffset: 2500 })
+    .addTo(map)
+    .bindPopup(`<b>🚇 港鐵${st.tc}站</b>`);
   if (centerMap) map.setView([st.lat, st.lon], 15);
 
   if (userLat == null || userLon == null) {
